@@ -130,7 +130,7 @@ class RobotImageDataset(BaseImageDataset):
     def postprocess(self, samples, device):
         agent_pos = samples["state"].to(device, non_blocking=True)
         obs = {
-            _cam_obs_key(k): samples[k].to(device, non_blocking=True) / 255.0  # B, T, 3, H, W each
+            _cam_obs_key(k): samples[k].to(device, non_blocking=True).movedim(-1, 2) / 255.0  # B, T, 3, H, W each
             for k in self.camera_keys
         }
         obs["agent_pos"] = agent_pos  # B, T, D

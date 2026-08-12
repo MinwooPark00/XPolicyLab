@@ -11,8 +11,8 @@ Usage (run from this directory, so TASK_CONFIGS.json lands where
 imitate_episodes.py / constants.py look for it):
     python register_task_config.py \
         --bench_name mhbench --ckpt_name cocarry_robot_a \
-        --env_cfg_type unitree_g1x2_decentralized --action_type ee \
-        --dataset_dir /path/to/cocarry_act_robot_a
+        --env_cfg_type unitree_g1x2_decentralized --action_type joint \
+        --dataset_dir /scratch2/soochul/MHBench/datasets/cocarry_act_robot_a
 
 The registry key is "{bench_name}-{ckpt_name}-{env_cfg_type}-{action_type}"
 (imitate_episodes.py's --ckpt_setting). --env_cfg_type only encodes the

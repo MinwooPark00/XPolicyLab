@@ -1,4 +1,16 @@
 #!/bin/bash
+#SBATCH -J dp-cocarry
+#SBATCH --partition=suma_a6000
+#SBATCH --gres=gpu:1
+#SBATCH --output=example.out
+#SBATCH --time=01:00:00
+
+# bash train.sh mhbench cocarry mhbench_cocarry joint 0 0
+# sbatch -J dp-cocarry --partition=suma_a6000 --gres=gpu:1 --output=example.out --time=01:00:00 --wrap="bash train.sh mhbench cocarry mhbench_cocarry joint 0 0"
+# sbatch -J dp-cocarry --gres=gpu:1 --output=example.out --time=01:00:00 --wrap="bash train.sh mhbench cocarry unitree_g1x2_decentralized joint 0 0"
+# sbatch -J dp-cocarry --gres=gpu:1 --output=example.out --time=01:00:00 --wrap="bash train.sh mhbench cocarry unitree_g1x2_centralized joint 0 0"
+
+
 
 bench_name=${1}
 ckpt_name=${2} # run name
@@ -29,10 +41,10 @@ num_cameras=$(bash "${UTILS_DIR}/get_num_cameras.sh" "${ROOT_DIR}" "${env_cfg_ty
 # Shape must match default_task.yaml's image_shape anchor ([3, 240, 320]).
 EXTRA_CAMERA_ARGS=()
 if [ "${num_cameras}" -ge 2 ]; then
-    EXTRA_CAMERA_ARGS+=("task.shape_meta.obs.left_cam.shape=[3,240,320]" "task.shape_meta.obs.left_cam.type=rgb")
+    EXTRA_CAMERA_ARGS+=("+task.shape_meta.obs.left_cam.shape=[3,240,320]" "+task.shape_meta.obs.left_cam.type=rgb")
 fi
 if [ "${num_cameras}" -ge 3 ]; then
-    EXTRA_CAMERA_ARGS+=("task.shape_meta.obs.right_cam.shape=[3,240,320]" "task.shape_meta.obs.right_cam.type=rgb")
+    EXTRA_CAMERA_ARGS+=("+task.shape_meta.obs.right_cam.shape=[3,240,320]" "+task.shape_meta.obs.right_cam.type=rgb")
 fi
 
 alg_name=robot_dp

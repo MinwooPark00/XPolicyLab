@@ -16,9 +16,9 @@ shape_meta: &shape_meta
     # right_cam:
     #   shape: *image_shape
     #   type: rgb
-    # agent_pos:
-    #   shape: null
-    #   type: low_dim
+    agent_pos:
+      shape: null
+      type: low_dim
   action:
     shape: null
 

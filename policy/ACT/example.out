@@ -1,0 +1,10 @@
+[33m[INFO] Action dim: 22[0m
+[33m[INFO] State dim: 13[0m
+/home/soochul/anaconda3/envs/mhbench_act/lib/python3.10/site-packages/torchvision/models/_utils.py:208: UserWarning: The parameter 'pretrained' is deprecated since 0.13 and may be removed in the future, please use 'weights' instead.
+  warnings.warn(
+/home/soochul/anaconda3/envs/mhbench_act/lib/python3.10/site-packages/torchvision/models/_utils.py:223: UserWarning: Arguments other than a weight enum or `None` for 'weights' are deprecated since 0.13 and may be removed in the future. The current behavior is equivalent to passing `weights=ResNet18_Weights.IMAGENET1K_V1`. You can also use `weights=ResNet18_Weights.DEFAULT` to get the most up-to-date weights.
+  warnings.warn(msg)
+
+Data from: /scratch2/soochul/MHBench/datasets/cocarry_act_robot_a
+
+  0%|          | 0/20 [00:00<?, ?it/s]  5%|▌         | 1/20 [00:00<00:18,  1.04it/s] 10%|█         | 2/20 [00:01<00:09,  1.81it/s] 15%|█▌        | 3/20 [00:01<00:07,  2.41it/s] 20%|██        | 4/20 [00:01<00:05,  2.86it/s] 25%|██▌       | 5/20 [00:02<00:04,  3.11it/s] 30%|███       | 6/20 [00:02<00:04,  3.35it/s] 35%|███▌      | 7/20 [00:02<00:03,  3.53it/s] 40%|████      | 8/20 [00:02<00:03,  3.64it/s] 45%|████▌     | 9/20 [00:03<00:02,  3.74it/s] 50%|█████     | 10/20 [00:04<00:04,  2.04it/s] 55%|█████▌    | 11/20 [00:04<00:03,  2.37it/s] 60%|██████    | 12/20 [00:04<00:02,  2.67it/s] 65%|██████▌   | 13/20 [00:04<00:02,  2.93it/s] 70%|███████   | 14/20 [00:05<00:01,  3.09it/s] 75%|███████▌  | 15/20 [00:05<00:01,  3.28it/s] 80%|████████  | 16/20 [00:05<00:01,  3.34it/s] 85%|████████▌ | 17/20 [00:05<00:00,  3.45it/s] 90%|█████████ | 18/20 [00:06<00:00,  3.54it/s] 95%|█████████▌| 19/20 [00:06<00:00,  3.60it/s]100%|██████████| 20/20 [00:07<00:00,  2.21it/s]100%|██████████| 20/20 [00:07<00:00,  2.74it/s]

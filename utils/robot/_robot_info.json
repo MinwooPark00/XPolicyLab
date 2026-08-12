@@ -34,5 +34,11 @@
         "ee_dim": [8, 8],
         "state_dim": 26,
         "num_cameras": 2
+    },
+    "mhbench_cocarry": {
+        "arm_dim": [14, 14],
+        "ee_dim": [8, 8],
+        "state_dim": 26,
+        "num_cameras": 2
     }
 }

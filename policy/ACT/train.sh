@@ -1,4 +1,11 @@
 #!/bin/bash
+#SBATCH -J act-cocarry
+#SBATCH --gres=gpu:1
+#SBATCH --output=example.out
+#SBATCH --time=01:00:00
+
+# bash train.sh mhbench cocarry_robot_a unitree_g1x2_decentralized joint 0 0
+# sbatch -J act-cocarry --gres=gpu:1 --output=example.out --time=01:00:00 --wrap="bash train.sh mhbench cocarry_robot_a unitree_g1x2_decentralized joint 0 0"
 
 bench_name=${1}
 ckpt_name=${2} # run name
@@ -35,7 +42,7 @@ python3 imitate_episodes.py \
     --hidden_dim 512 \
     --batch_size 16 \
     --dim_feedforward 3200 \
-    --num_epochs 600 \
+    --num_epochs 20 \
     --lr 1e-5 \
-    --save_freq 600 \
+    --save_freq 10 \
     --seed ${seed}
