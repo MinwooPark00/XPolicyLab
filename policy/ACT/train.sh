@@ -33,7 +33,7 @@ python3 imitate_episodes.py \
     --hidden_dim 512 \
     --batch_size 16 \
     --dim_feedforward 3200 \
-    --num_epochs 6000 \
+    --num_epochs 600 \
     --lr 1e-5 \
-    --save_freq 6000 \
+    --save_freq 600 \
     --seed ${seed}
