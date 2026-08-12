@@ -1,0 +1,234 @@
+from typing import Dict, Tuple, Union
+import copy
+import torch
+import torch.nn as nn
+import torchvision
+from diffusion_policy.model.vision.crop_randomizer import CropRandomizer
+from diffusion_policy.model.common.module_attr_mixin import ModuleAttrMixin
+from diffusion_policy.common.pytorch_util import dict_apply, replace_submodules
+
+
+class SheafObsEncoder(ModuleAttrMixin):
+    def __init__(self,
+                 shape_meta: dict,
+                 rgb_model: Union[nn.Module, Dict[str, nn.Module]],
+                 resize_shape: Union[Tuple[int, int], Dict[str, tuple], None] = None,
+                 crop_shape: Union[Tuple[int, int], Dict[str, tuple], None] = None,
+                 random_crop: bool = True,
+                 # replace BatchNorm with GroupNorm
+                 use_group_norm: bool = False,
+                 # use single rgb model for all rgb inputs
+                 share_rgb_model: bool = False,
+                 # renormalize rgb input with imagenet normalization
+                 # assuming input in [0,1]
+                 imagenet_norm: bool = False
+                 ):
+        """
+        Assumes rgb input: B,C,H,W
+        Assumes low_dim input: B,D
+        """
+        super().__init__()
+
+        rgb_keys = list()
+        low_dim_keys = list()
+        key_model_map = nn.ModuleDict()
+        key_transform_map = nn.ModuleDict()
+        key_shape_map = dict()
+
+        # handle sharing vision backbone
+        if share_rgb_model:
+            assert isinstance(rgb_model, nn.Module)
+            key_model_map['rgb'] = rgb_model
+
+        obs_shape_meta = shape_meta['obs']
+        for key, attr in obs_shape_meta.items():
+            shape = tuple(attr['shape'])
+            type = attr.get('type', 'low_dim')
+            key_shape_map[key] = shape
+            if type == 'rgb':
+                rgb_keys.append(key)
+                # configure model for this key
+                this_model = None
+                if not share_rgb_model:
+                    if isinstance(rgb_model, dict):
+                        # have provided model for each key
+                        this_model = rgb_model[key]
+                    else:
+                        assert isinstance(rgb_model, nn.Module)
+                        # have a copy of the rgb model
+                        this_model = copy.deepcopy(rgb_model)
+
+                if this_model is not None:
+                    if use_group_norm:
+                        this_model = replace_submodules(
+                            root_module=this_model,
+                            predicate=lambda x: isinstance(x, nn.BatchNorm2d),
+                            func=lambda x: nn.GroupNorm(
+                                num_groups=x.num_features // 16,
+                                num_channels=x.num_features)
+                        )
+                    key_model_map[key] = this_model
+
+                # configure resize
+                input_shape = shape
+                this_resizer = nn.Identity()
+                if resize_shape is not None:
+                    if isinstance(resize_shape, dict):
+                        h, w = resize_shape[key]
+                    else:
+                        h, w = resize_shape
+                    this_resizer = torchvision.transforms.Resize(
+                        size=(h, w)
+                    )
+                    input_shape = (shape[0], h, w)
+
+                # configure randomizer
+                this_randomizer = nn.Identity()
+                if crop_shape is not None:
+                    if isinstance(crop_shape, dict):
+                        h, w = crop_shape[key]
+                    else:
+                        h, w = crop_shape
+                    if random_crop:
+                        this_randomizer = CropRandomizer(
+                            input_shape=input_shape,
+                            crop_height=h,
+                            crop_width=w,
+                            num_crops=1,
+                            pos_enc=False
+                        )
+                    else:
+                        this_normalizer = torchvision.transforms.CenterCrop(
+                            size=(h, w)
+                        )
+                # configure normalizer
+                this_normalizer = nn.Identity()
+                if imagenet_norm:
+                    this_normalizer = torchvision.transforms.Normalize(
+                        mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+
+                this_transform = nn.Sequential(this_resizer, this_randomizer, this_normalizer)
+                key_transform_map[key] = this_transform
+            elif type == 'low_dim':
+                low_dim_keys.append(key)
+            else:
+                raise RuntimeError(f"Unsupported obs type: {type}")
+        rgb_keys = sorted(rgb_keys)
+        low_dim_keys = sorted(low_dim_keys)
+
+        self.shape_meta = shape_meta
+
+        self.key_model_map = key_model_map
+        self.key_transform_map = key_transform_map
+        self.share_rgb_model = share_rgb_model
+        self.rgb_keys = rgb_keys
+        self.low_dim_keys = low_dim_keys
+        self.key_shape_map = key_shape_map
+
+    def forward(self, obs_dict):
+        # Keyed lookup instead of positional indexing.
+        # Upstream built one flat `features` list (present rgb keys, in
+        # self.rgb_keys order, then present low_dim keys, in self.low_dim_keys
+        # order) and picked the "private"/"shared" pieces out of it by literal
+        # list position (features[0], features[2], features[3], ...). That
+        # only works when each arm's obs_dict has exactly 2 rgb keys and
+        # exactly 2 low_dim keys -- 1 low_dim key underflows the index (raises
+        # IndexError), 3+ silently drops everything past the 2nd. DP's own
+        # MultiImageObsEncoder never had this constraint (it just concatenates
+        # however many low_dim keys are present), and there's no reason
+        # SheafObsEncoder needs it either -- the shared/private split only
+        # cares which *camera* key is present, not how many low-dim keys ride
+        # along with it. Keyed lookup below removes the low-dim count
+        # constraint entirely; camera_1/camera_3/camera_4 naming is unchanged.
+        batch_size = None
+        rgb_features = dict()
+        low_dim_features = list()
+
+        # process rgb input
+        if self.share_rgb_model:
+            # we won't use this part
+            # pass all rgb obs to rgb model
+            imgs = list()
+            present_rgb_keys = [key for key in self.rgb_keys if key in obs_dict.keys()]
+            for key in present_rgb_keys:
+                img = obs_dict[key]
+                if batch_size is None:
+                    batch_size = img.shape[0]
+                else:
+                    assert batch_size == img.shape[0]
+                assert img.shape[1:] == self.key_shape_map[key]
+                img = self.key_transform_map[key](img)
+                imgs.append(img)
+            # (N*B,C,H,W)
+            imgs = torch.cat(imgs, dim=0)
+            # (N*B,D)
+            feature = self.key_model_map['rgb'](imgs)
+            # (N,B,D)
+            feature = feature.reshape(-1, batch_size, *feature.shape[1:])
+            # (B,N,D)
+            feature = torch.moveaxis(feature, 0, 1)
+            # (B,D) per key, in the same order they went in
+            for i, key in enumerate(present_rgb_keys):
+                rgb_features[key] = feature[:, i].reshape(batch_size, -1).contiguous()
+        else:
+            # run each rgb obs to independent models
+            for key in self.rgb_keys:
+                if key not in obs_dict.keys():
+                    continue
+                img = obs_dict[key]
+                if batch_size is None:
+                    batch_size = img.shape[0]
+                else:
+                    assert batch_size == img.shape[0]
+                assert img.shape[1:] == self.key_shape_map[key]
+                img = self.key_transform_map[key](img)
+                feature = self.key_model_map[key](img)
+                rgb_features[key] = feature
+
+        # process lowdim input -- any count, order doesn't matter (all go into
+        # the private `result`, concatenated together either way)
+        for key in self.low_dim_keys:
+            if key not in obs_dict.keys():
+                continue
+            data = obs_dict[key]
+            if batch_size is None:
+                batch_size = data.shape[0]
+            else:
+                assert batch_size == data.shape[0]
+            assert data.shape[1:] == self.key_shape_map[key]
+            low_dim_features.append(data)
+
+        # structural separation - shared embedding is from camera_3, private embedding is from camera_1+p and camera_4+p
+        if 'camera_1' in obs_dict.keys():
+            private_rgb, sheaf_embedding = rgb_features['camera_1'], rgb_features['camera_3']
+        elif 'camera_4' in obs_dict.keys():
+            private_rgb, sheaf_embedding = rgb_features['camera_4'], rgb_features['camera_3']
+        else:
+            raise AssertionError("No camera_1 or camera_4 in obs_dict.keys()")
+
+        result = torch.cat([private_rgb] + low_dim_features, dim=-1)
+        return result, sheaf_embedding
+
+    @torch.no_grad()
+    def output_shape(self):
+        # A representative arm1-style obs_dict: camera_1 + camera_3 (forward()
+        # picks the private/shared split off camera_1's presence) plus
+        # whichever low_dim key(s) belong to arm1 -- mirrors what
+        # build_arm_sub_batch(batch, arm_id=1) actually hands forward() at
+        # runtime, whatever that key is named (arm1_proprio here,
+        # arm1_robot_eef_pos/arm1_eef_quat upstream), rather than a shape_meta
+        # snapshot fixed to one task's naming.
+        batch_size = 1
+        example_obs_dict = dict()
+        for key in ('camera_1', 'camera_3'):
+            example_obs_dict[key] = torch.zeros(
+                (batch_size,) + self.key_shape_map[key], dtype=self.dtype, device=self.device)
+        for key in self.low_dim_keys:
+            if key.startswith('arm1'):
+                example_obs_dict[key] = torch.zeros(
+                    (batch_size,) + self.key_shape_map[key], dtype=self.dtype, device=self.device)
+        example_output, example_sheaf = self.forward(example_obs_dict)
+        output_shape = example_output.shape[1:]
+        sheaf_shape = example_sheaf.shape[1:]
+        return output_shape, sheaf_shape
+
