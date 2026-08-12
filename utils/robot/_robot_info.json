@@ -22,5 +22,17 @@
     "franka": {
         "arm_dim": [7, 7],
         "ee_dim": [1, 1]
+    },
+    "unitree_g1x2_decentralized": {
+        "arm_dim": [14],
+        "ee_dim": [8],
+        "state_dim": 13,
+        "num_cameras": 1
+    },
+    "unitree_g1x2_centralized": {
+        "arm_dim": [14, 14],
+        "ee_dim": [8, 8],
+        "state_dim": 26,
+        "num_cameras": 2
     }
 }

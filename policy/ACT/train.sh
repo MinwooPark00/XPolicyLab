@@ -13,12 +13,14 @@ export CUDA_VISIBLE_DEVICES=${gpu_id}
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Get Action Dimension from env_cfg_type
+# Get action/state dimensions from env_cfg_type
 ROOT_DIR="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 UTILS_DIR="${ROOT_DIR}/XPolicyLab/utils"
 action_dim=$(bash "${UTILS_DIR}/get_action_dim.sh" "${ROOT_DIR}" "${env_cfg_type}"); echo -e "\033[33m[INFO] Action dim: ${action_dim}\033[0m"
+state_dim=$(bash "${UTILS_DIR}/get_state_dim.sh" "${ROOT_DIR}" "${env_cfg_type}"); echo -e "\033[33m[INFO] State dim: ${state_dim}\033[0m"
 
 export ACT_ACTION_DIM=${action_dim}
+export ACT_STATE_DIM=${state_dim}
 
 ckpt_setting="${bench_name}-${ckpt_name}-${env_cfg_type}-${action_type}"
 

@@ -37,23 +37,27 @@ def get_sinusoid_encoding_table(n_position, d_hid):
 class DETRVAE(nn.Module):
     """ This is the DETR module that performs object detection """
 
-    def __init__(self, backbones, transformer, encoder, state_dim, num_queries, camera_names):
+    def __init__(self, backbones, transformer, encoder, state_dim, num_queries, camera_names, action_dim=None):
         """ Initializes the model.
         Parameters:
             backbones: torch module of the backbone to be used. See backbone.py
             transformer: torch module of the transformer architecture. See transformer.py
-            state_dim: robot state dimension of the environment
+            state_dim: robot proprioception (qpos) dimension
+            action_dim: robot action dimension. Defaults to state_dim for robots where the two
+                        happen to coincide (kept for backward compatibility with existing configs).
             num_queries: number of object queries, ie detection slot. This is the maximal number of objects
                          DETR can detect in a single image. For COCO, we recommend 100 queries.
             aux_loss: True if auxiliary decoding losses (loss at each decoder layer) are to be used.
         """
         super().__init__()
+        if action_dim is None:
+            action_dim = state_dim
         self.num_queries = num_queries
         self.camera_names = camera_names
         self.transformer = transformer
         self.encoder = encoder
         hidden_dim = transformer.d_model
-        self.action_head = nn.Linear(hidden_dim, state_dim)
+        self.action_head = nn.Linear(hidden_dim, action_dim)
         self.is_pad_head = nn.Linear(hidden_dim, 1)
         self.query_embed = nn.Embedding(num_queries, hidden_dim)
         if backbones is not None:
@@ -69,7 +73,7 @@ class DETRVAE(nn.Module):
         # encoder extra parameters
         self.latent_dim = 32  # final size of latent z # TODO tune
         self.cls_embed = nn.Embedding(1, hidden_dim)  # extra cls token embedding
-        self.encoder_action_proj = nn.Linear(state_dim, hidden_dim)  # project action to embedding
+        self.encoder_action_proj = nn.Linear(action_dim, hidden_dim)  # project action to embedding
         self.encoder_joint_proj = nn.Linear(state_dim, hidden_dim)  # project qpos to embedding
         self.latent_proj = nn.Linear(hidden_dim, self.latent_dim * 2)  # project hidden state to latent std, var
         self.register_buffer('pos_table', get_sinusoid_encoding_table(1 + 1 + num_queries,
@@ -148,19 +152,23 @@ class DETRVAE(nn.Module):
 
 class CNNMLP(nn.Module):
 
-    def __init__(self, backbones, state_dim, camera_names):
+    def __init__(self, backbones, state_dim, camera_names, action_dim=None):
         """ Initializes the model.
         Parameters:
             backbones: torch module of the backbone to be used. See backbone.py
             transformer: torch module of the transformer architecture. See transformer.py
-            state_dim: robot state dimension of the environment
+            state_dim: robot proprioception (qpos) dimension, concatenated onto the flattened image features
+            action_dim: robot action dimension (the mlp's output width). Defaults to state_dim for robots
+                        where the two happen to coincide.
             num_queries: number of object queries, ie detection slot. This is the maximal number of objects
                          DETR can detect in a single image. For COCO, we recommend 100 queries.
             aux_loss: True if auxiliary decoding losses (loss at each decoder layer) are to be used.
         """
         super().__init__()
+        if action_dim is None:
+            action_dim = state_dim
         self.camera_names = camera_names
-        self.action_head = nn.Linear(1000, state_dim)  # TODO add more
+        self.action_head = nn.Linear(1000, action_dim)  # TODO add more
         if backbones is not None:
             self.backbones = nn.ModuleList(backbones)
             backbone_down_projs = []
@@ -170,8 +178,8 @@ class CNNMLP(nn.Module):
                 backbone_down_projs.append(down_proj)
             self.backbone_down_projs = nn.ModuleList(backbone_down_projs)
 
-            mlp_in_dim = 768 * len(backbones) + int(os.environ.get("ACT_ACTION_DIM"))
-            self.mlp = mlp(input_dim=mlp_in_dim, hidden_dim=1024, output_dim=state_dim, hidden_depth=2)
+            mlp_in_dim = 768 * len(backbones) + state_dim
+            self.mlp = mlp(input_dim=mlp_in_dim, hidden_dim=1024, output_dim=action_dim, hidden_depth=2)
         else:
             raise NotImplementedError
 
@@ -230,7 +238,11 @@ def build_encoder(args):
 
 
 def build(args):
-    state_dim = int(os.environ.get("ACT_ACTION_DIM"))
+    # ACT_STATE_DIM falls back to ACT_ACTION_DIM when unset, for robots (the
+    # original single-arm/bimanual-arm configs) where qpos_dim == action_dim
+    # and only one env var was ever exported.
+    action_dim = int(os.environ.get("ACT_ACTION_DIM"))
+    state_dim = int(os.environ.get("ACT_STATE_DIM", action_dim))
 
     # From state
     # backbone = None # from state for now, no need for conv nets
@@ -248,6 +260,7 @@ def build(args):
         transformer,
         encoder,
         state_dim=state_dim,
+        action_dim=action_dim,
         num_queries=args.chunk_size,
         camera_names=args.camera_names,
     )
@@ -258,7 +271,8 @@ def build(args):
 
 
 def build_cnnmlp(args):
-    state_dim = int(os.environ.get("ACT_ACTION_DIM"))
+    action_dim = int(os.environ.get("ACT_ACTION_DIM"))
+    state_dim = int(os.environ.get("ACT_STATE_DIM", action_dim))
 
     # From state
     # backbone = None # from state for now, no need for conv nets
@@ -271,6 +285,7 @@ def build_cnnmlp(args):
     model = CNNMLP(
         backbones,
         state_dim=state_dim,
+        action_dim=action_dim,
         camera_names=args.camera_names,
     )
 

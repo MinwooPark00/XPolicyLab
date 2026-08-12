@@ -46,7 +46,7 @@ def main(args):
     camera_names = task_config["camera_names"]
 
     # fixed parameters
-    state_dim = int(os.environ.get("ACT_ACTION_DIM"))
+    state_dim = int(os.environ.get("ACT_STATE_DIM", os.environ.get("ACT_ACTION_DIM")))
     lr_backbone = 1e-5
     backbone = "resnet18"
     if policy_class == "ACT":

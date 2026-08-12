@@ -15,10 +15,25 @@ run_dir="data/outputs/${exp_name}_seed${seed}"
 
 echo -e "\033[33mgpu id (to use): ${gpu_id}\033[0m"
 
-# Get Action Dimension from env_cfg_type
+# Get action/state dimensions and camera count from env_cfg_type
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 UTILS_DIR="${ROOT_DIR}/XPolicyLab/utils"
 action_dim=$(bash "${UTILS_DIR}/get_action_dim.sh" "${ROOT_DIR}" "${env_cfg_type}"); echo -e "\033[33m[INFO] Action dim: ${action_dim}\033[0m"
+state_dim=$(bash "${UTILS_DIR}/get_state_dim.sh" "${ROOT_DIR}" "${env_cfg_type}"); echo -e "\033[33m[INFO] State dim: ${state_dim}\033[0m"
+num_cameras=$(bash "${UTILS_DIR}/get_num_cameras.sh" "${ROOT_DIR}" "${env_cfg_type}"); echo -e "\033[33m[INFO] Num cameras: ${num_cameras}\033[0m"
+
+# task/default_task.yaml only declares head_cam by default (the other camera
+# keys are commented out there since most robots only use one); insert
+# left_cam/right_cam here instead of uncommenting them in the shared yaml, so
+# robots that don't set "num_cameras" in _robot_info.json are unaffected.
+# Shape must match default_task.yaml's image_shape anchor ([3, 240, 320]).
+EXTRA_CAMERA_ARGS=()
+if [ "${num_cameras}" -ge 2 ]; then
+    EXTRA_CAMERA_ARGS+=("task.shape_meta.obs.left_cam.shape=[3,240,320]" "task.shape_meta.obs.left_cam.type=rgb")
+fi
+if [ "${num_cameras}" -ge 3 ]; then
+    EXTRA_CAMERA_ARGS+=("task.shape_meta.obs.right_cam.shape=[3,240,320]" "task.shape_meta.obs.right_cam.type=rgb")
+fi
 
 alg_name=robot_dp
 
@@ -46,7 +61,8 @@ python train.py --config-name="${alg_name}.yaml" \
                 bench_name="${bench_name}" \
                 task.name="${ckpt_name}" \
                 "task.shape_meta.action.shape=[${action_dim}]" \
-                "task.shape_meta.obs.agent_pos.shape=[${action_dim}]" \
+                "task.shape_meta.obs.agent_pos.shape=[${state_dim}]" \
+                "${EXTRA_CAMERA_ARGS[@]}" \
                 task.dataset.zarr_path="${zarr_path}" \
                 training.debug=$DEBUG \
                 training.seed=${seed} \
