@@ -23,6 +23,15 @@ echo -e "\033[34m[CLIENT] Activating Conda environment: ${eval_env_conda_env}\03
 echo -e "\033[34m[CLIENT] Connecting to server ${policy_server_ip}:${policy_server_port}...\033[0m"
 echo -e "\033[34m[CLIENT] Watch for green [CONNECTED]; yellow [RECONNECT] means the client is retrying.\033[0m"
 
+headless_args=()
+if [[ -n "${EVAL_HEADLESS:-}" ]]; then
+    if [[ "${EVAL_HEADLESS}" == "false" || "${EVAL_HEADLESS}" == "False" || "${EVAL_HEADLESS}" == "0" ]]; then
+        headless_args=(--headless false --visualizer kit)
+    else
+        headless_args=(--headless true)
+    fi
+fi
+
 bash "${root_dir}/scripts/eval_policy.sh" \
     --bench_name "${bench_name}" \
     --task_name "${task_name}" \
@@ -35,4 +44,5 @@ bash "${root_dir}/scripts/eval_policy.sh" \
     --root_dir "${root_dir}" \
     --device_id "${env_gpu_id}" \
     --additional_info "${additional_info}" \
-    --seed "${seed}"
+    --seed "${seed}" \
+    "${headless_args[@]}"
