@@ -38,6 +38,7 @@ def main() -> None:
         "e3nn",
         "lpips",
         "cv2",
+        "wandb",
         "XPolicyLab.policy.GauDP.model",
     )
     for name in modules:

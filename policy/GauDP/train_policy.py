@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import math
+import os
 import random
 import sys
 from pathlib import Path
@@ -53,6 +54,17 @@ def main() -> None:
     parser.add_argument("--obs-steps", type=int, default=3)
     parser.add_argument("--action-steps", type=int, default=6)
     parser.add_argument("--inference-steps", type=int, default=100)
+    parser.add_argument(
+        "--wandb-mode",
+        choices=("online", "offline", "disabled"),
+        default=os.environ.get("GAUDP_WANDB_MODE", "offline"),
+        help="W&B mode; JSONL is always written regardless of this setting",
+    )
+    parser.add_argument("--wandb-project", default=os.environ.get("WANDB_PROJECT", "MHBench-GauDP"))
+    parser.add_argument("--wandb-entity", default=os.environ.get("WANDB_ENTITY"))
+    parser.add_argument("--wandb-run-name", default=None)
+    parser.add_argument("--wandb-group", default=None)
+    parser.add_argument("--wandb-tags", default="", help="comma-separated W&B tags")
     parser.add_argument("--debug", action="store_true", help="run one train and validation batch")
     args = parser.parse_args()
 
@@ -64,6 +76,7 @@ def main() -> None:
     from torch.utils.data import DataLoader
     from XPolicyLab.policy.GauDP.gaudp.dataset import GauDPSequenceDataset
     from XPolicyLab.policy.GauDP.gaudp.gaussian import freeze_gaussian_encoder, load_gaussian_checkpoint
+    from XPolicyLab.policy.GauDP.gaudp.experiment_logger import ExperimentLogger, parse_wandb_tags
     from XPolicyLab.policy.GauDP.gaudp.policy import GauDPPolicy, policy_checkpoint_payload
 
     _seed_everything(args.seed)
@@ -95,40 +108,56 @@ def main() -> None:
 
     best = math.inf
     epochs = 1 if args.debug else args.epochs
-    for epoch in range(epochs):
-        policy.train()
-        train_total, train_count = 0.0, 0
-        for batch in train_loader:
-            optimizer.zero_grad(set_to_none=True)
-            loss = policy.compute_loss(_to_device(batch, device))
-            loss.backward()
-            if any(parameter.grad is not None for parameter in policy.gaussian_encoder.parameters()):
-                raise RuntimeError("frozen Gaussian encoder unexpectedly received gradients")
-            torch.nn.utils.clip_grad_norm_(trainable, 1.0)
-            optimizer.step()
-            train_total += float(loss.detach())
-            train_count += 1
-            if args.debug:
-                break
-        scheduler.step()
-
-        policy.eval()
-        val_total, val_count = 0.0, 0
-        with torch.no_grad():
-            for batch in val_loader:
-                val_total += float(policy.compute_loss(_to_device(batch, device)))
-                val_count += 1
+    global_step = 0
+    run_name = args.wandb_run_name or f"{args.output.parent.name}-policy"
+    with ExperimentLogger(
+        args.output,
+        config=vars(args),
+        wandb_mode=args.wandb_mode,
+        wandb_project=args.wandb_project,
+        wandb_run_name=run_name,
+        wandb_entity=args.wandb_entity,
+        wandb_group=args.wandb_group,
+        wandb_tags=parse_wandb_tags(args.wandb_tags),
+    ) as logger:
+        for epoch in range(epochs):
+            policy.train()
+            train_total, train_count = 0.0, 0
+            for batch in train_loader:
+                optimizer.zero_grad(set_to_none=True)
+                loss = policy.compute_loss(_to_device(batch, device))
+                loss.backward()
+                if any(parameter.grad is not None for parameter in policy.gaussian_encoder.parameters()):
+                    raise RuntimeError("frozen Gaussian encoder unexpectedly received gradients")
+                torch.nn.utils.clip_grad_norm_(trainable, 1.0)
+                optimizer.step()
+                train_total += float(loss.detach())
+                train_count += 1
+                global_step += 1
                 if args.debug:
                     break
-        metrics = {
-            "train_loss": train_total / max(1, train_count),
-            "val_loss": val_total / max(1, val_count),
-        }
-        _save(args.output / "last.ckpt", policy, optimizer, scheduler, epoch, metrics, args.gaussian)
-        if metrics["val_loss"] < best:
-            best = metrics["val_loss"]
-            _save(args.output / "best.ckpt", policy, optimizer, scheduler, epoch, metrics, args.gaussian)
-        print(f"[GauDP][policy] epoch={epoch} {metrics}")
+            scheduler.step()
+
+            policy.eval()
+            val_total, val_count = 0.0, 0
+            with torch.no_grad():
+                for batch in val_loader:
+                    val_total += float(policy.compute_loss(_to_device(batch, device)))
+                    val_count += 1
+                    if args.debug:
+                        break
+            metrics = {
+                "epoch": epoch,
+                "lr": scheduler.get_last_lr()[0],
+                "train/loss": train_total / max(1, train_count),
+                "val/loss": val_total / max(1, val_count),
+            }
+            _save(args.output / "last.ckpt", policy, optimizer, scheduler, epoch, metrics, args.gaussian)
+            if metrics["val/loss"] < best:
+                best = metrics["val/loss"]
+                _save(args.output / "best.ckpt", policy, optimizer, scheduler, epoch, metrics, args.gaussian)
+            logger.log(metrics, step=global_step)
+            print(f"[GauDP][policy] step={global_step} {metrics}")
 
 
 if __name__ == "__main__":

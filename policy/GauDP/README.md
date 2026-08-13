@@ -50,7 +50,8 @@ cd baselines/XPolicyLab/policy/GauDP
 bash install.sh
 ```
 
-`install.sh` installs pinned Python dependencies from `requirements.txt`,
+`install.sh` installs pinned Python dependencies from `requirements.txt`
+(including W&B),
 XPolicyLab itself in editable mode, the vendored cuRoPE extension, and
 NoPoSplat's CUDA Gaussian rasterizer. It verifies the resulting imports at the
 end and never installs a local Policy-Lightning project. A system CUDA toolkit
@@ -102,25 +103,57 @@ boundaries. The optional fifth argument limits demonstration count.
 
 ## 2. Fine-tune Gaussian reconstruction
 
+The six positional arguments are `<bench> <ckpt> <env_cfg> <action_type>
+<seed> <gpu>`. Any remaining arguments are forwarded to
+`train_gaussian.py`.
+
 ```bash
+# Use GPU 0, seed 0, and the default Gaussian hyperparameters.
 bash train_gaussian.sh cocarry experiment cocarry ee 0 0
 ```
 
 This optimizes the locally vendored NoPoSplat encoder using RGB MSE plus masked
 valid-depth L1. Depth, intrinsics, and camera poses are consumed only in this
-stage. Outputs are:
+stage. The defaults are 30 epochs, batch size 1, learning rate `1e-5`, depth
+weight `0.1`, and four data workers. A complete override example is:
+
+```bash
+bash train_gaussian.sh cocarry experiment cocarry ee 0 0 \
+  --epochs 50 \
+  --batch-size 1 \
+  --num-workers 8 \
+  --lr 1e-5 \
+  --depth-weight 0.1 \
+  --wandb-run-name cocarry-gaussian-seed0 \
+  --wandb-tags gaussian,cocarry,seed-0
+```
+
+Run a single train and validation batch before a full experiment to validate
+the data, checkpoint, CUDA rasterizer, and logger setup:
+
+```bash
+bash train_gaussian.sh cocarry experiment cocarry ee 0 0 --debug
+```
+
+Outputs are:
 
 ```text
 checkpoints/cocarry-experiment-cocarry-ee-0/gaussian/best.ckpt
 checkpoints/cocarry-experiment-cocarry-ee-0/gaussian/last.ckpt
+checkpoints/cocarry-experiment-cocarry-ee-0/gaussian/metrics.jsonl
+checkpoints/cocarry-experiment-cocarry-ee-0/gaussian/wandb/
 ```
 
-Append Python options after the GPU, for example `--epochs 2 --batch-size 1`
-or `--debug` for one train/validation batch.
+`best.ckpt` minimizes `val/loss`. Each JSONL/W&B record contains `lr`,
+`train/loss`, `train/rgb_loss`, `train/depth_loss`, `train/psnr`, and the
+corresponding `val/*` metrics. PSNR should increase while the other validation
+metrics decrease; compare them against the unfine-tuned checkpoint on a fixed
+validation split rather than relying on training loss alone.
 
 ## 3. Train the policy
 
 ```bash
+# Uses the matching Gaussian best.ckpt, GPU 0, and seed 0.
 bash train.sh cocarry experiment cocarry ee 0 0
 ```
 
@@ -129,8 +162,98 @@ kept in `eval()` with every parameter `requires_grad=False`; only the
 Gaussian-image fusion CNN, shared ResNet observation encoder, and centralized
 DDPM are trained. Defaults are horizon 8, 3 observation steps, 6 returned
 execution steps, and 100 diffusion steps. Outputs are under the sibling
-`policy/{best,last}.ckpt`. Override the Gaussian artifact with
-`GAUDP_GAUSSIAN_CKPT=/path/file.ckpt`.
+`policy/{best,last}.ckpt`. The policy defaults are 300 epochs, batch size 8,
+learning rate `1e-4`, horizon 8, three observation steps, six action steps,
+and 100 DDPM inference steps. For example:
+
+```bash
+bash train.sh cocarry experiment cocarry ee 0 0 \
+  --epochs 300 \
+  --batch-size 8 \
+  --num-workers 8 \
+  --lr 1e-4 \
+  --horizon 8 \
+  --obs-steps 3 \
+  --action-steps 6 \
+  --inference-steps 100 \
+  --wandb-run-name cocarry-policy-seed0 \
+  --wandb-tags policy,cocarry,seed-0
+```
+
+Use `--debug` for a one-batch smoke test. Override the Gaussian artifact when
+running a policy ablation or a checkpoint from another run:
+
+```bash
+GAUDP_GAUSSIAN_CKPT=/absolute/path/to/gaussian/best.ckpt \
+bash train.sh cocarry experiment cocarry ee 0 0 --debug
+```
+
+The policy stage writes `policy/{best.ckpt,last.ckpt,metrics.jsonl}` and a
+`policy/wandb/` directory. Its metrics are `lr`, `train/loss`, and `val/loss`;
+`best.ckpt` minimizes `val/loss`.
+
+## Logging: JSONL and Weights & Biases
+
+Both training stages always append one JSON object per epoch to
+`<stage-output>/metrics.jsonl`. W&B is enabled in `offline` mode by default,
+matching the XPolicyLab LatentToM launcher: it requires no login or network
+connection and stores a locally syncable run under `<stage-output>/wandb/`.
+
+Inspect the latest local metric without W&B:
+
+```bash
+tail -n 1 checkpoints/cocarry-experiment-cocarry-ee-0/gaussian/metrics.jsonl \
+  | python -m json.tool
+tail -n 1 checkpoints/cocarry-experiment-cocarry-ee-0/policy/metrics.jsonl \
+  | python -m json.tool
+```
+
+To upload metrics directly, log in once and select online mode. All logger
+arguments after the GPU are forwarded unchanged:
+
+```bash
+wandb login
+
+bash train_gaussian.sh cocarry experiment cocarry ee 0 0 \
+  --wandb-mode online \
+  --wandb-project MHBench-GauDP \
+  --wandb-entity YOUR_ENTITY \
+  --wandb-group cocarry-seed0
+
+bash train.sh cocarry experiment cocarry ee 0 0 \
+  --wandb-mode online \
+  --wandb-project MHBench-GauDP \
+  --wandb-entity YOUR_ENTITY \
+  --wandb-group cocarry-seed0
+```
+
+An offline run can be uploaded later with the path printed by W&B, for example:
+
+```bash
+wandb sync checkpoints/cocarry-experiment-cocarry-ee-0/gaussian/wandb/offline-run-*
+wandb sync checkpoints/cocarry-experiment-cocarry-ee-0/policy/wandb/offline-run-*
+```
+
+For JSONL-only logging, disable W&B explicitly:
+
+```bash
+bash train_gaussian.sh cocarry experiment cocarry ee 0 0 --wandb-mode disabled
+bash train.sh cocarry experiment cocarry ee 0 0 --wandb-mode disabled
+```
+
+The following environment variables provide convenient defaults for both
+stages; explicit command-line arguments take precedence:
+
+```bash
+export GAUDP_WANDB_MODE=offline       # online, offline, or disabled
+export WANDB_PROJECT=MHBench-GauDP
+export WANDB_ENTITY=YOUR_ENTITY       # optional in offline mode
+```
+
+Available W&B arguments are `--wandb-mode`, `--wandb-project`,
+`--wandb-entity`, `--wandb-run-name`, `--wandb-group`, and the comma-separated
+`--wandb-tags`. Reusing an output directory appends to its `metrics.jsonl`;
+use a different checkpoint name or seed for a clean experiment history.
 
 ## Evaluation
 

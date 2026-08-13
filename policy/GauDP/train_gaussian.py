@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import math
+import os
 import random
 import sys
 from pathlib import Path
@@ -114,6 +115,17 @@ def main() -> None:
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--lr", type=float, default=1e-5)
     parser.add_argument("--depth-weight", type=float, default=0.1)
+    parser.add_argument(
+        "--wandb-mode",
+        choices=("online", "offline", "disabled"),
+        default=os.environ.get("GAUDP_WANDB_MODE", "offline"),
+        help="W&B mode; JSONL is always written regardless of this setting",
+    )
+    parser.add_argument("--wandb-project", default=os.environ.get("WANDB_PROJECT", "MHBench-GauDP"))
+    parser.add_argument("--wandb-entity", default=os.environ.get("WANDB_ENTITY"))
+    parser.add_argument("--wandb-run-name", default=None)
+    parser.add_argument("--wandb-group", default=None)
+    parser.add_argument("--wandb-tags", default="", help="comma-separated W&B tags")
     parser.add_argument("--debug", action="store_true", help="run one train and validation batch")
     args = parser.parse_args()
 
@@ -130,6 +142,7 @@ def main() -> None:
         gaussian_checkpoint_metadata,
         load_gaussian_checkpoint,
     )
+    from XPolicyLab.policy.GauDP.gaudp.experiment_logger import ExperimentLogger, parse_wandb_tags
 
     _seed_everything(args.seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -149,46 +162,69 @@ def main() -> None:
     best = math.inf
     global_step = 0
     epochs = 1 if args.debug else args.epochs
-    for epoch in range(epochs):
-        encoder.train()
-        train_total = 0.0
-        for batch_index, batch in enumerate(train_loader):
-            batch = _to_device(batch, device)
-            optimizer.zero_grad(set_to_none=True)
-            loss, _ = reconstruction_loss(
-                encoder, batch, global_step=global_step, depth_weight=args.depth_weight
-            )
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(encoder.parameters(), 1.0)
-            optimizer.step()
-            train_total += float(loss.detach())
-            global_step += 1
-            if args.debug:
-                break
-
-        encoder.eval()
-        val_total, val_count = 0.0, 0
-        with torch.no_grad():
-            for batch_index, batch in enumerate(val_loader):
-                loss, _ = reconstruction_loss(
-                    encoder,
-                    _to_device(batch, device),
-                    global_step=global_step,
-                    depth_weight=args.depth_weight,
+    run_name = args.wandb_run_name or f"{args.output.parent.name}-gaussian"
+    with ExperimentLogger(
+        args.output,
+        config=vars(args),
+        wandb_mode=args.wandb_mode,
+        wandb_project=args.wandb_project,
+        wandb_run_name=run_name,
+        wandb_entity=args.wandb_entity,
+        wandb_group=args.wandb_group,
+        wandb_tags=parse_wandb_tags(args.wandb_tags),
+    ) as logger:
+        for epoch in range(epochs):
+            encoder.train()
+            train_sums = {"loss": 0.0, "rgb_loss": 0.0, "depth_loss": 0.0, "psnr": 0.0}
+            train_count = 0
+            for batch_index, batch in enumerate(train_loader):
+                batch = _to_device(batch, device)
+                optimizer.zero_grad(set_to_none=True)
+                loss, batch_metrics = reconstruction_loss(
+                    encoder, batch, global_step=global_step, depth_weight=args.depth_weight
                 )
-                val_total += float(loss)
-                val_count += 1
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(encoder.parameters(), 1.0)
+                optimizer.step()
+                train_sums["loss"] += float(loss.detach())
+                train_sums["rgb_loss"] += batch_metrics["rgb"]
+                train_sums["depth_loss"] += batch_metrics["depth"]
+                train_sums["psnr"] += batch_metrics["psnr"]
+                train_count += 1
+                global_step += 1
                 if args.debug:
                     break
-        metrics = {
-            "train_loss": train_total / max(1, min(len(train_loader), 1) if args.debug else len(train_loader)),
-            "val_loss": val_total / max(1, val_count),
-        }
-        _save(args.output / "last.ckpt", encoder, optimizer, epoch, global_step, num_views, metrics)
-        if metrics["val_loss"] < best:
-            best = metrics["val_loss"]
-            _save(args.output / "best.ckpt", encoder, optimizer, epoch, global_step, num_views, metrics)
-        print(f"[GauDP][gaussian] epoch={epoch} {metrics}")
+
+            encoder.eval()
+            val_sums = {"loss": 0.0, "rgb_loss": 0.0, "depth_loss": 0.0, "psnr": 0.0}
+            val_count = 0
+            with torch.no_grad():
+                for batch_index, batch in enumerate(val_loader):
+                    loss, batch_metrics = reconstruction_loss(
+                        encoder,
+                        _to_device(batch, device),
+                        global_step=global_step,
+                        depth_weight=args.depth_weight,
+                    )
+                    val_sums["loss"] += float(loss)
+                    val_sums["rgb_loss"] += batch_metrics["rgb"]
+                    val_sums["depth_loss"] += batch_metrics["depth"]
+                    val_sums["psnr"] += batch_metrics["psnr"]
+                    val_count += 1
+                    if args.debug:
+                        break
+            metrics = {
+                "epoch": epoch,
+                "lr": optimizer.param_groups[0]["lr"],
+                **{f"train/{key}": value / max(1, train_count) for key, value in train_sums.items()},
+                **{f"val/{key}": value / max(1, val_count) for key, value in val_sums.items()},
+            }
+            _save(args.output / "last.ckpt", encoder, optimizer, epoch, global_step, num_views, metrics)
+            if metrics["val/loss"] < best:
+                best = metrics["val/loss"]
+                _save(args.output / "best.ckpt", encoder, optimizer, epoch, global_step, num_views, metrics)
+            logger.log(metrics, step=global_step)
+            print(f"[GauDP][gaussian] step={global_step} {metrics}")
 
 
 if __name__ == "__main__":

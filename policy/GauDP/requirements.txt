@@ -17,3 +17,4 @@ pillow==10.4.0
 scikit-image==0.24.0
 opencv-python-headless==4.10.0.84
 tqdm==4.67.1
+wandb==0.18.7
