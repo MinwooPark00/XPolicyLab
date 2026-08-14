@@ -24,29 +24,27 @@ bash install.sh
 ## Data Processing
 
 ```bash
-bash process_data.sh <bench_name> <ckpt_name> <env_cfg_type> <action_type> [expert_data_num] [rotation_rep]
+bash process_data.sh <bench_name> <ckpt_name> <env_cfg_type> <action_type> [expert_data_num]
 ```
 
-`convert_to_replay_buffer.py` reads MHBench's raw per-episode trajectory HDF5 directly (a single
-`.hdf5`, a shard directory, or a dataset root) and writes upstream LatentToM's own on-disk
-format — `data/<bench_name>-<ckpt_name>-<env_cfg_type>-<action_type>-<rotation_rep>/
-{replay_buffer.zarr, videos/<episode>/<camera>.mp4}`. `rotation_rep` defaults to `quat` (22D/arm
-action); `rot6d` (26D/arm) is the other option.
+`convert_to_replay_buffer.py` reads MHBench's shared LeRobot v2.1 export (`scripts/
+export_lerobot.py`'s output in the main repo, `datasets/<task>/lerobot/`) — the same export ACT,
+Diffusion Policy and GR00T all train on — and writes upstream LatentToM's own on-disk format —
+`data/<bench_name>-<ckpt_name>-<env_cfg_type>-<action_type>/{replay_buffer.zarr,
+videos/<episode>/<camera>.mp4}`.
 
-The source defaults to `datasets/<env_cfg_type>` — the task directory of the same name, which is
-both where `record_demos.py` writes and where `baselines/README.md`'s download step lands. Set
-`MHBENCH_DATASET_PATH` for anything else (a single shard, or a dataset outside the repo).
+The source defaults to `datasets/<env_cfg_type>` — the exported copy of the task directory
+of the same name. Set `MHBENCH_DATASET_PATH` for anything else (an export kept outside the repo).
 
 ## Training
 
 ```bash
-bash train.sh <bench_name> <ckpt_name> <env_cfg_type> <action_type> <seed> <gpu_id> [rotation_rep]
+bash train.sh <bench_name> <ckpt_name> <env_cfg_type> <action_type> <seed> <gpu_id>
 ```
 
 Writes `checkpoints/<bench_name>-<ckpt_name>-<env_cfg_type>-<action_type>-<seed>/checkpoints/
 {arm1,arm2}_latest.ckpt` — one file per arm, kept as LatentToM's own two-checkpoint layout rather
-than flattened to one file the way single-policy adapters like DP do. `rotation_rep` must match
-what `process_data.sh` converted the data with.
+than flattened to one file the way single-policy adapters like DP do.
 
 ## Evaluation
 
@@ -71,39 +69,35 @@ conda activate <policy_env>
 cd baselines/XPolicyLab/policy/LatentToM
 bash install.sh
 
-# 1) Convert data. Reads datasets/cocarry -- env_cfg_type names the task directory too.
-#    Set MHBENCH_DATASET_PATH to read from anywhere else.
-bash process_data.sh mhbench verify cocarry ee "" quat
-# -> data/mhbench-verify-cocarry-ee-quat/{replay_buffer.zarr,videos/}
+# 1) Convert data. Reads datasets/cocarry/lerobot -- env_cfg_type names the task directory too.
+#    Set MHBENCH_DATASET_PATH to read from anywhere else. Run scripts/export_lerobot.py
+#    in the main repo first if that directory doesn't exist yet.
+bash process_data.sh mhbench verify cocarry joint
+# -> data/mhbench-verify-cocarry-joint/{replay_buffer.zarr,videos/}
 
 # 2) Train. training.debug=true is a fast plumbing check.
-bash train.sh mhbench verify cocarry ee 0 0 quat training.debug=true
-# -> checkpoints/mhbench-verify-cocarry-ee-0/checkpoints/{arm1,arm2}_latest.ckpt
+bash train.sh mhbench verify cocarry joint 0 0 training.debug=true
+# -> checkpoints/mhbench-verify-cocarry-joint-0/checkpoints/{arm1,arm2}_latest.ckpt
 
 # 3) Evaluate, no simulator (fastest wiring check)
 export EVAL_ENV_TYPE=debug
-bash eval.sh mhbench verify verify cocarry ee 0 0 0 <policy_env> <policy_env>
+bash eval.sh mhbench verify verify cocarry joint 0 0 0 <policy_env> <policy_env>
 
-# 4) Evaluate against the real Isaac Sim env (heavier)
+# 4) Evaluate against the real Isaac Sim env -- not yet working, see "Model contract details" below
 export EVAL_ENV_TYPE=sim   # or: unset EVAL_ENV_TYPE
-bash eval.sh mhbench verify verify cocarry ee 0 0 0 <policy_env> <policy_env>
+bash eval.sh mhbench verify verify cocarry joint 0 0 0 <policy_env> <policy_env>
 ```
 
 ## Model contract details
 
-- `action_type`: only `ee` is implemented — `model.py` raises `NotImplementedError` on `joint`.
-- **Proprio** (`arm{1,2}_proprio`, 21D each): pelvis pose(7) + left eef pose(7) + right eef
-  pose(7).
-- **Action**: 22D quat-native (`rotation_rep: quat`, default) or 26D rot6d-native
-  (`rotation_rep: rot6d`) per robot — `[left pos(3)+rot(4|6), right pos(3)+rot(4|6), hands(4),
-  base_vel(3), height(1)]`. `deploy.yml`'s `rotation_rep` must match what the loaded checkpoint
-  was trained with; `Model.__init__` checks this against the checkpoint's own `action_dim` and
-  raises on mismatch rather than silently misinterpreting the vector.
-- **XPolicyLab's dual-arm `ee` action dict doesn't fit MHBench's shape.** It has one
-  `left_ee_pose`/`right_ee_pose` pair for a *single* two-armed robot; MHBench is *two* robots, each
-  with two wrists, plus base velocity and height. `_pack_dual_arm_action` fills the standard keys
-  from robot_a's own two wrists only (documented stand-in) and puts everything — both robots'
-  wrists, hands, base_vel, height — under a non-standard `mhbench_raw_action` key so nothing is
-  silently dropped.
+- **Proprio** (`arm{1,2}_proprio`, 43D each): joint angles, 7 URDF groups (legs, waist, arms,
+  hands) — `mhbench_keys.JOINT_GROUPS`'s exact key order, read via each dataset's own
+  `meta/modality.json` (never hardcoded offsets).
+- **Action** (`arm{1,2}_action`, 35D each): 28 joint targets (arm+hand groups) + base_height(1) +
+  navigate_command(3) — `mhbench_keys.action_keys(robot)`'s exact key order. Joint-space
+  throughout; no rotation representation to pick.
 - Camera mapping (`_encode_arm_obs` in `model.py`): `cam_left_wrist`→`camera_1` (arm1/robot_a
   private), `cam_head`→`camera_3` (shared), `cam_right_wrist`→`camera_4` (arm2/robot_b private).
+- `EVAL_ENV_TYPE=sim` doesn't work yet: `model.py` and `scripts/mhbench_xpolicylab_env.py` don't
+  decode a 35D joint-space action, and the Isaac Sim env itself only exposes a wrist-pose action
+  term. `EVAL_ENV_TYPE=debug` works (wiring check against fake observations, no decoding involved).
