@@ -1,10 +1,879 @@
-[33m[INFO] Action dim: 22[0m
-[33m[INFO] State dim: 13[0m
+[33m[INFO] Action dim: 35[0m
+[33m[INFO] State dim: 43[0m
+wandb: [wandb.login()] Loaded credentials for https://api.wandb.ai from /home/soochul/.netrc.
+wandb: Currently logged in as: usam205 (usam205_) to https://api.wandb.ai. Use `wandb login --relogin` to force relogin
+wandb: setting up run k5nybagj
+wandb: Tracking run with wandb version 0.28.2
+wandb: Run data is saved locally in /scratch2/soochul/MHBench/baselines/XPolicyLab/policy/ACT/wandb/run-20260815_015444-k5nybagj
+wandb: Run `wandb offline` to turn off syncing.
+wandb: Syncing run mhbench-cocarry_robot_a-unitree_g1x2_decentralized-joint-seed0
+wandb: ⭐️ View project at https://wandb.ai/usam205_/mhbench-act
+wandb: 🚀 View run at https://wandb.ai/usam205_/mhbench-act/runs/k5nybagj
 /home/soochul/anaconda3/envs/mhbench_act/lib/python3.10/site-packages/torchvision/models/_utils.py:208: UserWarning: The parameter 'pretrained' is deprecated since 0.13 and may be removed in the future, please use 'weights' instead.
   warnings.warn(
 /home/soochul/anaconda3/envs/mhbench_act/lib/python3.10/site-packages/torchvision/models/_utils.py:223: UserWarning: Arguments other than a weight enum or `None` for 'weights' are deprecated since 0.13 and may be removed in the future. The current behavior is equivalent to passing `weights=ResNet18_Weights.IMAGENET1K_V1`. You can also use `weights=ResNet18_Weights.DEFAULT` to get the most up-to-date weights.
   warnings.warn(msg)
 
-Data from: /scratch2/soochul/MHBench/datasets/cocarry_act_robot_a
+Data from: /scratch2/soochul/MHBench/baselines/data/cocarry_act_robot_a
 
-  0%|          | 0/20 [00:00<?, ?it/s]  5%|▌         | 1/20 [00:00<00:18,  1.04it/s] 10%|█         | 2/20 [00:01<00:09,  1.81it/s] 15%|█▌        | 3/20 [00:01<00:07,  2.41it/s] 20%|██        | 4/20 [00:01<00:05,  2.86it/s] 25%|██▌       | 5/20 [00:02<00:04,  3.11it/s] 30%|███       | 6/20 [00:02<00:04,  3.35it/s] 35%|███▌      | 7/20 [00:02<00:03,  3.53it/s] 40%|████      | 8/20 [00:02<00:03,  3.64it/s] 45%|████▌     | 9/20 [00:03<00:02,  3.74it/s] 50%|█████     | 10/20 [00:04<00:04,  2.04it/s] 55%|█████▌    | 11/20 [00:04<00:03,  2.37it/s] 60%|██████    | 12/20 [00:04<00:02,  2.67it/s] 65%|██████▌   | 13/20 [00:04<00:02,  2.93it/s] 70%|███████   | 14/20 [00:05<00:01,  3.09it/s] 75%|███████▌  | 15/20 [00:05<00:01,  3.28it/s] 80%|████████  | 16/20 [00:05<00:01,  3.34it/s] 85%|████████▌ | 17/20 [00:05<00:00,  3.45it/s] 90%|█████████ | 18/20 [00:06<00:00,  3.54it/s] 95%|█████████▌| 19/20 [00:06<00:00,  3.60it/s]100%|██████████| 20/20 [00:07<00:00,  2.21it/s]100%|██████████| 20/20 [00:07<00:00,  2.74it/s]
+  0%|          | 0/2000 [00:00<?, ?it/s][epoch 0] val:   l1: 0.804 kl: 6.996 loss: 70.768 
+  0%|          | 1/2000 [00:04<2:20:08,  4.21s/it][epoch 0] train: l1: 0.687 kl: 5.570 loss: 56.388 
+[epoch 1] val:   l1: 0.522 kl: 3.230 loss: 32.823 
+  0%|          | 2/2000 [00:04<1:10:16,  2.11s/it][epoch 1] train: l1: 0.581 kl: 2.991 loss: 30.494 
+[epoch 2] val:   l1: 0.504 kl: 2.097 loss: 21.477 
+  0%|          | 3/2000 [00:05<47:57,  1.44s/it]  [epoch 2] train: l1: 0.569 kl: 2.123 loss: 21.798 
+[epoch 3] val:   l1: 0.531 kl: 1.595 loss: 16.485 
+  0%|          | 4/2000 [00:06<37:16,  1.12s/it][epoch 3] train: l1: 0.542 kl: 1.658 loss: 17.121 
+[epoch 4] val:   l1: 0.538 kl: 1.500 loss: 15.536 
+  0%|          | 5/2000 [00:06<32:38,  1.02it/s][epoch 4] train: l1: 0.514 kl: 1.295 loss: 13.464 
+[epoch 5] val:   l1: 0.547 kl: 1.352 loss: 14.065 
+  0%|          | 6/2000 [00:07<28:35,  1.16it/s][epoch 5] train: l1: 0.551 kl: 1.089 loss: 11.444 
+[epoch 6] val:   l1: 0.438 kl: 0.771 loss: 8.153 
+  0%|          | 7/2000 [00:08<26:02,  1.28it/s][epoch 6] train: l1: 0.514 kl: 0.873 loss: 9.248 
+[epoch 7] val:   l1: 0.453 kl: 0.607 loss: 6.523 
+  0%|          | 8/2000 [00:08<24:22,  1.36it/s][epoch 7] train: l1: 0.451 kl: 0.845 loss: 8.897 
+[epoch 8] val:   l1: 0.366 kl: 0.442 loss: 4.787 
+  0%|          | 9/2000 [00:09<23:10,  1.43it/s][epoch 8] train: l1: 0.476 kl: 0.685 loss: 7.321 
+[epoch 9] val:   l1: 0.432 kl: 0.373 loss: 4.157 
+  0%|          | 10/2000 [00:09<22:24,  1.48it/s][epoch 9] train: l1: 0.494 kl: 0.684 loss: 7.337 
+[epoch 10] val:   l1: 0.605 kl: 0.573 loss: 6.334 
+  1%|          | 11/2000 [00:10<22:19,  1.49it/s][epoch 10] train: l1: 0.502 kl: 0.641 loss: 6.909 
+[epoch 11] val:   l1: 0.565 kl: 0.579 loss: 6.352 
+  1%|          | 12/2000 [00:11<21:41,  1.53it/s][epoch 11] train: l1: 0.477 kl: 0.554 loss: 6.020 
+[epoch 12] val:   l1: 0.503 kl: 0.327 loss: 3.774 
+  1%|          | 13/2000 [00:11<21:22,  1.55it/s][epoch 12] train: l1: 0.484 kl: 0.575 loss: 6.239 
+[epoch 13] val:   l1: 0.445 kl: 0.294 loss: 3.385 
+  1%|          | 14/2000 [00:12<21:07,  1.57it/s][epoch 13] train: l1: 0.447 kl: 0.512 loss: 5.566 
+[epoch 14] val:   l1: 0.471 kl: 0.315 loss: 3.625 
+  1%|          | 15/2000 [00:13<20:54,  1.58it/s][epoch 14] train: l1: 0.453 kl: 0.494 loss: 5.393 
+[epoch 15] val:   l1: 0.460 kl: 0.399 loss: 4.452 
+  1%|          | 16/2000 [00:13<20:41,  1.60it/s][epoch 15] train: l1: 0.492 kl: 0.489 loss: 5.378 
+[epoch 16] val:   l1: 0.390 kl: 0.368 loss: 4.071 
+  1%|          | 17/2000 [00:14<20:27,  1.62it/s][epoch 16] train: l1: 0.416 kl: 0.434 loss: 4.752 
+[epoch 17] val:   l1: 0.366 kl: 0.282 loss: 3.191 
+  1%|          | 18/2000 [00:14<20:33,  1.61it/s][epoch 17] train: l1: 0.453 kl: 0.457 loss: 5.022 
+[epoch 18] val:   l1: 0.422 kl: 0.213 loss: 2.554 
+  1%|          | 19/2000 [00:15<20:35,  1.60it/s][epoch 18] train: l1: 0.418 kl: 0.443 loss: 4.851 
+[epoch 19] val:   l1: 0.532 kl: 0.215 loss: 2.678 
+  1%|          | 20/2000 [00:16<20:23,  1.62it/s][epoch 19] train: l1: 0.400 kl: 0.432 loss: 4.717 
+[epoch 20] val:   l1: 0.399 kl: 0.244 loss: 2.835 
+  1%|          | 21/2000 [00:16<20:12,  1.63it/s][epoch 20] train: l1: 0.420 kl: 0.385 loss: 4.267 
+[epoch 21] val:   l1: 0.454 kl: 0.716 loss: 7.613 
+  1%|          | 22/2000 [00:17<20:09,  1.64it/s][epoch 21] train: l1: 0.431 kl: 0.446 loss: 4.892 
+[epoch 22] val:   l1: 0.365 kl: 0.256 loss: 2.926 
+  1%|          | 23/2000 [00:18<20:07,  1.64it/s][epoch 22] train: l1: 0.413 kl: 0.378 loss: 4.189 
+[epoch 23] val:   l1: 0.413 kl: 0.185 loss: 2.264 
+  1%|          | 24/2000 [00:18<20:16,  1.62it/s][epoch 23] train: l1: 0.470 kl: 0.441 loss: 4.882 
+[epoch 24] val:   l1: 0.403 kl: 0.178 loss: 2.183 
+  1%|▏         | 25/2000 [00:19<20:20,  1.62it/s][epoch 24] train: l1: 0.372 kl: 0.376 loss: 4.128 
+[epoch 25] val:   l1: 0.492 kl: 0.210 loss: 2.588 
+  1%|▏         | 26/2000 [00:19<20:13,  1.63it/s][epoch 25] train: l1: 0.431 kl: 0.424 loss: 4.666 
+[epoch 26] val:   l1: 0.488 kl: 0.205 loss: 2.534 
+  1%|▏         | 27/2000 [00:20<20:09,  1.63it/s][epoch 26] train: l1: 0.409 kl: 0.372 loss: 4.127 
+[epoch 27] val:   l1: 0.445 kl: 0.160 loss: 2.047 
+  1%|▏         | 28/2000 [00:21<20:15,  1.62it/s][epoch 27] train: l1: 0.348 kl: 0.378 loss: 4.129 
+[epoch 28] val:   l1: 0.322 kl: 0.128 loss: 1.603 
+  1%|▏         | 29/2000 [00:21<20:18,  1.62it/s][epoch 28] train: l1: 0.421 kl: 0.383 loss: 4.254 
+[epoch 29] val:   l1: 0.345 kl: 0.117 loss: 1.518 
+  2%|▏         | 30/2000 [00:22<20:18,  1.62it/s][epoch 29] train: l1: 0.385 kl: 0.377 loss: 4.159 
+[epoch 30] val:   l1: 0.474 kl: 0.182 loss: 2.294 
+  2%|▏         | 31/2000 [00:22<20:11,  1.63it/s][epoch 30] train: l1: 0.371 kl: 0.356 loss: 3.932 
+[epoch 31] val:   l1: 0.325 kl: 0.125 loss: 1.577 
+  2%|▏         | 32/2000 [00:23<20:09,  1.63it/s][epoch 31] train: l1: 0.418 kl: 0.347 loss: 3.888 
+[epoch 32] val:   l1: 0.414 kl: 0.190 loss: 2.318 
+  2%|▏         | 33/2000 [00:24<20:03,  1.63it/s][epoch 32] train: l1: 0.398 kl: 0.364 loss: 4.034 
+[epoch 33] val:   l1: 0.353 kl: 0.104 loss: 1.390 
+  2%|▏         | 34/2000 [00:24<20:11,  1.62it/s][epoch 33] train: l1: 0.397 kl: 0.358 loss: 3.978 
+[epoch 34] val:   l1: 0.399 kl: 0.148 loss: 1.877 
+  2%|▏         | 35/2000 [00:25<20:06,  1.63it/s][epoch 34] train: l1: 0.374 kl: 0.345 loss: 3.825 
+[epoch 35] val:   l1: 0.313 kl: 0.094 loss: 1.250 
+  2%|▏         | 36/2000 [00:26<20:10,  1.62it/s][epoch 35] train: l1: 0.352 kl: 0.324 loss: 3.590 
+[epoch 36] val:   l1: 0.347 kl: 0.114 loss: 1.484 
+  2%|▏         | 37/2000 [00:26<20:03,  1.63it/s][epoch 36] train: l1: 0.401 kl: 0.346 loss: 3.862 
+[epoch 37] val:   l1: 0.305 kl: 0.126 loss: 1.563 
+  2%|▏         | 38/2000 [00:27<19:56,  1.64it/s][epoch 37] train: l1: 0.400 kl: 0.334 loss: 3.743 
+[epoch 38] val:   l1: 0.335 kl: 0.103 loss: 1.370 
+  2%|▏         | 39/2000 [00:27<19:57,  1.64it/s][epoch 38] train: l1: 0.341 kl: 0.326 loss: 3.602 
+[epoch 39] val:   l1: 0.361 kl: 0.080 loss: 1.161 
+  2%|▏         | 40/2000 [00:28<20:13,  1.61it/s][epoch 39] train: l1: 0.356 kl: 0.335 loss: 3.709 
+[epoch 40] val:   l1: 0.328 kl: 0.087 loss: 1.194 
+  2%|▏         | 41/2000 [00:29<20:07,  1.62it/s][epoch 40] train: l1: 0.392 kl: 0.332 loss: 3.715 
+[epoch 41] val:   l1: 0.384 kl: 0.087 loss: 1.254 
+  2%|▏         | 42/2000 [00:29<20:25,  1.60it/s][epoch 41] train: l1: 0.355 kl: 0.318 loss: 3.535 
+[epoch 42] val:   l1: 0.597 kl: 0.119 loss: 1.787 
+  2%|▏         | 43/2000 [00:30<20:14,  1.61it/s][epoch 42] train: l1: 0.329 kl: 0.316 loss: 3.488 
+[epoch 43] val:   l1: 0.322 kl: 0.072 loss: 1.043 
+  2%|▏         | 44/2000 [00:30<20:17,  1.61it/s][epoch 43] train: l1: 0.337 kl: 0.329 loss: 3.629 
+[epoch 44] val:   l1: 0.413 kl: 0.091 loss: 1.321 
+  2%|▏         | 45/2000 [00:31<20:08,  1.62it/s][epoch 44] train: l1: 0.405 kl: 0.322 loss: 3.629 
+[epoch 45] val:   l1: 0.369 kl: 0.108 loss: 1.448 
+  2%|▏         | 46/2000 [00:32<20:00,  1.63it/s][epoch 45] train: l1: 0.352 kl: 0.314 loss: 3.487 
+[epoch 46] val:   l1: 0.390 kl: 0.080 loss: 1.192 
+  2%|▏         | 47/2000 [00:32<19:52,  1.64it/s][epoch 46] train: l1: 0.361 kl: 0.327 loss: 3.633 
+[epoch 47] val:   l1: 0.284 kl: 0.141 loss: 1.695 
+  2%|▏         | 48/2000 [00:33<19:53,  1.63it/s][epoch 47] train: l1: 0.331 kl: 0.325 loss: 3.582 
+[epoch 48] val:   l1: 0.389 kl: 0.100 loss: 1.390 
+  2%|▏         | 49/2000 [00:34<19:52,  1.64it/s][epoch 48] train: l1: 0.346 kl: 0.312 loss: 3.469 
+[epoch 49] val:   l1: 0.467 kl: 0.235 loss: 2.820 
+  2%|▎         | 50/2000 [00:34<19:50,  1.64it/s][epoch 49] train: l1: 0.370 kl: 0.332 loss: 3.686 
+[epoch 50] val:   l1: 0.298 kl: 0.168 loss: 1.973 
+  3%|▎         | 51/2000 [00:35<19:44,  1.65it/s][epoch 50] train: l1: 0.401 kl: 0.319 loss: 3.595 
+[epoch 51] val:   l1: 0.378 kl: 0.078 loss: 1.163 
+  3%|▎         | 52/2000 [00:35<19:40,  1.65it/s][epoch 51] train: l1: 0.351 kl: 0.298 loss: 3.330 
+[epoch 52] val:   l1: 0.282 kl: 0.062 loss: 0.906 
+  3%|▎         | 53/2000 [00:36<19:47,  1.64it/s][epoch 52] train: l1: 0.362 kl: 0.304 loss: 3.405 
+[epoch 53] val:   l1: 0.360 kl: 0.060 loss: 0.960 
+  3%|▎         | 54/2000 [00:37<19:45,  1.64it/s][epoch 53] train: l1: 0.332 kl: 0.268 loss: 3.008 
+[epoch 54] val:   l1: 0.328 kl: 0.080 loss: 1.125 
+  3%|▎         | 55/2000 [00:37<19:42,  1.65it/s][epoch 54] train: l1: 0.333 kl: 0.280 loss: 3.136 
+[epoch 55] val:   l1: 0.511 kl: 0.130 loss: 1.806 
+  3%|▎         | 56/2000 [00:38<19:42,  1.64it/s][epoch 55] train: l1: 0.327 kl: 0.310 loss: 3.429 
+[epoch 56] val:   l1: 0.379 kl: 0.079 loss: 1.169 
+  3%|▎         | 57/2000 [00:38<19:47,  1.64it/s][epoch 56] train: l1: 0.328 kl: 0.287 loss: 3.194 
+[epoch 57] val:   l1: 0.358 kl: 0.079 loss: 1.146 
+  3%|▎         | 58/2000 [00:39<19:41,  1.64it/s][epoch 57] train: l1: 0.340 kl: 0.300 loss: 3.345 
+[epoch 58] val:   l1: 0.342 kl: 0.074 loss: 1.085 
+  3%|▎         | 59/2000 [00:40<19:35,  1.65it/s][epoch 58] train: l1: 0.292 kl: 0.292 loss: 3.207 
+[epoch 59] val:   l1: 0.263 kl: 0.052 loss: 0.787 
+  3%|▎         | 60/2000 [00:40<19:44,  1.64it/s][epoch 59] train: l1: 0.355 kl: 0.276 loss: 3.113 
+[epoch 60] val:   l1: 0.267 kl: 0.091 loss: 1.175 
+  3%|▎         | 61/2000 [00:41<19:39,  1.64it/s][epoch 60] train: l1: 0.311 kl: 0.271 loss: 3.019 
+[epoch 61] val:   l1: 0.360 kl: 0.075 loss: 1.105 
+  3%|▎         | 62/2000 [00:41<19:59,  1.62it/s][epoch 61] train: l1: 0.307 kl: 0.280 loss: 3.104 
+[epoch 62] val:   l1: 0.444 kl: 0.088 loss: 1.325 
+  3%|▎         | 63/2000 [00:42<19:55,  1.62it/s][epoch 62] train: l1: 0.326 kl: 0.279 loss: 3.120 
+[epoch 63] val:   l1: 0.517 kl: 0.080 loss: 1.322 
+  3%|▎         | 64/2000 [00:43<19:44,  1.63it/s][epoch 63] train: l1: 0.311 kl: 0.280 loss: 3.107 
+[epoch 64] val:   l1: 0.300 kl: 0.060 loss: 0.896 
+  3%|▎         | 65/2000 [00:43<19:44,  1.63it/s][epoch 64] train: l1: 0.319 kl: 0.280 loss: 3.121 
+[epoch 65] val:   l1: 0.332 kl: 0.048 loss: 0.816 
+  3%|▎         | 66/2000 [00:44<19:37,  1.64it/s][epoch 65] train: l1: 0.350 kl: 0.279 loss: 3.137 
+[epoch 66] val:   l1: 0.378 kl: 0.122 loss: 1.594 
+  3%|▎         | 67/2000 [00:45<19:36,  1.64it/s][epoch 66] train: l1: 0.318 kl: 0.269 loss: 3.013 
+[epoch 67] val:   l1: 0.241 kl: 0.044 loss: 0.683 
+  3%|▎         | 68/2000 [00:45<19:42,  1.63it/s][epoch 67] train: l1: 0.327 kl: 0.274 loss: 3.065 
+[epoch 68] val:   l1: 0.386 kl: 0.077 loss: 1.157 
+  3%|▎         | 69/2000 [00:46<19:44,  1.63it/s][epoch 68] train: l1: 0.302 kl: 0.290 loss: 3.205 
+[epoch 69] val:   l1: 0.425 kl: 0.550 loss: 5.926 
+  4%|▎         | 70/2000 [00:46<20:12,  1.59it/s][epoch 69] train: l1: 0.324 kl: 0.274 loss: 3.059 
+[epoch 70] val:   l1: 0.386 kl: 0.056 loss: 0.943 
+  4%|▎         | 71/2000 [00:47<19:58,  1.61it/s][epoch 70] train: l1: 0.311 kl: 0.280 loss: 3.110 
+[epoch 71] val:   l1: 0.336 kl: 0.056 loss: 0.892 
+  4%|▎         | 72/2000 [00:48<19:50,  1.62it/s][epoch 71] train: l1: 0.353 kl: 0.282 loss: 3.177 
+[epoch 72] val:   l1: 0.251 kl: 0.068 loss: 0.934 
+  4%|▎         | 73/2000 [00:48<19:41,  1.63it/s][epoch 72] train: l1: 0.322 kl: 0.281 loss: 3.131 
+[epoch 73] val:   l1: 0.299 kl: 0.053 loss: 0.833 
+  4%|▎         | 74/2000 [00:49<19:38,  1.63it/s][epoch 73] train: l1: 0.306 kl: 0.280 loss: 3.104 
+[epoch 74] val:   l1: 0.309 kl: 0.050 loss: 0.808 
+  4%|▍         | 75/2000 [00:49<20:07,  1.59it/s][epoch 74] train: l1: 0.355 kl: 0.257 loss: 2.929 
+[epoch 75] val:   l1: 0.428 kl: 0.076 loss: 1.189 
+  4%|▍         | 76/2000 [00:50<19:54,  1.61it/s][epoch 75] train: l1: 0.333 kl: 0.249 loss: 2.818 
+[epoch 76] val:   l1: 0.365 kl: 0.044 loss: 0.801 
+  4%|▍         | 77/2000 [00:51<19:45,  1.62it/s][epoch 76] train: l1: 0.308 kl: 0.280 loss: 3.109 
+[epoch 77] val:   l1: 0.317 kl: 0.153 loss: 1.843 
+  4%|▍         | 78/2000 [00:51<19:39,  1.63it/s][epoch 77] train: l1: 0.335 kl: 0.272 loss: 3.051 
+[epoch 78] val:   l1: 0.351 kl: 0.051 loss: 0.865 
+  4%|▍         | 79/2000 [00:52<19:33,  1.64it/s][epoch 78] train: l1: 0.361 kl: 0.278 loss: 3.143 
+[epoch 79] val:   l1: 0.296 kl: 0.043 loss: 0.728 
+  4%|▍         | 80/2000 [00:53<19:29,  1.64it/s][epoch 79] train: l1: 0.309 kl: 0.270 loss: 3.011 
+[epoch 80] val:   l1: 0.459 kl: 0.069 loss: 1.150 
+  4%|▍         | 81/2000 [00:53<19:25,  1.65it/s][epoch 80] train: l1: 0.313 kl: 0.252 loss: 2.834 
+[epoch 81] val:   l1: 0.270 kl: 0.031 loss: 0.579 
+  4%|▍         | 82/2000 [00:54<19:41,  1.62it/s][epoch 81] train: l1: 0.321 kl: 0.268 loss: 3.000 
+[epoch 82] val:   l1: 0.286 kl: 0.074 loss: 1.025 
+  4%|▍         | 83/2000 [00:54<19:39,  1.62it/s][epoch 82] train: l1: 0.312 kl: 0.258 loss: 2.893 
+[epoch 83] val:   l1: 0.205 kl: 0.077 loss: 0.979 
+  4%|▍         | 84/2000 [00:55<19:32,  1.63it/s][epoch 83] train: l1: 0.319 kl: 0.277 loss: 3.089 
+[epoch 84] val:   l1: 0.383 kl: 0.135 loss: 1.736 
+  4%|▍         | 85/2000 [00:56<19:29,  1.64it/s][epoch 84] train: l1: 0.254 kl: 0.252 loss: 2.774 
+[epoch 85] val:   l1: 0.329 kl: 0.046 loss: 0.787 
+  4%|▍         | 86/2000 [00:56<19:24,  1.64it/s][epoch 85] train: l1: 0.303 kl: 0.257 loss: 2.872 
+[epoch 86] val:   l1: 0.317 kl: 0.039 loss: 0.712 
+  4%|▍         | 87/2000 [00:57<19:22,  1.65it/s][epoch 86] train: l1: 0.282 kl: 0.269 loss: 2.977 
+[epoch 87] val:   l1: 0.275 kl: 0.050 loss: 0.773 
+  4%|▍         | 88/2000 [00:57<19:19,  1.65it/s][epoch 87] train: l1: 0.332 kl: 0.273 loss: 3.067 
+[epoch 88] val:   l1: 0.326 kl: 0.050 loss: 0.826 
+  4%|▍         | 89/2000 [00:58<19:18,  1.65it/s][epoch 88] train: l1: 0.312 kl: 0.259 loss: 2.901 
+[epoch 89] val:   l1: 0.412 kl: 0.044 loss: 0.848 
+  4%|▍         | 90/2000 [00:59<19:20,  1.65it/s][epoch 89] train: l1: 0.325 kl: 0.259 loss: 2.912 
+[epoch 90] val:   l1: 0.334 kl: 0.052 loss: 0.858 
+  5%|▍         | 91/2000 [00:59<19:19,  1.65it/s][epoch 90] train: l1: 0.315 kl: 0.245 loss: 2.764 
+[epoch 91] val:   l1: 0.278 kl: 0.043 loss: 0.713 
+  5%|▍         | 92/2000 [01:00<19:22,  1.64it/s][epoch 91] train: l1: 0.315 kl: 0.253 loss: 2.849 
+[epoch 92] val:   l1: 0.429 kl: 0.073 loss: 1.160 
+  5%|▍         | 93/2000 [01:00<19:21,  1.64it/s][epoch 92] train: l1: 0.306 kl: 0.256 loss: 2.868 
+[epoch 93] val:   l1: 0.398 kl: 0.133 loss: 1.727 
+  5%|▍         | 94/2000 [01:01<19:18,  1.65it/s][epoch 93] train: l1: 0.281 kl: 0.261 loss: 2.894 
+[epoch 94] val:   l1: 0.334 kl: 0.043 loss: 0.761 
+  5%|▍         | 95/2000 [01:02<19:14,  1.65it/s][epoch 94] train: l1: 0.317 kl: 0.250 loss: 2.818 
+[epoch 95] val:   l1: 0.352 kl: 0.052 loss: 0.872 
+  5%|▍         | 96/2000 [01:02<19:12,  1.65it/s][epoch 95] train: l1: 0.294 kl: 0.266 loss: 2.957 
+[epoch 96] val:   l1: 0.265 kl: 0.034 loss: 0.601 
+  5%|▍         | 97/2000 [01:03<19:10,  1.65it/s][epoch 96] train: l1: 0.331 kl: 0.255 loss: 2.876 
+[epoch 97] val:   l1: 0.388 kl: 0.045 loss: 0.833 
+  5%|▍         | 98/2000 [01:03<19:10,  1.65it/s][epoch 97] train: l1: 0.303 kl: 0.252 loss: 2.821 
+[epoch 98] val:   l1: 0.339 kl: 0.039 loss: 0.724 
+  5%|▍         | 99/2000 [01:04<19:10,  1.65it/s][epoch 98] train: l1: 0.294 kl: 0.261 loss: 2.906 
+[epoch 99] val:   l1: 0.369 kl: 0.051 loss: 0.882 
+  5%|▌         | 100/2000 [01:05<19:07,  1.66it/s][epoch 99] train: l1: 0.295 kl: 0.236 loss: 2.652 
+[epoch 100] val:   l1: 0.319 kl: 0.048 loss: 0.798 
+  5%|▌         | 101/2000 [01:05<19:05,  1.66it/s][epoch 100] train: l1: 0.284 kl: 0.243 loss: 2.712 
+[epoch 101] val:   l1: 0.342 kl: 0.042 loss: 0.765 
+  5%|▌         | 102/2000 [01:06<19:04,  1.66it/s][epoch 101] train: l1: 0.306 kl: 0.246 loss: 2.765 
+[epoch 102] val:   l1: 0.368 kl: 0.050 loss: 0.864 
+  5%|▌         | 103/2000 [01:06<19:05,  1.66it/s][epoch 102] train: l1: 0.285 kl: 0.247 loss: 2.755 
+[epoch 103] val:   l1: 0.257 kl: 0.031 loss: 0.566 
+  5%|▌         | 104/2000 [01:07<19:12,  1.64it/s][epoch 103] train: l1: 0.322 kl: 0.254 loss: 2.860 
+[epoch 104] val:   l1: 0.339 kl: 0.046 loss: 0.797 
+  5%|▌         | 105/2000 [01:08<19:02,  1.66it/s][epoch 104] train: l1: 0.290 kl: 0.231 loss: 2.598 
+[epoch 105] val:   l1: 0.325 kl: 0.120 loss: 1.522 
+  5%|▌         | 106/2000 [01:08<19:00,  1.66it/s][epoch 105] train: l1: 0.300 kl: 0.233 loss: 2.627 
+[epoch 106] val:   l1: 0.358 kl: 0.039 loss: 0.745 
+  5%|▌         | 107/2000 [01:09<19:07,  1.65it/s][epoch 106] train: l1: 0.318 kl: 0.234 loss: 2.659 
+[epoch 107] val:   l1: 0.480 kl: 0.311 loss: 3.591 
+  5%|▌         | 108/2000 [01:10<19:06,  1.65it/s][epoch 107] train: l1: 0.317 kl: 0.257 loss: 2.887 
+[epoch 108] val:   l1: 0.372 kl: 0.105 loss: 1.421 
+  5%|▌         | 109/2000 [01:10<19:06,  1.65it/s][epoch 108] train: l1: 0.289 kl: 0.242 loss: 2.704 
+[epoch 109] val:   l1: 0.265 kl: 0.034 loss: 0.607 
+  6%|▌         | 110/2000 [01:11<19:06,  1.65it/s][epoch 109] train: l1: 0.289 kl: 0.245 loss: 2.743 
+[epoch 110] val:   l1: 0.416 kl: 0.080 loss: 1.217 
+  6%|▌         | 111/2000 [01:11<19:06,  1.65it/s][epoch 110] train: l1: 0.296 kl: 0.249 loss: 2.786 
+[epoch 111] val:   l1: 0.262 kl: 0.026 loss: 0.518 
+  6%|▌         | 112/2000 [01:12<19:21,  1.62it/s][epoch 111] train: l1: 0.287 kl: 0.240 loss: 2.684 
+[epoch 112] val:   l1: 0.283 kl: 0.030 loss: 0.587 
+  6%|▌         | 113/2000 [01:13<19:09,  1.64it/s][epoch 112] train: l1: 0.294 kl: 0.248 loss: 2.779 
+[epoch 113] val:   l1: 0.368 kl: 0.069 loss: 1.062 
+  6%|▌         | 114/2000 [01:13<19:10,  1.64it/s][epoch 113] train: l1: 0.291 kl: 0.232 loss: 2.608 
+[epoch 114] val:   l1: 0.369 kl: 0.040 loss: 0.765 
+  6%|▌         | 115/2000 [01:14<19:04,  1.65it/s][epoch 114] train: l1: 0.304 kl: 0.229 loss: 2.590 
+[epoch 115] val:   l1: 0.409 kl: 0.037 loss: 0.775 
+  6%|▌         | 116/2000 [01:14<19:00,  1.65it/s][epoch 115] train: l1: 0.277 kl: 0.232 loss: 2.598 
+[epoch 116] val:   l1: 0.374 kl: 0.121 loss: 1.585 
+  6%|▌         | 117/2000 [01:15<18:59,  1.65it/s][epoch 116] train: l1: 0.285 kl: 0.225 loss: 2.532 
+[epoch 117] val:   l1: 0.279 kl: 0.081 loss: 1.087 
+  6%|▌         | 118/2000 [01:16<19:04,  1.64it/s][epoch 117] train: l1: 0.283 kl: 0.260 loss: 2.886 
+[epoch 118] val:   l1: 0.375 kl: 0.039 loss: 0.767 
+  6%|▌         | 119/2000 [01:16<18:59,  1.65it/s][epoch 118] train: l1: 0.290 kl: 0.236 loss: 2.653 
+[epoch 119] val:   l1: 0.392 kl: 0.043 loss: 0.820 
+  6%|▌         | 120/2000 [01:17<18:57,  1.65it/s][epoch 119] train: l1: 0.302 kl: 0.232 loss: 2.627 
+[epoch 120] val:   l1: 0.293 kl: 0.030 loss: 0.592 
+  6%|▌         | 121/2000 [01:17<18:57,  1.65it/s][epoch 120] train: l1: 0.304 kl: 0.234 loss: 2.639 
+[epoch 121] val:   l1: 0.420 kl: 0.332 loss: 3.739 
+  6%|▌         | 122/2000 [01:18<18:52,  1.66it/s][epoch 121] train: l1: 0.282 kl: 0.242 loss: 2.702 
+[epoch 122] val:   l1: 0.398 kl: 0.045 loss: 0.849 
+  6%|▌         | 123/2000 [01:19<18:50,  1.66it/s][epoch 122] train: l1: 0.285 kl: 0.242 loss: 2.708 
+[epoch 123] val:   l1: 0.391 kl: 0.038 loss: 0.776 
+  6%|▌         | 124/2000 [01:19<18:54,  1.65it/s][epoch 123] train: l1: 0.257 kl: 0.240 loss: 2.659 
+[epoch 124] val:   l1: 0.333 kl: 0.034 loss: 0.674 
+  6%|▋         | 125/2000 [01:20<18:51,  1.66it/s][epoch 124] train: l1: 0.290 kl: 0.227 loss: 2.563 
+[epoch 125] val:   l1: 0.266 kl: 0.030 loss: 0.567 
+  6%|▋         | 126/2000 [01:20<18:47,  1.66it/s][epoch 125] train: l1: 0.266 kl: 0.207 loss: 2.339 
+[epoch 126] val:   l1: 0.259 kl: 0.041 loss: 0.670 
+  6%|▋         | 127/2000 [01:21<18:45,  1.66it/s][epoch 126] train: l1: 0.283 kl: 0.229 loss: 2.575 
+[epoch 127] val:   l1: 0.310 kl: 0.031 loss: 0.616 
+  6%|▋         | 128/2000 [01:22<18:47,  1.66it/s][epoch 127] train: l1: 0.319 kl: 0.231 loss: 2.632 
+[epoch 128] val:   l1: 0.491 kl: 0.288 loss: 3.374 
+  6%|▋         | 129/2000 [01:22<18:44,  1.66it/s][epoch 128] train: l1: 0.300 kl: 0.234 loss: 2.636 
+[epoch 129] val:   l1: 0.266 kl: 0.036 loss: 0.623 
+  6%|▋         | 130/2000 [01:23<18:44,  1.66it/s][epoch 129] train: l1: 0.301 kl: 0.224 loss: 2.540 
+[epoch 130] val:   l1: 0.258 kl: 0.025 loss: 0.504 
+  7%|▋         | 131/2000 [01:23<18:56,  1.64it/s][epoch 130] train: l1: 0.275 kl: 0.239 loss: 2.664 
+[epoch 131] val:   l1: 0.283 kl: 0.030 loss: 0.583 
+  7%|▋         | 132/2000 [01:24<18:53,  1.65it/s][epoch 131] train: l1: 0.301 kl: 0.222 loss: 2.523 
+[epoch 132] val:   l1: 0.226 kl: 0.053 loss: 0.756 
+  7%|▋         | 133/2000 [01:25<18:53,  1.65it/s][epoch 132] train: l1: 0.298 kl: 0.237 loss: 2.671 
+[epoch 133] val:   l1: 0.282 kl: 0.032 loss: 0.599 
+  7%|▋         | 134/2000 [01:25<18:52,  1.65it/s][epoch 133] train: l1: 0.300 kl: 0.230 loss: 2.603 
+[epoch 134] val:   l1: 0.324 kl: 0.025 loss: 0.572 
+  7%|▋         | 135/2000 [01:26<18:54,  1.64it/s][epoch 134] train: l1: 0.273 kl: 0.231 loss: 2.579 
+[epoch 135] val:   l1: 0.219 kl: 0.026 loss: 0.483 
+  7%|▋         | 136/2000 [01:26<19:02,  1.63it/s][epoch 135] train: l1: 0.321 kl: 0.231 loss: 2.626 
+[epoch 136] val:   l1: 0.283 kl: 0.024 loss: 0.521 
+  7%|▋         | 137/2000 [01:27<18:56,  1.64it/s][epoch 136] train: l1: 0.285 kl: 0.221 loss: 2.493 
+[epoch 137] val:   l1: 0.336 kl: 0.024 loss: 0.571 
+  7%|▋         | 138/2000 [01:28<18:53,  1.64it/s][epoch 137] train: l1: 0.256 kl: 0.226 loss: 2.518 
+[epoch 138] val:   l1: 0.301 kl: 0.033 loss: 0.627 
+  7%|▋         | 139/2000 [01:28<18:55,  1.64it/s][epoch 138] train: l1: 0.278 kl: 0.214 loss: 2.415 
+[epoch 139] val:   l1: 0.316 kl: 0.033 loss: 0.645 
+  7%|▋         | 140/2000 [01:29<18:54,  1.64it/s][epoch 139] train: l1: 0.271 kl: 0.225 loss: 2.521 
+[epoch 140] val:   l1: 0.508 kl: 0.031 loss: 0.822 
+  7%|▋         | 141/2000 [01:30<18:49,  1.65it/s][epoch 140] train: l1: 0.276 kl: 0.222 loss: 2.496 
+[epoch 141] val:   l1: 0.286 kl: 0.029 loss: 0.581 
+  7%|▋         | 142/2000 [01:30<19:22,  1.60it/s][epoch 141] train: l1: 0.294 kl: 0.233 loss: 2.629 
+[epoch 142] val:   l1: 0.314 kl: 0.100 loss: 1.316 
+  7%|▋         | 143/2000 [01:31<19:12,  1.61it/s][epoch 142] train: l1: 0.291 kl: 0.224 loss: 2.532 
+[epoch 143] val:   l1: 0.420 kl: 0.031 loss: 0.729 
+  7%|▋         | 144/2000 [01:31<19:02,  1.62it/s][epoch 143] train: l1: 0.307 kl: 0.227 loss: 2.573 
+[epoch 144] val:   l1: 0.268 kl: 0.048 loss: 0.748 
+  7%|▋         | 145/2000 [01:32<18:57,  1.63it/s][epoch 144] train: l1: 0.323 kl: 0.236 loss: 2.679 
+[epoch 145] val:   l1: 0.415 kl: 0.026 loss: 0.671 
+  7%|▋         | 146/2000 [01:33<18:53,  1.63it/s][epoch 145] train: l1: 0.281 kl: 0.230 loss: 2.584 
+[epoch 146] val:   l1: 0.327 kl: 0.027 loss: 0.596 
+  7%|▋         | 147/2000 [01:33<18:50,  1.64it/s][epoch 146] train: l1: 0.292 kl: 0.223 loss: 2.525 
+[epoch 147] val:   l1: 0.301 kl: 0.088 loss: 1.179 
+  7%|▋         | 148/2000 [01:34<19:20,  1.60it/s][epoch 147] train: l1: 0.266 kl: 0.240 loss: 2.662 
+[epoch 148] val:   l1: 0.303 kl: 0.022 loss: 0.519 
+  7%|▋         | 149/2000 [01:35<19:14,  1.60it/s][epoch 148] train: l1: 0.283 kl: 0.214 loss: 2.419 
+[epoch 149] val:   l1: 0.338 kl: 0.257 loss: 2.907 
+  8%|▊         | 150/2000 [01:35<19:04,  1.62it/s][epoch 149] train: l1: 0.257 kl: 0.220 loss: 2.456 
+[epoch 150] val:   l1: 0.356 kl: 0.076 loss: 1.111 
+  8%|▊         | 151/2000 [01:36<18:55,  1.63it/s][epoch 150] train: l1: 0.274 kl: 0.215 loss: 2.420 
+[epoch 151] val:   l1: 0.318 kl: 0.033 loss: 0.649 
+  8%|▊         | 152/2000 [01:36<18:52,  1.63it/s][epoch 151] train: l1: 0.275 kl: 0.227 loss: 2.540 
+[epoch 152] val:   l1: 0.451 kl: 0.027 loss: 0.726 
+  8%|▊         | 153/2000 [01:37<18:48,  1.64it/s][epoch 152] train: l1: 0.258 kl: 0.209 loss: 2.349 
+[epoch 153] val:   l1: 0.447 kl: 0.036 loss: 0.802 
+  8%|▊         | 154/2000 [01:38<18:41,  1.65it/s][epoch 153] train: l1: 0.285 kl: 0.207 loss: 2.359 
+[epoch 154] val:   l1: 0.345 kl: 0.019 loss: 0.536 
+  8%|▊         | 155/2000 [01:38<18:41,  1.64it/s][epoch 154] train: l1: 0.268 kl: 0.214 loss: 2.411 
+[epoch 155] val:   l1: 0.310 kl: 0.036 loss: 0.667 
+  8%|▊         | 156/2000 [01:39<18:43,  1.64it/s][epoch 155] train: l1: 0.251 kl: 0.198 loss: 2.232 
+[epoch 156] val:   l1: 0.268 kl: 0.072 loss: 0.985 
+  8%|▊         | 157/2000 [01:39<18:36,  1.65it/s][epoch 156] train: l1: 0.263 kl: 0.218 loss: 2.447 
+[epoch 157] val:   l1: 0.366 kl: 0.033 loss: 0.697 
+  8%|▊         | 158/2000 [01:40<18:54,  1.62it/s][epoch 157] train: l1: 0.259 kl: 0.234 loss: 2.604 
+[epoch 158] val:   l1: 0.270 kl: 0.023 loss: 0.502 
+  8%|▊         | 159/2000 [01:41<18:46,  1.63it/s][epoch 158] train: l1: 0.292 kl: 0.218 loss: 2.468 
+[epoch 159] val:   l1: 0.256 kl: 0.035 loss: 0.607 
+  8%|▊         | 160/2000 [01:41<18:45,  1.64it/s][epoch 159] train: l1: 0.284 kl: 0.222 loss: 2.501 
+[epoch 160] val:   l1: 0.406 kl: 0.024 loss: 0.648 
+  8%|▊         | 161/2000 [01:42<18:40,  1.64it/s][epoch 160] train: l1: 0.281 kl: 0.216 loss: 2.444 
+[epoch 161] val:   l1: 0.281 kl: 0.055 loss: 0.835 
+  8%|▊         | 162/2000 [01:42<18:38,  1.64it/s][epoch 161] train: l1: 0.264 kl: 0.204 loss: 2.306 
+[epoch 162] val:   l1: 0.324 kl: 0.099 loss: 1.317 
+  8%|▊         | 163/2000 [01:43<18:34,  1.65it/s][epoch 162] train: l1: 0.284 kl: 0.215 loss: 2.438 
+[epoch 163] val:   l1: 0.498 kl: 0.036 loss: 0.856 
+  8%|▊         | 164/2000 [01:44<18:31,  1.65it/s][epoch 163] train: l1: 0.288 kl: 0.207 loss: 2.353 
+[epoch 164] val:   l1: 0.376 kl: 0.094 loss: 1.316 
+  8%|▊         | 165/2000 [01:44<18:31,  1.65it/s][epoch 164] train: l1: 0.255 kl: 0.211 loss: 2.362 
+[epoch 165] val:   l1: 0.426 kl: 0.308 loss: 3.504 
+  8%|▊         | 166/2000 [01:45<18:36,  1.64it/s][epoch 165] train: l1: 0.307 kl: 0.191 loss: 2.219 
+[epoch 166] val:   l1: 0.331 kl: 0.032 loss: 0.651 
+  8%|▊         | 167/2000 [01:45<18:34,  1.64it/s][epoch 166] train: l1: 0.281 kl: 0.223 loss: 2.509 
+[epoch 167] val:   l1: 0.377 kl: 0.092 loss: 1.294 
+  8%|▊         | 168/2000 [01:46<18:31,  1.65it/s][epoch 167] train: l1: 0.274 kl: 0.197 loss: 2.244 
+[epoch 168] val:   l1: 0.381 kl: 0.025 loss: 0.633 
+  8%|▊         | 169/2000 [01:47<18:28,  1.65it/s][epoch 168] train: l1: 0.277 kl: 0.205 loss: 2.328 
+[epoch 169] val:   l1: 0.232 kl: 0.027 loss: 0.502 
+  8%|▊         | 170/2000 [01:47<18:23,  1.66it/s][epoch 169] train: l1: 0.301 kl: 0.217 loss: 2.469 
+[epoch 170] val:   l1: 0.384 kl: 0.057 loss: 0.953 
+  9%|▊         | 171/2000 [01:48<18:21,  1.66it/s][epoch 170] train: l1: 0.271 kl: 0.210 loss: 2.372 
+[epoch 171] val:   l1: 0.298 kl: 0.085 loss: 1.153 
+  9%|▊         | 172/2000 [01:48<18:37,  1.64it/s][epoch 171] train: l1: 0.290 kl: 0.211 loss: 2.399 
+[epoch 172] val:   l1: 0.258 kl: 0.036 loss: 0.614 
+  9%|▊         | 173/2000 [01:49<18:28,  1.65it/s][epoch 172] train: l1: 0.267 kl: 0.193 loss: 2.200 
+[epoch 173] val:   l1: 0.196 kl: 0.060 loss: 0.793 
+  9%|▊         | 174/2000 [01:50<18:27,  1.65it/s][epoch 173] train: l1: 0.272 kl: 0.209 loss: 2.359 
+[epoch 174] val:   l1: 0.476 kl: 0.086 loss: 1.334 
+  9%|▉         | 175/2000 [01:50<18:25,  1.65it/s][epoch 174] train: l1: 0.280 kl: 0.210 loss: 2.376 
+[epoch 175] val:   l1: 0.399 kl: 0.036 loss: 0.757 
+  9%|▉         | 176/2000 [01:51<18:26,  1.65it/s][epoch 175] train: l1: 0.263 kl: 0.203 loss: 2.289 
+[epoch 176] val:   l1: 0.335 kl: 0.027 loss: 0.605 
+  9%|▉         | 177/2000 [01:52<18:24,  1.65it/s][epoch 176] train: l1: 0.249 kl: 0.202 loss: 2.274 
+[epoch 177] val:   l1: 0.287 kl: 0.032 loss: 0.606 
+  9%|▉         | 178/2000 [01:52<18:09,  1.67it/s][epoch 177] train: l1: 0.249 kl: 0.199 loss: 2.239 
+[epoch 178] val:   l1: 0.350 kl: 0.028 loss: 0.634 
+  9%|▉         | 179/2000 [01:53<18:01,  1.68it/s][epoch 178] train: l1: 0.230 kl: 0.196 loss: 2.185 
+[epoch 179] val:   l1: 0.370 kl: 0.025 loss: 0.623 
+  9%|▉         | 180/2000 [01:53<18:01,  1.68it/s][epoch 179] train: l1: 0.282 kl: 0.225 loss: 2.532 
+[epoch 180] val:   l1: 0.593 kl: 0.033 loss: 0.920 
+  9%|▉         | 181/2000 [01:54<17:59,  1.69it/s][epoch 180] train: l1: 0.276 kl: 0.201 loss: 2.283 
+[epoch 181] val:   l1: 0.358 kl: 0.029 loss: 0.652 
+  9%|▉         | 182/2000 [01:54<17:55,  1.69it/s][epoch 181] train: l1: 0.263 kl: 0.216 loss: 2.426 
+[epoch 182] val:   l1: 0.352 kl: 0.034 loss: 0.692 
+  9%|▉         | 183/2000 [01:55<17:51,  1.69it/s][epoch 182] train: l1: 0.259 kl: 0.207 loss: 2.334 
+[epoch 183] val:   l1: 0.418 kl: 0.029 loss: 0.711 
+  9%|▉         | 184/2000 [01:56<17:53,  1.69it/s][epoch 183] train: l1: 0.290 kl: 0.206 loss: 2.353 
+[epoch 184] val:   l1: 0.294 kl: 0.024 loss: 0.538 
+  9%|▉         | 185/2000 [01:56<17:51,  1.69it/s][epoch 184] train: l1: 0.264 kl: 0.210 loss: 2.368 
+[epoch 185] val:   l1: 0.260 kl: 0.028 loss: 0.539 
+  9%|▉         | 186/2000 [01:57<17:46,  1.70it/s][epoch 185] train: l1: 0.301 kl: 0.208 loss: 2.385 
+[epoch 186] val:   l1: 0.290 kl: 0.020 loss: 0.495 
+  9%|▉         | 187/2000 [01:57<17:47,  1.70it/s][epoch 186] train: l1: 0.294 kl: 0.205 loss: 2.347 
+[epoch 187] val:   l1: 0.264 kl: 0.023 loss: 0.492 
+  9%|▉         | 188/2000 [01:58<17:48,  1.70it/s][epoch 187] train: l1: 0.278 kl: 0.214 loss: 2.420 
+[epoch 188] val:   l1: 0.264 kl: 0.017 loss: 0.433 
+  9%|▉         | 189/2000 [01:59<18:15,  1.65it/s][epoch 188] train: l1: 0.273 kl: 0.203 loss: 2.302 
+[epoch 189] val:   l1: 0.457 kl: 0.028 loss: 0.735 
+ 10%|▉         | 190/2000 [01:59<18:09,  1.66it/s][epoch 189] train: l1: 0.248 kl: 0.207 loss: 2.321 
+[epoch 190] val:   l1: 0.351 kl: 0.022 loss: 0.573 
+ 10%|▉         | 191/2000 [02:00<18:01,  1.67it/s][epoch 190] train: l1: 0.259 kl: 0.196 loss: 2.222 
+[epoch 191] val:   l1: 0.389 kl: 0.044 loss: 0.830 
+ 10%|▉         | 192/2000 [02:00<18:02,  1.67it/s][epoch 191] train: l1: 0.253 kl: 0.199 loss: 2.248 
+[epoch 192] val:   l1: 0.375 kl: 0.021 loss: 0.585 
+ 10%|▉         | 193/2000 [02:01<17:59,  1.67it/s][epoch 192] train: l1: 0.257 kl: 0.202 loss: 2.275 
+[epoch 193] val:   l1: 0.315 kl: 0.026 loss: 0.580 
+ 10%|▉         | 194/2000 [02:02<17:53,  1.68it/s][epoch 193] train: l1: 0.293 kl: 0.202 loss: 2.312 
+[epoch 194] val:   l1: 0.245 kl: 0.024 loss: 0.480 
+ 10%|▉         | 195/2000 [02:02<17:53,  1.68it/s][epoch 194] train: l1: 0.293 kl: 0.191 loss: 2.208 
+[epoch 195] val:   l1: 0.283 kl: 0.025 loss: 0.530 
+ 10%|▉         | 196/2000 [02:03<17:54,  1.68it/s][epoch 195] train: l1: 0.264 kl: 0.199 loss: 2.258 
+[epoch 196] val:   l1: 0.367 kl: 0.021 loss: 0.573 
+ 10%|▉         | 197/2000 [02:03<17:48,  1.69it/s][epoch 196] train: l1: 0.257 kl: 0.202 loss: 2.282 
+[epoch 197] val:   l1: 0.278 kl: 0.019 loss: 0.469 
+ 10%|▉         | 198/2000 [02:04<17:49,  1.68it/s][epoch 197] train: l1: 0.283 kl: 0.184 loss: 2.120 
+[epoch 198] val:   l1: 0.298 kl: 0.045 loss: 0.748 
+ 10%|▉         | 199/2000 [02:05<17:47,  1.69it/s][epoch 198] train: l1: 0.289 kl: 0.186 loss: 2.153 
+[epoch 199] val:   l1: 0.397 kl: 0.028 loss: 0.675 
+ 10%|█         | 200/2000 [02:05<17:47,  1.69it/s][epoch 199] train: l1: 0.259 kl: 0.200 loss: 2.260 
+[epoch 200] val:   l1: 0.386 kl: 0.032 loss: 0.704 
+ 10%|█         | 201/2000 [02:06<17:47,  1.68it/s][epoch 200] train: l1: 0.264 kl: 0.210 loss: 2.368 
+[epoch 201] val:   l1: 0.312 kl: 0.024 loss: 0.550 
+ 10%|█         | 202/2000 [02:06<17:43,  1.69it/s][epoch 201] train: l1: 0.267 kl: 0.209 loss: 2.353 
+[epoch 202] val:   l1: 0.351 kl: 0.027 loss: 0.617 
+ 10%|█         | 203/2000 [02:07<17:41,  1.69it/s][epoch 202] train: l1: 0.264 kl: 0.173 loss: 1.989 
+[epoch 203] val:   l1: 0.257 kl: 0.020 loss: 0.461 
+ 10%|█         | 204/2000 [02:07<17:37,  1.70it/s][epoch 203] train: l1: 0.279 kl: 0.192 loss: 2.202 
+[epoch 204] val:   l1: 0.356 kl: 0.029 loss: 0.648 
+ 10%|█         | 205/2000 [02:08<17:40,  1.69it/s][epoch 204] train: l1: 0.248 kl: 0.199 loss: 2.242 
+[epoch 205] val:   l1: 0.214 kl: 0.070 loss: 0.912 
+ 10%|█         | 206/2000 [02:09<17:44,  1.68it/s][epoch 205] train: l1: 0.235 kl: 0.199 loss: 2.226 
+[epoch 206] val:   l1: 0.400 kl: 0.087 loss: 1.273 
+ 10%|█         | 207/2000 [02:09<17:40,  1.69it/s][epoch 206] train: l1: 0.257 kl: 0.185 loss: 2.110 
+[epoch 207] val:   l1: 0.239 kl: 0.015 loss: 0.385 
+ 10%|█         | 208/2000 [02:10<18:08,  1.65it/s][epoch 207] train: l1: 0.276 kl: 0.199 loss: 2.270 
+[epoch 208] val:   l1: 0.320 kl: 0.024 loss: 0.561 
+ 10%|█         | 209/2000 [02:11<18:05,  1.65it/s][epoch 208] train: l1: 0.274 kl: 0.203 loss: 2.306 
+[epoch 209] val:   l1: 0.382 kl: 0.089 loss: 1.269 
+ 10%|█         | 210/2000 [02:11<17:56,  1.66it/s][epoch 209] train: l1: 0.255 kl: 0.177 loss: 2.022 
+[epoch 210] val:   l1: 0.324 kl: 0.024 loss: 0.561 
+ 11%|█         | 211/2000 [02:12<17:50,  1.67it/s][epoch 210] train: l1: 0.251 kl: 0.188 loss: 2.128 
+[epoch 211] val:   l1: 0.268 kl: 0.022 loss: 0.486 
+ 11%|█         | 212/2000 [02:12<17:45,  1.68it/s][epoch 211] train: l1: 0.308 kl: 0.188 loss: 2.189 
+[epoch 212] val:   l1: 0.250 kl: 0.029 loss: 0.544 
+ 11%|█         | 213/2000 [02:13<18:05,  1.65it/s][epoch 212] train: l1: 0.255 kl: 0.186 loss: 2.116 
+[epoch 213] val:   l1: 0.269 kl: 0.020 loss: 0.466 
+ 11%|█         | 214/2000 [02:14<17:57,  1.66it/s][epoch 213] train: l1: 0.277 kl: 0.193 loss: 2.211 
+[epoch 214] val:   l1: 0.346 kl: 0.019 loss: 0.540 
+ 11%|█         | 215/2000 [02:14<17:52,  1.66it/s][epoch 214] train: l1: 0.265 kl: 0.195 loss: 2.217 
+[epoch 215] val:   l1: 0.264 kl: 0.018 loss: 0.440 
+ 11%|█         | 216/2000 [02:15<17:44,  1.68it/s][epoch 215] train: l1: 0.257 kl: 0.192 loss: 2.176 
+[epoch 216] val:   l1: 0.285 kl: 0.020 loss: 0.490 
+ 11%|█         | 217/2000 [02:15<17:38,  1.68it/s][epoch 216] train: l1: 0.283 kl: 0.189 loss: 2.171 
+[epoch 217] val:   l1: 0.283 kl: 0.059 loss: 0.874 
+ 11%|█         | 218/2000 [02:16<17:35,  1.69it/s][epoch 217] train: l1: 0.262 kl: 0.184 loss: 2.103 
+[epoch 218] val:   l1: 0.231 kl: 0.018 loss: 0.409 
+ 11%|█         | 219/2000 [02:16<17:39,  1.68it/s][epoch 218] train: l1: 0.281 kl: 0.196 loss: 2.240 
+[epoch 219] val:   l1: 0.262 kl: 0.017 loss: 0.432 
+ 11%|█         | 220/2000 [02:17<17:40,  1.68it/s][epoch 219] train: l1: 0.248 kl: 0.188 loss: 2.127 
+[epoch 220] val:   l1: 0.342 kl: 0.088 loss: 1.223 
+ 11%|█         | 221/2000 [02:18<17:43,  1.67it/s][epoch 220] train: l1: 0.271 kl: 0.186 loss: 2.127 
+[epoch 221] val:   l1: 0.233 kl: 0.019 loss: 0.421 
+ 11%|█         | 222/2000 [02:18<17:37,  1.68it/s][epoch 221] train: l1: 0.273 kl: 0.203 loss: 2.299 
+[epoch 222] val:   l1: 0.338 kl: 0.024 loss: 0.575 
+ 11%|█         | 223/2000 [02:19<17:32,  1.69it/s][epoch 222] train: l1: 0.261 kl: 0.204 loss: 2.300 
+[epoch 223] val:   l1: 0.382 kl: 0.046 loss: 0.844 
+ 11%|█         | 224/2000 [02:19<17:31,  1.69it/s][epoch 223] train: l1: 0.258 kl: 0.195 loss: 2.212 
+[epoch 224] val:   l1: 0.267 kl: 0.021 loss: 0.481 
+ 11%|█▏        | 225/2000 [02:20<17:28,  1.69it/s][epoch 224] train: l1: 0.257 kl: 0.201 loss: 2.266 
+[epoch 225] val:   l1: 0.318 kl: 0.028 loss: 0.602 
+ 11%|█▏        | 226/2000 [02:21<17:24,  1.70it/s][epoch 225] train: l1: 0.235 kl: 0.184 loss: 2.076 
+[epoch 226] val:   l1: 0.368 kl: 0.027 loss: 0.639 
+ 11%|█▏        | 227/2000 [02:21<17:22,  1.70it/s][epoch 226] train: l1: 0.273 kl: 0.193 loss: 2.200 
+[epoch 227] val:   l1: 0.459 kl: 0.023 loss: 0.692 
+ 11%|█▏        | 228/2000 [02:22<17:19,  1.71it/s][epoch 227] train: l1: 0.298 kl: 0.180 loss: 2.094 
+[epoch 228] val:   l1: 0.240 kl: 0.021 loss: 0.450 
+ 11%|█▏        | 229/2000 [02:22<17:16,  1.71it/s][epoch 228] train: l1: 0.272 kl: 0.182 loss: 2.088 
+[epoch 229] val:   l1: 0.307 kl: 0.020 loss: 0.506 
+ 12%|█▏        | 230/2000 [02:23<17:18,  1.71it/s][epoch 229] train: l1: 0.261 kl: 0.188 loss: 2.139 
+[epoch 230] val:   l1: 0.326 kl: 0.020 loss: 0.523 
+ 12%|█▏        | 231/2000 [02:24<17:21,  1.70it/s][epoch 230] train: l1: 0.263 kl: 0.186 loss: 2.126 
+[epoch 231] val:   l1: 0.365 kl: 0.022 loss: 0.584 
+ 12%|█▏        | 232/2000 [02:24<17:24,  1.69it/s][epoch 231] train: l1: 0.256 kl: 0.178 loss: 2.036 
+[epoch 232] val:   l1: 0.272 kl: 0.055 loss: 0.827 
+ 12%|█▏        | 233/2000 [02:25<17:21,  1.70it/s][epoch 232] train: l1: 0.252 kl: 0.201 loss: 2.262 
+[epoch 233] val:   l1: 0.251 kl: 0.020 loss: 0.454 
+ 12%|█▏        | 234/2000 [02:25<17:17,  1.70it/s][epoch 233] train: l1: 0.252 kl: 0.175 loss: 2.005 
+[epoch 234] val:   l1: 0.298 kl: 0.018 loss: 0.483 
+ 12%|█▏        | 235/2000 [02:26<17:18,  1.70it/s][epoch 234] train: l1: 0.268 kl: 0.192 loss: 2.190 
+[epoch 235] val:   l1: 0.382 kl: 0.018 loss: 0.558 
+ 12%|█▏        | 236/2000 [02:27<17:17,  1.70it/s][epoch 235] train: l1: 0.258 kl: 0.188 loss: 2.138 
+[epoch 236] val:   l1: 0.243 kl: 0.024 loss: 0.482 
+ 12%|█▏        | 237/2000 [02:27<17:35,  1.67it/s][epoch 236] train: l1: 0.266 kl: 0.182 loss: 2.086 
+[epoch 237] val:   l1: 0.358 kl: 0.025 loss: 0.613 
+ 12%|█▏        | 238/2000 [02:28<17:34,  1.67it/s][epoch 237] train: l1: 0.225 kl: 0.185 loss: 2.079 
+[epoch 238] val:   l1: 0.273 kl: 0.019 loss: 0.460 
+ 12%|█▏        | 239/2000 [02:28<17:28,  1.68it/s][epoch 238] train: l1: 0.275 kl: 0.183 loss: 2.107 
+[epoch 239] val:   l1: 0.265 kl: 0.017 loss: 0.432 
+ 12%|█▏        | 240/2000 [02:29<17:24,  1.68it/s][epoch 239] train: l1: 0.248 kl: 0.185 loss: 2.099 
+[epoch 240] val:   l1: 0.279 kl: 0.070 loss: 0.977 
+ 12%|█▏        | 241/2000 [02:29<17:21,  1.69it/s][epoch 240] train: l1: 0.282 kl: 0.176 loss: 2.040 
+[epoch 241] val:   l1: 0.304 kl: 0.024 loss: 0.548 
+ 12%|█▏        | 242/2000 [02:30<17:19,  1.69it/s][epoch 241] train: l1: 0.247 kl: 0.184 loss: 2.086 
+[epoch 242] val:   l1: 0.382 kl: 0.024 loss: 0.627 
+ 12%|█▏        | 243/2000 [02:31<17:15,  1.70it/s][epoch 242] train: l1: 0.261 kl: 0.182 loss: 2.078 
+[epoch 243] val:   l1: 0.212 kl: 0.025 loss: 0.459 
+ 12%|█▏        | 244/2000 [02:31<17:16,  1.69it/s][epoch 243] train: l1: 0.271 kl: 0.188 loss: 2.148 
+[epoch 244] val:   l1: 0.438 kl: 0.025 loss: 0.685 
+ 12%|█▏        | 245/2000 [02:32<17:16,  1.69it/s][epoch 244] train: l1: 0.251 kl: 0.185 loss: 2.105 
+[epoch 245] val:   l1: 0.255 kl: 0.025 loss: 0.508 
+ 12%|█▏        | 246/2000 [02:32<17:32,  1.67it/s][epoch 245] train: l1: 0.263 kl: 0.175 loss: 2.012 
+[epoch 246] val:   l1: 0.291 kl: 0.026 loss: 0.550 
+ 12%|█▏        | 247/2000 [02:33<17:27,  1.67it/s][epoch 246] train: l1: 0.232 kl: 0.186 loss: 2.095 
+[epoch 247] val:   l1: 0.240 kl: 0.020 loss: 0.441 
+ 12%|█▏        | 248/2000 [02:34<17:24,  1.68it/s][epoch 247] train: l1: 0.268 kl: 0.182 loss: 2.083 
+[epoch 248] val:   l1: 0.318 kl: 0.023 loss: 0.543 
+ 12%|█▏        | 249/2000 [02:34<17:20,  1.68it/s][epoch 248] train: l1: 0.235 kl: 0.185 loss: 2.085 
+[epoch 249] val:   l1: 0.366 kl: 0.023 loss: 0.595 
+ 12%|█▎        | 250/2000 [02:35<17:21,  1.68it/s][epoch 249] train: l1: 0.249 kl: 0.179 loss: 2.038 
+[epoch 250] val:   l1: 0.251 kl: 0.022 loss: 0.467 
+ 13%|█▎        | 251/2000 [02:35<17:19,  1.68it/s][epoch 250] train: l1: 0.250 kl: 0.178 loss: 2.030 
+[epoch 251] val:   l1: 0.245 kl: 0.036 loss: 0.605 
+ 13%|█▎        | 252/2000 [02:36<17:16,  1.69it/s][epoch 251] train: l1: 0.202 kl: 0.168 loss: 1.880 
+[epoch 252] val:   l1: 0.253 kl: 0.019 loss: 0.438 
+ 13%|█▎        | 253/2000 [02:37<17:14,  1.69it/s][epoch 252] train: l1: 0.266 kl: 0.181 loss: 2.078 
+[epoch 253] val:   l1: 0.302 kl: 0.023 loss: 0.532 
+ 13%|█▎        | 254/2000 [02:37<17:11,  1.69it/s][epoch 253] train: l1: 0.276 kl: 0.182 loss: 2.097 
+[epoch 254] val:   l1: 0.298 kl: 0.025 loss: 0.549 
+ 13%|█▎        | 255/2000 [02:38<17:08,  1.70it/s][epoch 254] train: l1: 0.243 kl: 0.180 loss: 2.040 
+[epoch 255] val:   l1: 0.260 kl: 0.014 loss: 0.402 
+ 13%|█▎        | 256/2000 [02:38<17:07,  1.70it/s][epoch 255] train: l1: 0.232 kl: 0.167 loss: 1.905 
+[epoch 256] val:   l1: 0.210 kl: 0.015 loss: 0.363 
+ 13%|█▎        | 257/2000 [02:39<17:16,  1.68it/s][epoch 256] train: l1: 0.290 kl: 0.184 loss: 2.126 
+[epoch 257] val:   l1: 0.292 kl: 0.035 loss: 0.642 
+ 13%|█▎        | 258/2000 [02:40<17:15,  1.68it/s][epoch 257] train: l1: 0.276 kl: 0.173 loss: 2.007 
+[epoch 258] val:   l1: 0.294 kl: 0.072 loss: 1.013 
+ 13%|█▎        | 259/2000 [02:40<17:13,  1.68it/s][epoch 258] train: l1: 0.265 kl: 0.185 loss: 2.119 
+[epoch 259] val:   l1: 0.375 kl: 0.021 loss: 0.589 
+ 13%|█▎        | 260/2000 [02:41<17:08,  1.69it/s][epoch 259] train: l1: 0.304 kl: 0.185 loss: 2.154 
+[epoch 260] val:   l1: 0.391 kl: 0.019 loss: 0.585 
+ 13%|█▎        | 261/2000 [02:41<17:08,  1.69it/s][epoch 260] train: l1: 0.245 kl: 0.189 loss: 2.130 
+[epoch 261] val:   l1: 0.304 kl: 0.020 loss: 0.499 
+ 13%|█▎        | 262/2000 [02:42<17:09,  1.69it/s][epoch 261] train: l1: 0.268 kl: 0.176 loss: 2.033 
+[epoch 262] val:   l1: 0.362 kl: 0.025 loss: 0.617 
+ 13%|█▎        | 263/2000 [02:43<17:07,  1.69it/s][epoch 262] train: l1: 0.256 kl: 0.171 loss: 1.969 
+[epoch 263] val:   l1: 0.278 kl: 0.064 loss: 0.921 
+ 13%|█▎        | 264/2000 [02:43<17:04,  1.69it/s][epoch 263] train: l1: 0.244 kl: 0.178 loss: 2.020 
+[epoch 264] val:   l1: 0.356 kl: 0.018 loss: 0.537 
+ 13%|█▎        | 265/2000 [02:44<17:03,  1.70it/s][epoch 264] train: l1: 0.250 kl: 0.173 loss: 1.979 
+[epoch 265] val:   l1: 0.394 kl: 0.061 loss: 1.001 
+ 13%|█▎        | 266/2000 [02:44<17:00,  1.70it/s][epoch 265] train: l1: 0.254 kl: 0.174 loss: 1.994 
+[epoch 266] val:   l1: 0.244 kl: 0.015 loss: 0.394 
+ 13%|█▎        | 267/2000 [02:45<16:56,  1.70it/s][epoch 266] train: l1: 0.252 kl: 0.181 loss: 2.066 
+[epoch 267] val:   l1: 0.282 kl: 0.021 loss: 0.491 
+ 13%|█▎        | 268/2000 [02:45<16:59,  1.70it/s][epoch 267] train: l1: 0.268 kl: 0.169 loss: 1.961 
+[epoch 268] val:   l1: 0.279 kl: 0.019 loss: 0.473 
+ 13%|█▎        | 269/2000 [02:46<16:58,  1.70it/s][epoch 268] train: l1: 0.235 kl: 0.169 loss: 1.928 
+[epoch 269] val:   l1: 0.369 kl: 0.023 loss: 0.596 
+ 14%|█▎        | 270/2000 [02:47<16:59,  1.70it/s][epoch 269] train: l1: 0.250 kl: 0.171 loss: 1.961 
+[epoch 270] val:   l1: 0.385 kl: 0.022 loss: 0.603 
+ 14%|█▎        | 271/2000 [02:47<16:59,  1.70it/s][epoch 270] train: l1: 0.224 kl: 0.171 loss: 1.930 
+[epoch 271] val:   l1: 0.314 kl: 0.016 loss: 0.478 
+ 14%|█▎        | 272/2000 [02:48<16:59,  1.69it/s][epoch 271] train: l1: 0.244 kl: 0.175 loss: 1.991 
+[epoch 272] val:   l1: 0.323 kl: 0.017 loss: 0.493 
+ 14%|█▎        | 273/2000 [02:48<16:57,  1.70it/s][epoch 272] train: l1: 0.248 kl: 0.172 loss: 1.967 
+[epoch 273] val:   l1: 0.274 kl: 0.016 loss: 0.430 
+ 14%|█▎        | 274/2000 [02:49<16:57,  1.70it/s][epoch 273] train: l1: 0.262 kl: 0.177 loss: 2.036 
+[epoch 274] val:   l1: 0.218 kl: 0.017 loss: 0.387 
+ 14%|█▍        | 275/2000 [02:50<16:55,  1.70it/s][epoch 274] train: l1: 0.250 kl: 0.172 loss: 1.969 
+[epoch 275] val:   l1: 0.255 kl: 0.015 loss: 0.403 
+ 14%|█▍        | 276/2000 [02:50<16:54,  1.70it/s][epoch 275] train: l1: 0.272 kl: 0.171 loss: 1.979 
+[epoch 276] val:   l1: 0.270 kl: 0.019 loss: 0.456 
+ 14%|█▍        | 277/2000 [02:51<16:55,  1.70it/s][epoch 276] train: l1: 0.247 kl: 0.172 loss: 1.969 
+[epoch 277] val:   l1: 0.367 kl: 0.021 loss: 0.574 
+ 14%|█▍        | 278/2000 [02:51<16:56,  1.69it/s][epoch 277] train: l1: 0.257 kl: 0.169 loss: 1.946 
+[epoch 278] val:   l1: 0.231 kl: 0.015 loss: 0.385 
+ 14%|█▍        | 279/2000 [02:52<16:54,  1.70it/s][epoch 278] train: l1: 0.239 kl: 0.169 loss: 1.929 
+[epoch 279] val:   l1: 0.333 kl: 0.021 loss: 0.541 
+ 14%|█▍        | 280/2000 [02:53<16:53,  1.70it/s][epoch 279] train: l1: 0.227 kl: 0.178 loss: 2.007 
+[epoch 280] val:   l1: 0.423 kl: 0.021 loss: 0.629 
+ 14%|█▍        | 281/2000 [02:53<16:51,  1.70it/s][epoch 280] train: l1: 0.242 kl: 0.183 loss: 2.076 
+[epoch 281] val:   l1: 0.318 kl: 0.016 loss: 0.476 
+ 14%|█▍        | 282/2000 [02:54<16:51,  1.70it/s][epoch 281] train: l1: 0.269 kl: 0.183 loss: 2.100 
+[epoch 282] val:   l1: 0.383 kl: 0.019 loss: 0.572 
+ 14%|█▍        | 283/2000 [02:54<16:51,  1.70it/s][epoch 282] train: l1: 0.239 kl: 0.159 loss: 1.833 
+[epoch 283] val:   l1: 0.397 kl: 0.208 loss: 2.474 
+ 14%|█▍        | 284/2000 [02:55<16:52,  1.69it/s][epoch 283] train: l1: 0.226 kl: 0.170 loss: 1.922 
+[epoch 284] val:   l1: 0.292 kl: 0.022 loss: 0.512 
+ 14%|█▍        | 285/2000 [02:55<16:54,  1.69it/s][epoch 284] train: l1: 0.238 kl: 0.168 loss: 1.920 
+[epoch 285] val:   l1: 0.395 kl: 0.019 loss: 0.588 
+ 14%|█▍        | 286/2000 [02:56<16:54,  1.69it/s][epoch 285] train: l1: 0.249 kl: 0.177 loss: 2.019 
+[epoch 286] val:   l1: 0.366 kl: 0.019 loss: 0.552 
+ 14%|█▍        | 287/2000 [02:57<18:24,  1.55it/s][epoch 286] train: l1: 0.239 kl: 0.174 loss: 1.979 
+[epoch 287] val:   l1: 0.348 kl: 0.021 loss: 0.560 
+ 14%|█▍        | 288/2000 [02:57<17:54,  1.59it/s][epoch 287] train: l1: 0.233 kl: 0.180 loss: 2.030 
+[epoch 288] val:   l1: 0.268 kl: 0.018 loss: 0.443 
+ 14%|█▍        | 289/2000 [02:58<17:37,  1.62it/s][epoch 288] train: l1: 0.222 kl: 0.177 loss: 1.996 
+[epoch 289] val:   l1: 0.333 kl: 0.020 loss: 0.531 
+ 14%|█▍        | 290/2000 [02:59<17:25,  1.64it/s][epoch 289] train: l1: 0.240 kl: 0.177 loss: 2.014 
+[epoch 290] val:   l1: 0.350 kl: 0.019 loss: 0.544 
+ 15%|█▍        | 291/2000 [02:59<17:17,  1.65it/s][epoch 290] train: l1: 0.262 kl: 0.168 loss: 1.941 
+[epoch 291] val:   l1: 0.249 kl: 0.017 loss: 0.417 
+ 15%|█▍        | 292/2000 [03:00<17:07,  1.66it/s][epoch 291] train: l1: 0.271 kl: 0.169 loss: 1.964 
+[epoch 292] val:   l1: 0.409 kl: 0.019 loss: 0.595 
+ 15%|█▍        | 293/2000 [03:00<17:04,  1.67it/s][epoch 292] train: l1: 0.219 kl: 0.174 loss: 1.958 
+[epoch 293] val:   l1: 0.211 kl: 0.017 loss: 0.385 
+ 15%|█▍        | 294/2000 [03:01<17:03,  1.67it/s][epoch 293] train: l1: 0.247 kl: 0.166 loss: 1.905 
+[epoch 294] val:   l1: 0.369 kl: 0.018 loss: 0.547 
+ 15%|█▍        | 295/2000 [03:02<16:59,  1.67it/s][epoch 294] train: l1: 0.256 kl: 0.173 loss: 1.984 
+[epoch 295] val:   l1: 0.357 kl: 0.021 loss: 0.571 
+ 15%|█▍        | 296/2000 [03:02<16:54,  1.68it/s][epoch 295] train: l1: 0.212 kl: 0.176 loss: 1.973 
+[epoch 296] val:   l1: 0.272 kl: 0.023 loss: 0.498 
+ 15%|█▍        | 297/2000 [03:03<16:53,  1.68it/s][epoch 296] train: l1: 0.230 kl: 0.168 loss: 1.908 
+[epoch 297] val:   l1: 0.352 kl: 0.016 loss: 0.507 
+ 15%|█▍        | 298/2000 [03:03<16:48,  1.69it/s][epoch 297] train: l1: 0.213 kl: 0.168 loss: 1.889 
+[epoch 298] val:   l1: 0.251 kl: 0.014 loss: 0.392 
+ 15%|█▍        | 299/2000 [03:04<16:42,  1.70it/s][epoch 298] train: l1: 0.261 kl: 0.175 loss: 2.013 
+[epoch 299] val:   l1: 0.222 kl: 0.021 loss: 0.428 
+ 15%|█▌        | 300/2000 [03:05<16:40,  1.70it/s][epoch 299] train: l1: 0.217 kl: 0.171 loss: 1.927 
+[epoch 300] val:   l1: 0.250 kl: 0.014 loss: 0.395 
+ 15%|█▌        | 301/2000 [03:05<16:41,  1.70it/s][epoch 300] train: l1: 0.248 kl: 0.174 loss: 1.985 
+[epoch 301] val:   l1: 0.345 kl: 0.018 loss: 0.520 
+ 15%|█▌        | 302/2000 [03:06<16:39,  1.70it/s][epoch 301] train: l1: 0.240 kl: 0.161 loss: 1.855 
+[epoch 302] val:   l1: 0.211 kl: 0.018 loss: 0.391 
+ 15%|█▌        | 303/2000 [03:06<16:52,  1.68it/s][epoch 302] train: l1: 0.247 kl: 0.167 loss: 1.912 
+[epoch 303] val:   l1: 0.309 kl: 0.023 loss: 0.538 
+ 15%|█▌        | 304/2000 [03:07<16:45,  1.69it/s][epoch 303] train: l1: 0.230 kl: 0.171 loss: 1.937 
+[epoch 304] val:   l1: 0.303 kl: 0.019 loss: 0.491 
+ 15%|█▌        | 305/2000 [03:08<16:45,  1.69it/s][epoch 304] train: l1: 0.216 kl: 0.172 loss: 1.938 
+[epoch 305] val:   l1: 0.285 kl: 0.015 loss: 0.436 
+ 15%|█▌        | 306/2000 [03:08<16:40,  1.69it/s][epoch 305] train: l1: 0.223 kl: 0.156 loss: 1.779 
+[epoch 306] val:   l1: 0.335 kl: 0.066 loss: 0.995 
+ 15%|█▌        | 307/2000 [03:09<16:37,  1.70it/s][epoch 306] train: l1: 0.250 kl: 0.156 loss: 1.814 
+[epoch 307] val:   l1: 0.346 kl: 0.017 loss: 0.512 
+ 15%|█▌        | 308/2000 [03:09<16:35,  1.70it/s][epoch 307] train: l1: 0.249 kl: 0.171 loss: 1.954 
+[epoch 308] val:   l1: 0.259 kl: 0.013 loss: 0.385 
+ 15%|█▌        | 309/2000 [03:10<16:36,  1.70it/s][epoch 308] train: l1: 0.246 kl: 0.162 loss: 1.861 
+[epoch 309] val:   l1: 0.314 kl: 0.063 loss: 0.945 
+ 16%|█▌        | 310/2000 [03:10<16:35,  1.70it/s][epoch 309] train: l1: 0.244 kl: 0.162 loss: 1.865 
+[epoch 310] val:   l1: 0.186 kl: 0.019 loss: 0.374 
+ 16%|█▌        | 311/2000 [03:11<16:35,  1.70it/s][epoch 310] train: l1: 0.216 kl: 0.167 loss: 1.889 
+[epoch 311] val:   l1: 0.308 kl: 0.023 loss: 0.535 
+ 16%|█▌        | 312/2000 [03:12<16:34,  1.70it/s][epoch 311] train: l1: 0.259 kl: 0.180 loss: 2.059 
+[epoch 312] val:   l1: 0.249 kl: 0.017 loss: 0.419 
+ 16%|█▌        | 313/2000 [03:12<16:36,  1.69it/s][epoch 312] train: l1: 0.241 kl: 0.165 loss: 1.889 
+[epoch 313] val:   l1: 0.214 kl: 0.016 loss: 0.369 
+ 16%|█▌        | 314/2000 [03:13<16:34,  1.70it/s][epoch 313] train: l1: 0.241 kl: 0.157 loss: 1.815 
+[epoch 314] val:   l1: 0.369 kl: 0.018 loss: 0.546 
+ 16%|█▌        | 315/2000 [03:13<16:33,  1.70it/s][epoch 314] train: l1: 0.266 kl: 0.161 loss: 1.878 
+[epoch 315] val:   l1: 0.318 kl: 0.022 loss: 0.536 
+ 16%|█▌        | 316/2000 [03:14<16:31,  1.70it/s][epoch 315] train: l1: 0.199 kl: 0.169 loss: 1.889 
+[epoch 316] val:   l1: 0.348 kl: 0.025 loss: 0.601 
+ 16%|█▌        | 317/2000 [03:15<16:30,  1.70it/s][epoch 316] train: l1: 0.262 kl: 0.159 loss: 1.857 
+[epoch 317] val:   l1: 0.373 kl: 0.024 loss: 0.612 
+ 16%|█▌        | 318/2000 [03:15<16:45,  1.67it/s][epoch 317] train: l1: 0.252 kl: 0.166 loss: 1.914 
+[epoch 318] val:   l1: 0.283 kl: 0.016 loss: 0.439 
+ 16%|█▌        | 319/2000 [03:16<16:38,  1.68it/s][epoch 318] train: l1: 0.231 kl: 0.158 loss: 1.812 
+[epoch 319] val:   l1: 0.252 kl: 0.020 loss: 0.447 
+ 16%|█▌        | 320/2000 [03:16<16:38,  1.68it/s][epoch 319] train: l1: 0.227 kl: 0.154 loss: 1.769 
+[epoch 320] val:   l1: 0.260 kl: 0.017 loss: 0.428 
+ 16%|█▌        | 321/2000 [03:17<16:34,  1.69it/s][epoch 320] train: l1: 0.231 kl: 0.172 loss: 1.950 
+[epoch 321] val:   l1: 0.279 kl: 0.021 loss: 0.490 
+ 16%|█▌        | 322/2000 [03:18<16:28,  1.70it/s][epoch 321] train: l1: 0.239 kl: 0.167 loss: 1.909 
+[epoch 322] val:   l1: 0.325 kl: 0.019 loss: 0.520 
+ 16%|█▌        | 323/2000 [03:18<16:27,  1.70it/s][epoch 322] train: l1: 0.213 kl: 0.154 loss: 1.751 
+[epoch 323] val:   l1: 0.237 kl: 0.017 loss: 0.403 
+ 16%|█▌        | 324/2000 [03:19<16:23,  1.70it/s][epoch 323] train: l1: 0.260 kl: 0.164 loss: 1.901 
+[epoch 324] val:   l1: 0.254 kl: 0.013 loss: 0.386 
+ 16%|█▋        | 325/2000 [03:19<16:24,  1.70it/s][epoch 324] train: l1: 0.249 kl: 0.147 loss: 1.716 
+[epoch 325] val:   l1: 0.307 kl: 0.015 loss: 0.458 
+ 16%|█▋        | 326/2000 [03:20<16:23,  1.70it/s][epoch 325] train: l1: 0.233 kl: 0.161 loss: 1.845 
+[epoch 326] val:   l1: 0.261 kl: 0.018 loss: 0.439 
+ 16%|█▋        | 327/2000 [03:21<16:32,  1.69it/s][epoch 326] train: l1: 0.208 kl: 0.166 loss: 1.873 
+[epoch 327] val:   l1: 0.291 kl: 0.015 loss: 0.445 
+ 16%|█▋        | 328/2000 [03:21<16:29,  1.69it/s][epoch 327] train: l1: 0.248 kl: 0.158 loss: 1.826 
+[epoch 328] val:   l1: 0.220 kl: 0.018 loss: 0.396 
+ 16%|█▋        | 329/2000 [03:22<16:28,  1.69it/s][epoch 328] train: l1: 0.221 kl: 0.166 loss: 1.882 
+[epoch 329] val:   l1: 0.366 kl: 0.016 loss: 0.528 
+ 16%|█▋        | 330/2000 [03:22<16:26,  1.69it/s][epoch 329] train: l1: 0.225 kl: 0.161 loss: 1.834 
+[epoch 330] val:   l1: 0.313 kl: 0.015 loss: 0.467 
+ 17%|█▋        | 331/2000 [03:23<16:26,  1.69it/s][epoch 330] train: l1: 0.242 kl: 0.163 loss: 1.869 
+[epoch 331] val:   l1: 0.299 kl: 0.033 loss: 0.632 
+ 17%|█▋        | 332/2000 [03:23<16:21,  1.70it/s][epoch 331] train: l1: 0.240 kl: 0.148 loss: 1.721 
+[epoch 332] val:   l1: 0.279 kl: 0.031 loss: 0.587 
+ 17%|█▋        | 333/2000 [03:24<16:19,  1.70it/s][epoch 332] train: l1: 0.207 kl: 0.159 loss: 1.799 
+[epoch 333] val:   l1: 0.283 kl: 0.013 loss: 0.417 
+ 17%|█▋        | 334/2000 [03:25<16:19,  1.70it/s][epoch 333] train: l1: 0.197 kl: 0.164 loss: 1.841 
+[epoch 334] val:   l1: 0.324 kl: 0.019 loss: 0.513 
+ 17%|█▋        | 335/2000 [03:25<16:16,  1.70it/s][epoch 334] train: l1: 0.241 kl: 0.172 loss: 1.961 
+[epoch 335] val:   l1: 0.267 kl: 0.051 loss: 0.777 
+ 17%|█▋        | 336/2000 [03:26<16:24,  1.69it/s][epoch 335] train: l1: 0.225 kl: 0.154 loss: 1.761 
+[epoch 336] val:   l1: 0.277 kl: 0.019 loss: 0.472 
+ 17%|█▋        | 337/2000 [03:26<16:25,  1.69it/s][epoch 336] train: l1: 0.229 kl: 0.160 loss: 1.827 
+[epoch 337] val:   l1: 0.328 kl: 0.018 loss: 0.505 
+ 17%|█▋        | 338/2000 [03:27<16:24,  1.69it/s][epoch 337] train: l1: 0.240 kl: 0.170 loss: 1.944 
+[epoch 338] val:   l1: 0.323 kl: 0.017 loss: 0.495 
+ 17%|█▋        | 339/2000 [03:28<16:21,  1.69it/s][epoch 338] train: l1: 0.249 kl: 0.162 loss: 1.871 
+[epoch 339] val:   l1: 0.289 kl: 0.015 loss: 0.443 
+ 17%|█▋        | 340/2000 [03:28<16:22,  1.69it/s][epoch 339] train: l1: 0.202 kl: 0.151 loss: 1.712 
+[epoch 340] val:   l1: 0.313 kl: 0.015 loss: 0.461 
+ 17%|█▋        | 341/2000 [03:29<16:20,  1.69it/s][epoch 340] train: l1: 0.245 kl: 0.157 loss: 1.813 
+[epoch 341] val:   l1: 0.200 kl: 0.016 loss: 0.362 
+ 17%|█▋        | 342/2000 [03:29<16:25,  1.68it/s][epoch 341] train: l1: 0.230 kl: 0.152 loss: 1.748 
+[epoch 342] val:   l1: 0.370 kl: 0.022 loss: 0.590 
+ 17%|█▋        | 343/2000 [03:30<16:22,  1.69it/s][epoch 342] train: l1: 0.227 kl: 0.164 loss: 1.867 
+[epoch 343] val:   l1: 0.344 kl: 0.020 loss: 0.545 
+ 17%|█▋        | 344/2000 [03:31<16:20,  1.69it/s][epoch 343] train: l1: 0.225 kl: 0.155 loss: 1.778 
+[epoch 344] val:   l1: 0.274 kl: 0.013 loss: 0.407 
+ 17%|█▋        | 345/2000 [03:31<16:18,  1.69it/s][epoch 344] train: l1: 0.211 kl: 0.155 loss: 1.759 
+[epoch 345] val:   l1: 0.208 kl: 0.014 loss: 0.351 
+ 17%|█▋        | 346/2000 [03:32<16:24,  1.68it/s][epoch 345] train: l1: 0.223 kl: 0.166 loss: 1.883 
+[epoch 346] val:   l1: 0.309 kl: 0.020 loss: 0.506 
+ 17%|█▋        | 347/2000 [03:32<16:23,  1.68it/s][epoch 346] train: l1: 0.242 kl: 0.154 loss: 1.785 
+[epoch 347] val:   l1: 0.316 kl: 0.092 loss: 1.232 
+ 17%|█▋        | 348/2000 [03:33<16:21,  1.68it/s][epoch 347] train: l1: 0.248 kl: 0.154 loss: 1.790 
+[epoch 348] val:   l1: 0.380 kl: 0.036 loss: 0.738 
+ 17%|█▋        | 349/2000 [03:34<16:39,  1.65it/s][epoch 348] train: l1: 0.255 kl: 0.156 loss: 1.810 
+[epoch 349] val:   l1: 0.437 kl: 0.020 loss: 0.636 
+ 18%|█▊        | 350/2000 [03:34<16:32,  1.66it/s][epoch 349] train: l1: 0.229 kl: 0.161 loss: 1.837 
+[epoch 350] val:   l1: 0.355 kl: 0.048 loss: 0.831 
+ 18%|█▊        | 351/2000 [03:35<16:27,  1.67it/s][epoch 350] train: l1: 0.225 kl: 0.144 loss: 1.666 
+[epoch 351] val:   l1: 0.270 kl: 0.022 loss: 0.492 
+ 18%|█▊        | 352/2000 [03:35<16:20,  1.68it/s][epoch 351] train: l1: 0.238 kl: 0.162 loss: 1.855 
+[epoch 352] val:   l1: 0.243 kl: 0.010 loss: 0.344 
+ 18%|█▊        | 353/2000 [03:36<16:22,  1.68it/s][epoch 352] train: l1: 0.233 kl: 0.152 loss: 1.751 
+[epoch 353] val:   l1: 0.271 kl: 0.017 loss: 0.439 
+ 18%|█▊        | 354/2000 [03:37<16:16,  1.69it/s][epoch 353] train: l1: 0.246 kl: 0.160 loss: 1.842 
+[epoch 354] val:   l1: 0.218 kl: 0.016 loss: 0.382 
+ 18%|█▊        | 355/2000 [03:37<16:13,  1.69it/s][epoch 354] train: l1: 0.244 kl: 0.146 loss: 1.708 
+[epoch 355] val:   l1: 0.256 kl: 0.015 loss: 0.410 
+ 18%|█▊        | 356/2000 [03:38<16:11,  1.69it/s][epoch 355] train: l1: 0.233 kl: 0.161 loss: 1.838 
+[epoch 356] val:   l1: 0.316 kl: 0.016 loss: 0.475 
+ 18%|█▊        | 357/2000 [03:38<16:07,  1.70it/s][epoch 356] train: l1: 0.269 kl: 0.155 loss: 1.815 
+[epoch 357] val:   l1: 0.452 kl: 0.017 loss: 0.621 
+ 18%|█▊        | 358/2000 [03:39<16:06,  1.70it/s][epoch 357] train: l1: 0.222 kl: 0.160 loss: 1.827 
+[epoch 358] val:   l1: 0.301 kl: 0.012 loss: 0.420 
+ 18%|█▊        | 359/2000 [03:39<16:05,  1.70it/s][epoch 358] train: l1: 0.243 kl: 0.147 loss: 1.709 
+[epoch 359] val:   l1: 0.228 kl: 0.021 loss: 0.436 
+ 18%|█▊        | 360/2000 [03:40<16:03,  1.70it/s][epoch 359] train: l1: 0.234 kl: 0.157 loss: 1.801 
+[epoch 360] val:   l1: 0.387 kl: 0.013 loss: 0.519 
+ 18%|█▊        | 361/2000 [03:41<16:05,  1.70it/s][epoch 360] train: l1: 0.230 kl: 0.152 loss: 1.752 
+[epoch 361] val:   l1: 0.324 kl: 0.014 loss: 0.463 
+ 18%|█▊        | 362/2000 [03:41<16:09,  1.69it/s][epoch 361] train: l1: 0.220 kl: 0.142 loss: 1.643 
+[epoch 362] val:   l1: 0.295 kl: 0.019 loss: 0.482 
+ 18%|█▊        | 363/2000 [03:42<16:13,  1.68it/s][epoch 362] train: l1: 0.218 kl: 0.153 loss: 1.747 
+[epoch 363] val:   l1: 0.367 kl: 0.059 loss: 0.959 
+ 18%|█▊        | 364/2000 [03:42<16:14,  1.68it/s][epoch 363] train: l1: 0.228 kl: 0.150 loss: 1.726 
+[epoch 364] val:   l1: 0.239 kl: 0.058 loss: 0.817 
+ 18%|█▊        | 365/2000 [03:43<16:10,  1.68it/s][epoch 364] train: l1: 0.238 kl: 0.153 loss: 1.770 
+[epoch 365] val:   l1: 0.253 kl: 0.016 loss: 0.408 
+ 18%|█▊        | 366/2000 [03:44<16:11,  1.68it/s][epoch 365] train: l1: 0.245 kl: 0.157 loss: 1.817 
+[epoch 366] val:   l1: 0.258 kl: 0.012 loss: 0.373 
+ 18%|█▊        | 367/2000 [03:44<16:09,  1.68it/s][epoch 366] train: l1: 0.264 kl: 0.154 loss: 1.802 
+[epoch 367] val:   l1: 0.334 kl: 0.060 loss: 0.930 
+ 18%|█▊        | 368/2000 [03:45<16:09,  1.68it/s][epoch 367] train: l1: 0.225 kl: 0.150 loss: 1.728 
+[epoch 368] val:   l1: 0.211 kl: 0.010 loss: 0.308 
+ 18%|█▊        | 369/2000 [03:45<16:16,  1.67it/s][epoch 368] train: l1: 0.225 kl: 0.157 loss: 1.795 
+[epoch 369] val:   l1: 0.232 kl: 0.021 loss: 0.444 
+ 18%|█▊        | 370/2000 [03:46<16:13,  1.67it/s][epoch 369] train: l1: 0.236 kl: 0.157 loss: 1.810 
+[epoch 370] val:   l1: 0.306 kl: 0.013 loss: 0.437 
+ 19%|█▊        | 371/2000 [03:47<16:13,  1.67it/s][epoch 370] train: l1: 0.225 kl: 0.150 loss: 1.728 
+[epoch 371] val:   l1: 0.293 kl: 0.015 loss: 0.442 
+ 19%|█▊        | 372/2000 [03:47<16:11,  1.68it/s][epoch 371] train: l1: 0.199 kl: 0.140 loss: 1.604 
+[epoch 372] val:   l1: 0.198 kl: 0.015 loss: 0.351 
+ 19%|█▊        | 373/2000 [03:48<16:10,  1.68it/s][epoch 372] train: l1: 0.230 kl: 0.141 loss: 1.644 
+[epoch 373] val:   l1: 0.285 kl: 0.016 loss: 0.442 
+ 19%|█▊        | 374/2000 [03:48<16:10,  1.67it/s][epoch 373] train: l1: 0.226 kl: 0.150 loss: 1.726 
+[epoch 374] val:   l1: 0.262 kl: 0.015 loss: 0.412 
+ 19%|█▉        | 375/2000 [03:49<16:05,  1.68it/s][epoch 374] train: l1: 0.233 kl: 0.154 loss: 1.769 
+[epoch 375] val:   l1: 0.204 kl: 0.018 loss: 0.388 
+ 19%|█▉        | 376/2000 [03:50<16:03,  1.69it/s][epoch 375] train: l1: 0.225 kl: 0.160 loss: 1.823 
+[epoch 376] val:   l1: 0.192 kl: 0.015 loss: 0.337 
+ 19%|█▉        | 377/2000 [03:50<16:08,  1.68it/s][epoch 376] train: l1: 0.255 kl: 0.152 loss: 1.780 
+[epoch 377] val:   l1: 0.182 kl: 0.017 loss: 0.352 
+ 19%|█▉        | 378/2000 [03:51<16:02,  1.69it/s][epoch 377] train: l1: 0.216 kl: 0.147 loss: 1.682 
+[epoch 378] val:   l1: 0.266 kl: 0.010 loss: 0.367 
+ 19%|█▉        | 379/2000 [03:51<15:58,  1.69it/s][epoch 378] train: l1: 0.247 kl: 0.152 loss: 1.765 
+[epoch 379] val:   l1: 0.412 kl: 0.060 loss: 1.010 
+ 19%|█▉        | 380/2000 [03:52<15:57,  1.69it/s][epoch 379] train: l1: 0.223 kl: 0.146 loss: 1.680 
+[epoch 380] val:   l1: 0.213 kl: 0.013 loss: 0.342 
+ 19%|█▉        | 381/2000 [03:53<15:54,  1.70it/s][epoch 380] train: l1: 0.203 kl: 0.150 loss: 1.705 
+[epoch 381] val:   l1: 0.217 kl: 0.011 loss: 0.331 
+ 19%|█▉        | 382/2000 [03:53<15:56,  1.69it/s][epoch 381] train: l1: 0.223 kl: 0.146 loss: 1.684 
+[epoch 382] val:   l1: 0.237 kl: 0.015 loss: 0.388 
+ 19%|█▉        | 383/2000 [03:54<15:52,  1.70it/s][epoch 382] train: l1: 0.246 kl: 0.156 loss: 1.801 
+[epoch 383] val:   l1: 0.210 kl: 0.014 loss: 0.345 
+ 19%|█▉        | 384/2000 [03:54<15:58,  1.69it/s][epoch 383] train: l1: 0.232 kl: 0.141 loss: 1.644 
+[epoch 384] val:   l1: 0.226 kl: 0.019 loss: 0.420 
+ 19%|█▉        | 385/2000 [03:55<15:58,  1.69it/s][epoch 384] train: l1: 0.247 kl: 0.155 loss: 1.793 
+[epoch 385] val:   l1: 0.223 kl: 0.012 loss: 0.342 
+ 19%|█▉        | 386/2000 [03:55<15:58,  1.68it/s][epoch 385] train: l1: 0.256 kl: 0.141 loss: 1.663 
+[epoch 386] val:   l1: 0.211 kl: 0.019 loss: 0.401 
+ 19%|█▉        | 387/2000 [03:56<15:58,  1.68it/s][epoch 386] train: l1: 0.214 kl: 0.148 loss: 1.697 
+[epoch 387] val:   l1: 0.224 kl: 0.012 loss: 0.339 
+ 19%|█▉        | 388/2000 [03:57<15:53,  1.69it/s][epoch 387] train: l1: 0.239 kl: 0.140 loss: 1.642 
+[epoch 388] val:   l1: 0.221 kl: 0.011 loss: 0.334 
+ 19%|█▉        | 389/2000 [03:57<15:51,  1.69it/s][epoch 388] train: l1: 0.225 kl: 0.153 loss: 1.752 
+[epoch 389] val:   l1: 0.237 kl: 0.018 loss: 0.421 
+ 20%|█▉        | 390/2000 [03:58<15:55,  1.69it/s][epoch 389] train: l1: 0.229 kl: 0.142 loss: 1.649 
+[epoch 390] val:   l1: 0.239 kl: 0.012 loss: 0.356 
+ 20%|█▉        | 391/2000 [03:58<15:52,  1.69it/s][epoch 390] train: l1: 0.198 kl: 0.145 loss: 1.643 
+[epoch 391] val:   l1: 0.193 kl: 0.012 loss: 0.309 
+ 20%|█▉        | 392/2000 [03:59<15:51,  1.69it/s][epoch 391] train: l1: 0.220 kl: 0.149 loss: 1.710 
+[epoch 392] val:   l1: 0.196 kl: 0.022 loss: 0.418 
+ 20%|█▉        | 393/2000 [04:00<15:49,  1.69it/s][epoch 392] train: l1: 0.225 kl: 0.143 loss: 1.659 
+[epoch 393] val:   l1: 0.346 kl: 0.019 loss: 0.537 
+ 20%|█▉        | 394/2000 [04:00<15:50,  1.69it/s][epoch 393] train: l1: 0.231 kl: 0.148 loss: 1.706 
+[epoch 394] val:   l1: 0.242 kl: 0.016 loss: 0.397 
+ 20%|█▉        | 395/2000 [04:01<16:08,  1.66it/s][epoch 394] train: l1: 0.236 kl: 0.136 loss: 1.598 
+[epoch 395] val:   l1: 0.209 kl: 0.012 loss: 0.331 
+ 20%|█▉        | 396/2000 [04:01<16:02,  1.67it/s][epoch 395] train: l1: 0.228 kl: 0.145 loss: 1.679 
+[epoch 396] val:   l1: 0.389 kl: 0.015 loss: 0.536 
+ 20%|█▉        | 397/2000 [04:02<15:55,  1.68it/s][epoch 396] train: l1: 0.276 kl: 0.144 loss: 1.714 
+[epoch 397] val:   l1: 0.234 kl: 0.039 loss: 0.629 
+ 20%|█▉        | 398/2000 [04:03<15:54,  1.68it/s][epoch 397] train: l1: 0.213 kl: 0.135 loss: 1.565 
+[epoch 398] val:   l1: 0.274 kl: 0.011 loss: 0.389 
+ 20%|█▉        | 399/2000 [04:03<15:52,  1.68it/s][epoch 398] train: l1: 0.245 kl: 0.150 loss: 1.743 
+[epoch 399] val:   l1: 0.335 kl: 0.014 loss: 0.477 
+ 20%|██        | 400/2000 [04:04<15:50,  1.68it/s][epoch 399] train: l1: 0.256 kl: 0.140 loss: 1.655 
+[epoch 400] val:   l1: 0.338 kl: 0.167 loss: 2.008 
+ 20%|██        | 401/2000 [04:04<15:46,  1.69it/s][epoch 400] train: l1: 0.229 kl: 0.141 loss: 1.642 
+[epoch 401] val:   l1: 0.327 kl: 0.016 loss: 0.483 
+ 20%|██        | 402/2000 [04:05<15:44,  1.69it/s][epoch 401] train: l1: 0.228 kl: 0.151 loss: 1.733 
+[epoch 402] val:   l1: 0.300 kl: 0.014 loss: 0.444 
+ 20%|██        | 403/2000 [04:06<15:43,  1.69it/s][epoch 402] train: l1: 0.217 kl: 0.131 loss: 1.526 
+[epoch 403] val:   l1: 0.188 kl: 0.011 loss: 0.299 
+ 20%|██        | 404/2000 [04:06<15:53,  1.67it/s][epoch 403] train: l1: 0.239 kl: 0.147 loss: 1.706 
+[epoch 404] val:   l1: 0.210 kl: 0.016 loss: 0.371 
+ 20%|██        | 405/2000 [04:07<15:45,  1.69it/s][epoch 404] train: l1: 0.210 kl: 0.143 loss: 1.635 
+[epoch 405] val:   l1: 0.267 kl: 0.014 loss: 0.410 
+ 20%|██        | 406/2000 [04:07<15:44,  1.69it/s][epoch 405] train: l1: 0.258 kl: 0.144 loss: 1.697 
+[epoch 406] val:   l1: 0.327 kl: 0.015 loss: 0.482 
+ 20%|██        | 407/2000 [04:08<15:41,  1.69it/s][epoch 406] train: l1: 0.235 kl: 0.136 loss: 1.592 
+[epoch 407] val:   l1: 0.228 kl: 0.010 loss: 0.331 
+ 20%|██        | 408/2000 [04:09<15:41,  1.69it/s][epoch 407] train: l1: 0.213 kl: 0.135 loss: 1.562 
+[epoch 408] val:   l1: 0.233 kl: 0.017 loss: 0.400 
+ 20%|██        | 409/2000 [04:09<15:41,  1.69it/s][epoch 408] train: l1: 0.225 kl: 0.138 loss: 1.608 
+[epoch 409] val:   l1: 0.337 kl: 0.012 loss: 0.462 
+ 20%|██        | 410/2000 [04:10<15:40,  1.69it/s][epoch 409] train: l1: 0.232 kl: 0.136 loss: 1.589 
+[epoch 410] val:   l1: 0.254 kl: 0.014 loss: 0.397 
+ 21%|██        | 411/2000 [04:10<15:36,  1.70it/s][epoch 410] train: l1: 0.218 kl: 0.145 loss: 1.671 
+[epoch 411] val:   l1: 0.257 kl: 0.013 loss: 0.389 
+ 21%|██        | 412/2000 [04:11<15:36,  1.70it/s][epoch 411] train: l1: 0.218 kl: 0.145 loss: 1.665 
+[epoch 412] val:   l1: 0.331 kl: 0.015 loss: 0.480 
+ 21%|██        | 413/2000 [04:12<15:37,  1.69it/s][epoch 412] train: l1: 0.237 kl: 0.140 loss: 1.640 
+[epoch 413] val:   l1: 0.270 kl: 0.015 loss: 0.422 
+ 21%|██        | 414/2000 [04:12<15:38,  1.69it/s][epoch 413] train: l1: 0.203 kl: 0.142 loss: 1.619 
+[epoch 414] val:   l1: 0.337 kl: 0.014 loss: 0.481 
+ 21%|██        | 415/2000 [04:13<15:38,  1.69it/s][epoch 414] train: l1: 0.199 kl: 0.137 loss: 1.569 
+[epoch 415] val:   l1: 0.309 kl: 0.015 loss: 0.458 
+ 21%|██        | 416/2000 [04:13<15:34,  1.69it/s][epoch 415] train: l1: 0.220 kl: 0.136 loss: 1.576 
+[epoch 416] val:   l1: 0.251 kl: 0.017 loss: 0.419 
+ 21%|██        | 417/2000 [04:14<15:38,  1.69it/s][epoch 416] train: l1: 0.217 kl: 0.145 loss: 1.663 
+[epoch 417] val:   l1: 0.262 kl: 0.026 loss: 0.526 
+ 21%|██        | 418/2000 [04:14<15:37,  1.69it/s][epoch 417] train: l1: 0.224 kl: 0.136 loss: 1.584 
+[epoch 418] val:   l1: 0.331 kl: 0.010 loss: 0.435 
+ 21%|██        | 419/2000 [04:15<15:36,  1.69it/s][epoch 418] train: l1: 0.227 kl: 0.135 loss: 1.573 
+[epoch 419] val:   l1: 0.210 kl: 0.013 loss: 0.337 
+ 21%|██        | 420/2000 [04:16<15:34,  1.69it/s][epoch 419] train: l1: 0.197 kl: 0.146 loss: 1.657 
+[epoch 420] val:   l1: 0.220 kl: 0.029 loss: 0.515 
+ 21%|██        | 421/2000 [04:16<15:35,  1.69it/s][epoch 420] train: l1: 0.216 kl: 0.138 loss: 1.594 
+[epoch 421] val:   l1: 0.346 kl: 0.018 loss: 0.529 
+ 21%|██        | 422/2000 [04:17<15:33,  1.69it/s][epoch 421] train: l1: 0.206 kl: 0.135 loss: 1.561 
+[epoch 422] val:   l1: 0.252 kl: 0.015 loss: 0.405 
+ 21%|██        | 423/2000 [04:17<15:31,  1.69it/s][epoch 422] train: l1: 0.216 kl: 0.143 loss: 1.650 
+[epoch 423] val:   l1: 0.239 kl: 0.012 loss: 0.359 
+ 21%|██        | 424/2000 [04:18<15:29,  1.70it/s][epoch 423] train: l1: 0.224 kl: 0.148 loss: 1.705 
+[epoch 424] val:   l1: 0.390 kl: 0.015 loss: 0.543 
+ 21%|██▏       | 425/2000 [04:19<15:26,  1.70it/s][epoch 424] train: l1: 0.214 kl: 0.135 loss: 1.568 
+[epoch 425] val:   l1: 0.261 kl: 0.013 loss: 0.389 
+ 21%|██▏       | 426/2000 [04:19<15:29,  1.69it/s][epoch 425] train: l1: 0.235 kl: 0.139 loss: 1.621 
+[epoch 426] val:   l1: 0.355 kl: 0.013 loss: 0.482 
+ 21%|██▏       | 427/2000 [04:20<15:29,  1.69it/s][epoch 426] train: l1: 0.207 kl: 0.127 loss: 1.480 
+[epoch 427] val:   l1: 0.241 kl: 0.012 loss: 0.362 
+ 21%|██▏       | 428/2000 [04:20<15:28,  1.69it/s][epoch 427] train: l1: 0.204 kl: 0.137 loss: 1.574 
+[epoch 428] val:   l1: 0.265 kl: 0.051 loss: 0.775 
+ 21%|██▏       | 429/2000 [04:21<15:25,  1.70it/s][epoch 428] train: l1: 0.191 kl: 0.130 loss: 1.493 
+[epoch 429] val:   l1: 0.413 kl: 0.017 loss: 0.584 
+ 22%|██▏       | 430/2000 [04:22<15:28,  1.69it/s][epoch 429] train: l1: 0.212 kl: 0.138 loss: 1.592 
+[epoch 430] val:   l1: 0.319 kl: 0.012 loss: 0.443 

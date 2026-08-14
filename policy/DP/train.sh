@@ -21,6 +21,10 @@ gpu_id=${6}
 
 DEBUG=False
 
+# Override for a quick check: NUM_EPOCHS=1 bash train.sh ...
+NUM_EPOCHS="${NUM_EPOCHS:-10}"
+CHECKPOINT_EVERY="${CHECKPOINT_EVERY:-5}"
+
 addition_info=train
 exp_name=${ckpt_name}-robot_dp-${addition_info}
 run_dir="data/outputs/${exp_name}_seed${seed}"
@@ -77,6 +81,8 @@ python train.py --config-name="${alg_name}.yaml" \
                 "${EXTRA_CAMERA_ARGS[@]}" \
                 task.dataset.zarr_path="${zarr_path}" \
                 training.debug=$DEBUG \
+                training.num_epochs=${NUM_EPOCHS} \
+                training.checkpoint_every=${CHECKPOINT_EVERY} \
                 training.seed=${seed} \
                 training.device="cuda:0" \
                 exp_name=${exp_name} \

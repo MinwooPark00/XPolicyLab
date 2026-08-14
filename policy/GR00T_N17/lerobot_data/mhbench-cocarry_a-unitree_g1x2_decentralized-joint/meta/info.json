@@ -1,0 +1,112 @@
+{
+  "codebase_version": "v2.0",
+  "robot_type": "unitree_g1 (robot_a)",
+  "total_episodes": 3,
+  "total_frames": 3835,
+  "total_tasks": 1,
+  "total_videos": 3,
+  "total_chunks": 1,
+  "chunks_size": 1000,
+  "fps": 49.999999999992184,
+  "splits": {
+    "train": "0:3"
+  },
+  "data_path": "data/chunk-{episode_chunk:03d}/episode_{episode_index:06d}.parquet",
+  "video_path": "videos/chunk-{episode_chunk:03d}/{video_key}/episode_{episode_index:06d}.mp4",
+  "features": {
+    "observation.state": {
+      "dtype": "float32",
+      "shape": [
+        13
+      ],
+      "names": [
+        "robot_a_root_pose",
+        "robot_a_root_pose",
+        "robot_a_root_pose",
+        "robot_a_root_pose",
+        "robot_a_root_pose",
+        "robot_a_root_pose",
+        "robot_a_root_pose",
+        "robot_a_left_eef_pos",
+        "robot_a_left_eef_pos",
+        "robot_a_left_eef_pos",
+        "robot_a_right_eef_pos",
+        "robot_a_right_eef_pos",
+        "robot_a_right_eef_pos"
+      ]
+    },
+    "action": {
+      "dtype": "float32",
+      "shape": [
+        22
+      ],
+      "names": [
+        "robot_a",
+        "robot_a",
+        "robot_a",
+        "robot_a",
+        "robot_a",
+        "robot_a",
+        "robot_a",
+        "robot_a",
+        "robot_a",
+        "robot_a",
+        "robot_a",
+        "robot_a",
+        "robot_a",
+        "robot_a",
+        "robot_a",
+        "robot_a",
+        "robot_a",
+        "robot_a",
+        "robot_a",
+        "robot_a",
+        "robot_a",
+        "robot_a"
+      ]
+    },
+    "timestamp": {
+      "dtype": "float32",
+      "shape": [
+        1
+      ]
+    },
+    "episode_index": {
+      "dtype": "int64",
+      "shape": [
+        1
+      ]
+    },
+    "frame_index": {
+      "dtype": "int64",
+      "shape": [
+        1
+      ]
+    },
+    "index": {
+      "dtype": "int64",
+      "shape": [
+        1
+      ]
+    },
+    "task_index": {
+      "dtype": "int64",
+      "shape": [
+        1
+      ]
+    },
+    "observation.images.ego_a": {
+      "dtype": "video",
+      "shape": [
+        240,
+        320,
+        3
+      ],
+      "names": [
+        "height",
+        "width",
+        "channel"
+      ]
+    }
+  }
+}

@@ -3,12 +3,18 @@
 Matches scripts/data_convertion.py --format groot --type centralized:
   - video: both robots' own ego view (ego_a, ego_b) -- no third-person "scene"
     camera by default (pass --cameras to the converter to add it back).
-  - state: pelvis root_pose (7D) + left/right eef_pos (3D each) + left/right
-    eef_rot (4D each) per robot -- 21D/robot, 42D combined. eef_rot won't
-    appear in the converted meta/modality.json until the recorder writes it
-    (see scripts/data_convertion.py's DEFAULT_STATE_FIELDS/build_state_schema);
-    listing it here is harmless either way, GR00T only loads keys present in
-    modality.json.
+  - state: pelvis root_pose (7D) + left/right eef_pos (3D each) per robot --
+    13D/robot, 26D combined. eef_rot is NOT listed: the source HDF5 has no
+    per-hand end-effector *orientation* field at all (only position, plus a
+    whole-robot root_rot quaternion that isn't per-hand) -- see
+    datasets/data/*.hdf5's obs/ group. It's not something the converter can
+    produce by re-running; it would need a new recorder term upstream in the
+    simulator. Unlike XPolicyLab's other process_data.sh-driven adapters,
+    GR00T here does NOT silently skip a modality_key missing from
+    meta/modality.json -- lerobot_episode_loader.py's get_dataset_statistics()
+    does a direct dict lookup with no guard, so a declared-but-absent key is a
+    hard KeyError, not a no-op. Keep this list exactly in sync with
+    meta/modality.json's actual "state" keys.
   - action: one "robot_a"/"robot_b" field each, 22D per robot (14D arm EEF
     pose + 4D hand signals + 3D base velocity + 1D height, via
     --compress-hands), 44D combined.
@@ -32,13 +38,18 @@ from gr00t.data.types import (
     ModalityConfig,
 )
 
-# How many future action steps to predict per query; tunable, matches this
-# project's ACT chunk_size (policy/ACT/train.sh --chunk_size 50) and the
-# pre-registered "unitree_g1_full_body_with_waist_height_nav_cmd" config in
-# gr00t/configs/data/embodiment_configs.py.
-ACTION_HORIZON = 50
+# How many future action steps to predict per query. NOT freely tunable up:
+# the GR00T-N1.7-3B checkpoint's own architecture config fixes
+# model_config.action_horizon=40 (gr00t_n1d7/setup.py passes it straight into
+# processing_gr00t_n1d7.py's max_action_horizon), so requesting more here
+# than the model supports pads with a negative dimension and crashes
+# (RuntimeError: Trying to create tensor with negative dimension -10: [-10,
+# ...] -- literally max_action_horizon(40) - this value). 50 (matching ACT's
+# chunk_size / the pre-registered "unitree_g1_full_body_..." config, both for
+# different base models) does not fit here; 40 is this checkpoint's ceiling.
+ACTION_HORIZON = 40
 
-_STATE_FIELDS = ("root_pose", "left_eef_pos", "right_eef_pos", "left_eef_rot", "right_eef_rot")
+_STATE_FIELDS = ("root_pose", "left_eef_pos", "right_eef_pos")
 
 # rep=ABSOLUTE (the converter writes absolute poses/signals, not deltas);
 # type=NON_EEF, format=DEFAULT for every group, not just the non-pose ones --

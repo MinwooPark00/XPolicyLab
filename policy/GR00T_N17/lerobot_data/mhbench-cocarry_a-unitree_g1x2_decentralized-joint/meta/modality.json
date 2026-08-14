@@ -1,0 +1,32 @@
+{
+  "state": {
+    "robot_a_root_pose": {
+      "start": 0,
+      "end": 7
+    },
+    "robot_a_left_eef_pos": {
+      "start": 7,
+      "end": 10
+    },
+    "robot_a_right_eef_pos": {
+      "start": 10,
+      "end": 13
+    }
+  },
+  "action": {
+    "robot_a": {
+      "start": 0,
+      "end": 22
+    }
+  },
+  "video": {
+    "ego_a": {
+      "original_key": "observation.images.ego_a"
+    }
+  },
+  "annotation": {
+    "human.task_description": {
+      "original_key": "task_index"
+    }
+  }
+}

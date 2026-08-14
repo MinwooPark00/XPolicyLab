@@ -6,6 +6,7 @@
 
 # bash train.sh mhbench cocarry_robot_a unitree_g1x2_decentralized joint 0 0
 # sbatch -J act-cocarry --gres=gpu:1 --output=example.out --time=01:00:00 --wrap="bash train.sh mhbench cocarry_robot_a unitree_g1x2_decentralized joint 0 0"
+# sbatch -J act-cocarry --partition=suma_a6000 --gres=gpu:1 --output=example.out --time=23:00:00 --wrap="bash train.sh mhbench cocarry unitree_g1x2_centralized joint 0 0"
 
 bench_name=${1}
 ckpt_name=${2} # run name
@@ -40,9 +41,9 @@ python3 imitate_episodes.py \
     --kl_weight 10 \
     --chunk_size 50 \
     --hidden_dim 512 \
-    --batch_size 16 \
+    --batch_size 8 \
     --dim_feedforward 3200 \
-    --num_epochs 20 \
+    --num_epochs 2000 \
     --lr 1e-5 \
-    --save_freq 10 \
+    --save_freq 500 \
     --seed ${seed}

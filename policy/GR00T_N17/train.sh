@@ -1,5 +1,14 @@
 #!/usr/bin/env bash
 # GLOBAL_BATCH_SIZE=640 MAX_STEPS=100000 bash train.sh RoboDojo cotrain arx_x5 joint 0 0,1,2,3,4,5,6,7
+# MAX_STEPS=5 SAVE_STEPS=5 bash train.sh mhbench cocarry mhbench_cocarry joint 0 0
+# sbatch -J groot-cocarry --gres=gpu:1 --output=example.out --time=01:00:00 \
+#  --wrap="MAX_STEPS=5 SAVE_STEPS=5 bash train.sh mhbench cocarry mhbench_cocarry joint 0 0"
+
+# sbatch -J groot-cocarry --gres=gpu:1 --output=example.out --time=01:00:00 \
+#  --wrap="GR00T_LEROBOT_HOME=/scratch2/soochul/MHBench/baselines/XPolicyLab/policy/GR00T_N17/lerobot_data GLOBAL_BATCH_SIZE=8 MAX_STEPS=5 SAVE_STEPS=5 bash train.sh mhbench cocarry_a unitree_g1x2_decentralized joint 0 0"
+
+# sbatch -J groot-cocarry --partition=suma_a6000 --gres=gpu:1 --output=example.out --time=01:00:00 \
+#  --wrap="module load ffmpeg/7.0.2 && GR00T_LEROBOT_HOME=/scratch2/soochul/MHBench/baselines/XPolicyLab/policy/GR00T_N17/lerobot_data GLOBAL_BATCH_SIZE=8 MAX_STEPS=5 SAVE_STEPS=5 bash train.sh mhbench cocarry_a unitree_g1x2_decentralized joint 0 0"
 
 set -euo pipefail
 
