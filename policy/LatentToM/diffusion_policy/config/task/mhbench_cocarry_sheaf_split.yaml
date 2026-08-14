@@ -24,10 +24,10 @@ shape_meta:
       shape: ${task.image_shape}
       type: rgb
     arm1_proprio:
-      shape: [21]  # pelvis pose(7) + left eef pose(7) + right eef pose(7)
+      shape: [25]  # root pos(3)+rot(4) + left eef pos(3)+rot(4) + right eef pos(3)+rot(4) + right grasp(2) + left grasp(2)
       type: low_dim
     arm2_proprio:
-      shape: [21]
+      shape: [25]
       type: low_dim
   arm1_action:
     shape: [22]  # 22 for quat, 26 for rot6d -- train.sh overrides this to match the data
