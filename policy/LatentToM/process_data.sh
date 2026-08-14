@@ -12,10 +12,10 @@ set -e
 # convert_to_replay_buffer.py reads MHBench's raw per-episode trajectory
 # HDF5 directly (scripts/data_convertion.py's DemoSource format -- a single
 # .hdf5, a directory of <stem>.demo_N.hdf5 shards, or a dataset root above
-# one, e.g. datasets/hf/mhbench_cocarry_test) and writes the layout above in
-# one pass. No DP-format zarr intermediate and no separate MHBench .venv
-# subprocess -- this policy's own env already has h5py (install.sh) on top
-# of the zarr/av it already needed to write videos+lowdim.
+# one, e.g. datasets/cocarry) and writes the layout above in one pass. No
+# DP-format zarr intermediate and no separate MHBench .venv subprocess --
+# this policy's own env already has h5py (install.sh) on top of the zarr/av
+# it already needed to write videos+lowdim.
 bench_name=$1
 ckpt_name=$2
 env_cfg_type=$3
@@ -33,9 +33,16 @@ POLICY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MHBENCH_ROOT="$(cd "${POLICY_DIR}/../../../.." && pwd)"
 # The raw MHBench trajectory dataset to convert -- a single .hdf5, a shard
 # directory, or a dataset root (see convert_to_replay_buffer.py's docstring).
-# Override for a specific dataset, e.g.
-# MHBENCH_DATASET_PATH=datasets/hf/mhbench_cocarry_test.
-MHBENCH_DATASET_PATH="${MHBENCH_DATASET_PATH:-${MHBENCH_ROOT}/datasets/data}"
+#
+# Defaults to datasets/<env_cfg_type>, which is where MHBench's own data for
+# that task already is: `env_cfg_type` names baselines/env_cfg/<name>.yml
+# (cocarry, handover, door_passage) and the task directory carries the same
+# name, both when record_demos.py writes it and when baselines/README.md's
+# download step lands it. So a run whose env_cfg_type is `cocarry` reads
+# datasets/cocarry without being told twice. Override for anything else --
+# a specific shard, or a dataset kept outside the repo:
+#   MHBENCH_DATASET_PATH=/data/cocarry_v2 bash process_data.sh ...
+MHBENCH_DATASET_PATH="${MHBENCH_DATASET_PATH:-${MHBENCH_ROOT}/datasets/${env_cfg_type}}"
 
 out_dir="${POLICY_DIR}/data/${data_setting}"
 

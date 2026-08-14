@@ -28,11 +28,14 @@ bash process_data.sh <bench_name> <ckpt_name> <env_cfg_type> <action_type> [expe
 ```
 
 `convert_to_replay_buffer.py` reads MHBench's raw per-episode trajectory HDF5 directly (a single
-`.hdf5`, a shard directory, or a dataset root, e.g. `datasets/hf/mhbench_cocarry_test`; override
-the source with `MHBENCH_DATASET_PATH`, default `datasets/data`) and writes upstream LatentToM's
-own on-disk format — `data/<bench_name>-<ckpt_name>-<env_cfg_type>-<action_type>-<rotation_rep>/
+`.hdf5`, a shard directory, or a dataset root) and writes upstream LatentToM's own on-disk
+format — `data/<bench_name>-<ckpt_name>-<env_cfg_type>-<action_type>-<rotation_rep>/
 {replay_buffer.zarr, videos/<episode>/<camera>.mp4}`. `rotation_rep` defaults to `quat` (22D/arm
 action); `rot6d` (26D/arm) is the other option.
+
+The source defaults to `datasets/<env_cfg_type>` — the task directory of the same name, which is
+both where `record_demos.py` writes and where `baselines/README.md`'s download step lands. Set
+`MHBENCH_DATASET_PATH` for anything else (a single shard, or a dataset outside the repo).
 
 ## Training
 
@@ -68,9 +71,9 @@ conda activate <policy_env>
 cd baselines/XPolicyLab/policy/LatentToM
 bash install.sh
 
-# 1) Convert data. <raw-dataset-path> is a single .hdf5, a shard directory, or a dataset root
-MHBENCH_DATASET_PATH=<raw-dataset-path> \
-  bash process_data.sh mhbench verify cocarry ee "" quat
+# 1) Convert data. Reads datasets/cocarry -- env_cfg_type names the task directory too.
+#    Set MHBENCH_DATASET_PATH to read from anywhere else.
+bash process_data.sh mhbench verify cocarry ee "" quat
 # -> data/mhbench-verify-cocarry-ee-quat/{replay_buffer.zarr,videos/}
 
 # 2) Train. training.debug=true is a fast plumbing check.
