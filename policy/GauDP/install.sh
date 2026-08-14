@@ -28,7 +28,10 @@ if sys.version_info < (3, 10) or sys.version_info >= (3, 12):
     )
 PY
 
-python -m pip install --upgrade pip setuptools wheel packaging ninja
+# PyTorch 2.1's cpp_extension imports pkg_resources, which was removed from
+# newer setuptools releases. Keep the build frontend compatible with the
+# default torch 2.1.2/cu118 extension toolchain.
+python -m pip install --upgrade pip "setuptools<81" wheel packaging ninja
 
 if [[ "${GAUDP_SKIP_TORCH_INSTALL:-0}" != "1" ]]; then
     echo "[GauDP] installing PyTorch ${TORCH_VERSION} from ${TORCH_INDEX_URL}"
@@ -39,6 +42,60 @@ if [[ "${GAUDP_SKIP_TORCH_INSTALL:-0}" != "1" ]]; then
         --index-url "${TORCH_INDEX_URL}"
 else
     echo "[GauDP] keeping the environment's existing PyTorch installation"
+fi
+
+# The CUDA wheels include the runtime libraries, but building cuRoPE and the
+# Gaussian rasterizer also requires a matching CUDA toolkit (nvcc).  When the
+# script is running inside conda, install that toolkit into the active
+# environment if it is not already available.  System CUDA installations and
+# explicit GAUDP_NVCC/CUDA_HOME selections always take precedence.
+if [[ "${GAUDP_SKIP_CUDA_EXTENSIONS:-0}" != "1" ]]; then
+    NVCC_CANDIDATE="${GAUDP_NVCC:-}"
+    if [[ -z "${NVCC_CANDIDATE}" && -n "${CUDA_HOME:-}" && -x "${CUDA_HOME}/bin/nvcc" ]]; then
+        NVCC_CANDIDATE="${CUDA_HOME}/bin/nvcc"
+    fi
+    if [[ -z "${NVCC_CANDIDATE}" ]]; then
+        NVCC_CANDIDATE="$(command -v nvcc || true)"
+    fi
+
+    if [[ -z "${NVCC_CANDIDATE}" || ! -x "${NVCC_CANDIDATE}" ]]; then
+        if [[ "${GAUDP_AUTO_INSTALL_CUDA_TOOLKIT:-1}" == "1" \
+            && -n "${CONDA_PREFIX:-}" \
+            && -n "$(command -v conda || true)" ]]; then
+            TORCH_CUDA_VERSION="$(python - <<'PY'
+import torch
+
+if torch.version.cuda is None:
+    raise SystemExit("installed PyTorch is CPU-only; GauDP requires a CUDA build")
+print(torch.version.cuda)
+PY
+)"
+            CUDA_TOOLKIT_CHANNEL="${GAUDP_CUDA_TOOLKIT_CHANNEL:-nvidia/label/cuda-${TORCH_CUDA_VERSION}.0}"
+            echo "[GauDP] nvcc not found; installing CUDA toolkit ${TORCH_CUDA_VERSION} into ${CONDA_PREFIX}"
+            echo "[GauDP] CUDA toolkit channel=${CUDA_TOOLKIT_CHANNEL}"
+            # cuda-toolkit is a meta-package.  Using the unversioned nvidia
+            # channel can let conda satisfy its lower bounds with newer CUDA
+            # components (for example, an 11.8 meta-package with nvcc 13.x).
+            # Restrict CUDA packages to the matching versioned label.
+            conda install -y --override-channels \
+                -c "${CUDA_TOOLKIT_CHANNEL}" \
+                -c defaults \
+                "cuda-toolkit=${TORCH_CUDA_VERSION}"
+            NVCC_CANDIDATE="${CONDA_PREFIX}/bin/nvcc"
+            if [[ ! -x "${NVCC_CANDIDATE}" ]]; then
+                echo "[GauDP] CUDA toolkit installation completed but nvcc was not found at ${NVCC_CANDIDATE}." >&2
+                exit 2
+            fi
+            export GAUDP_NVCC="${NVCC_CANDIDATE}"
+            export CUDA_HOME="${CONDA_PREFIX}"
+        else
+            echo "[GauDP] nvcc is required to build cuRoPE and the Gaussian rasterizer." >&2
+            echo "[GauDP] Activate a conda environment for automatic toolkit installation," >&2
+            echo "[GauDP] install a toolkit matching torch.version.cuda manually, or set" >&2
+            echo "[GauDP] GAUDP_SKIP_CUDA_EXTENSIONS=1 for data/schema-only usage." >&2
+            exit 2
+        fi
+    fi
 fi
 
 # Pinned policy/NoPoSplat Python dependencies. XPolicyLab's own lightweight

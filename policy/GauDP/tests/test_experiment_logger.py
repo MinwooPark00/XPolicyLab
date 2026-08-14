@@ -25,6 +25,24 @@ def test_parse_wandb_tags():
     assert parse_wandb_tags("gaussian, cocarry,seed-0") == ["gaussian", "cocarry", "seed-0"]
 
 
+def test_default_wandb_mode_is_online(monkeypatch, tmp_path):
+    calls = {}
+
+    class FakeRun:
+        def finish(self):
+            pass
+
+    def init(**kwargs):
+        calls["init"] = kwargs
+        return FakeRun()
+
+    monkeypatch.setitem(sys.modules, "wandb", SimpleNamespace(init=init))
+    with ExperimentLogger(tmp_path, config={"lr": 1e-5}):
+        pass
+
+    assert calls["init"]["mode"] == "online"
+
+
 def test_wandb_mirrors_jsonl_record(monkeypatch, tmp_path):
     calls = {}
 

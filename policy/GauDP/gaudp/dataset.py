@@ -64,18 +64,74 @@ class _LazyH5Dataset(Dataset):
         return state
 
     def __del__(self):
-        if getattr(self, "_file", None) is not None:
-            self._file.close()
+        handle = getattr(self, "_file", None)
+        self._file = None
+        if handle is not None:
+            try:
+                handle.close()
+            except (TypeError, ValueError):
+                # h5py module globals may already be cleared during Python
+                # interpreter shutdown.
+                pass
 
 
 class GauDPSequenceDataset(_LazyH5Dataset):
-    def __init__(self, path: str | Path, train: bool, horizon: int = 8, n_obs_steps: int = 3) -> None:
+    def __init__(
+        self,
+        path: str | Path,
+        train: bool,
+        horizon: int = 8,
+        n_obs_steps: int = 3,
+        gaussian_features: str | Path | None = None,
+    ) -> None:
         super().__init__(path)
         self.horizon = horizon
         self.n_obs_steps = n_obs_steps
+        if gaussian_features is None:
+            raise ValueError("offline Gaussian feature file is required for GauDP policy training")
+        self.gaussian_features_path = str(Path(gaussian_features).resolve())
+        self._gaussian_file: h5py.File | None = None
+        with h5py.File(self.gaussian_features_path, "r") as features:
+            expected_shape = (int(self.episode_ends[-1]), len(self.camera_order), 13, *IMAGE_SIZE)
+            if "gaussian_features" not in features:
+                raise ValueError(f"missing gaussian_features dataset in {self.gaussian_features_path}")
+            if tuple(features["gaussian_features"].shape) != expected_shape:
+                raise ValueError(
+                    f"Gaussian feature shape mismatch: expected {expected_shape}, "
+                    f"got {tuple(features['gaussian_features'].shape)}"
+                )
+            feature_cameras = json.loads(features.attrs["camera_order"])
+            if feature_cameras != self.camera_order:
+                raise ValueError(
+                    f"Gaussian feature camera order {feature_cameras} does not match dataset {self.camera_order}"
+                )
+            if not bool(features.attrs.get("complete", False)):
+                raise ValueError(f"Gaussian feature extraction is incomplete: {self.gaussian_features_path}")
+            self.gaussian_checkpoint = str(features.attrs.get("gaussian_checkpoint", ""))
         ranges = _episode_ranges(self.episode_ends)
         self.ranges = [ranges[i] for i in split_episode_ids(len(ranges), train)]
         self.samples = [(episode, t) for episode, (start, end) in enumerate(self.ranges) for t in range(start, end)]
+
+    @property
+    def gaussian_file(self) -> h5py.File:
+        if self._gaussian_file is None:
+            self._gaussian_file = h5py.File(self.gaussian_features_path, "r")
+        return self._gaussian_file
+
+    def __getstate__(self):
+        state = super().__getstate__()
+        state["_gaussian_file"] = None
+        return state
+
+    def __del__(self):
+        super().__del__()
+        handle = getattr(self, "_gaussian_file", None)
+        self._gaussian_file = None
+        if handle is not None:
+            try:
+                handle.close()
+            except (TypeError, ValueError):
+                pass
 
     def __len__(self) -> int:
         return len(self.samples)
@@ -92,7 +148,16 @@ class GauDPSequenceDataset(_LazyH5Dataset):
             frames = _read_rows(self.file[f"rgb_{camera_index}"], indices).astype(np.uint8)
             tensor = torch.from_numpy(frames).permute(0, 3, 1, 2).float().div_(255.0)
             images.append(_resize_chw(tensor))
-        return {"images": torch.stack(images, dim=1), "state": state, "action": action}
+        feature_indices = indices[: self.n_obs_steps]
+        gaussian_features = torch.from_numpy(
+            _read_rows(self.gaussian_file["gaussian_features"], feature_indices)
+        )
+        return {
+            "images": torch.stack(images, dim=1),
+            "state": state,
+            "action": action,
+            "gaussian_features": gaussian_features,
+        }
 
     def normalization_arrays(self) -> tuple[np.ndarray, np.ndarray]:
         chunks = [slice(start, end) for start, end in self.ranges]
@@ -152,3 +217,18 @@ class GaussianFrameDataset(_LazyH5Dataset):
             "near": torch.full((views,), near, dtype=torch.float32),
             "far": torch.full((views,), far, dtype=torch.float32),
         }
+
+
+class GaussianImageDataset(_LazyH5Dataset):
+    """All converted RGB frames in global order for offline feature extraction."""
+
+    def __len__(self) -> int:
+        return int(self.episode_ends[-1])
+
+    def __getitem__(self, index: int) -> torch.Tensor:
+        images = []
+        for camera_index in range(len(self.camera_order)):
+            rgb = np.asarray(self.file[f"rgb_{camera_index}"][index], dtype=np.uint8)
+            image = torch.from_numpy(rgb).permute(2, 0, 1).float().div_(255.0)
+            images.append(_resize_chw(image))
+        return torch.stack(images)

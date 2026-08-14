@@ -33,7 +33,7 @@ class ExperimentLogger:
         output_dir: Path,
         *,
         config: Mapping[str, Any],
-        wandb_mode: str = "offline",
+        wandb_mode: str = "online",
         wandb_project: str = "MHBench-GauDP",
         wandb_run_name: str | None = None,
         wandb_entity: str | None = None,

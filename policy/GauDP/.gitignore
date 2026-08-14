@@ -1,6 +1,7 @@
 data/
 checkpoints/
 outputs/
+weights/
 __pycache__/
 *.py[cod]
 .pytest_cache/

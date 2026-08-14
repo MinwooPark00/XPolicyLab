@@ -12,7 +12,7 @@ from .core.model.diffusion.conditional_unet1d import ConditionalUnet1D
 from .core.model.gaussian_cnn import GaussianConvEncoder
 from .gaussian import build_gaussian_encoder, encode_gaussians, freeze_gaussian_encoder
 from .normalizer import GauDPNormalizer
-from .schema import ACTION_DIM, PROPRIO_DIM
+from .schema import ACTION_DIM, PROPRIO_DIM, ROBOT_ACTION_DIM
 
 
 def _replace_batch_norm(module: nn.Module) -> nn.Module:
@@ -79,7 +79,11 @@ class GauDPPolicy(nn.Module):
         try:
             from diffusers.schedulers.scheduling_ddpm import DDPMScheduler
         except ImportError as error:
-            raise ImportError("diffusers is required for GauDP") from error
+            raise ImportError(
+                f"diffusers is required for GauDP; its import failed with: {error}. "
+                "Run through train.sh or set PYTHONNOUSERSITE=1 so user-site packages "
+                "cannot shadow the GauDP environment."
+            ) from error
         self.num_views = int(num_views)
         self.horizon = int(horizon)
         self.n_obs_steps = int(n_obs_steps)
@@ -138,21 +142,43 @@ class GauDPPolicy(nn.Module):
             "down_dims": self.down_dims,
         }
 
-    def _global_condition(self, images: torch.Tensor, state: torch.Tensor) -> torch.Tensor:
+    def _global_condition(
+        self,
+        images: torch.Tensor,
+        state: torch.Tensor,
+        gaussian_features: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         images = images[:, : self.n_obs_steps]
         state = self.normalizer.normalize_state(state[:, : self.n_obs_steps])
         batch, steps, views, channels, height, width = images.shape
-        flattened = images.reshape(batch * steps, views, channels, height, width)
-        # NoPoSplat is a fixed feature extractor; autograd is intentionally disabled.
-        with torch.no_grad():
-            _, gaussian_features = encode_gaussians(self.gaussian_encoder, flattened, return_features=True)
-        gaussian_features = gaussian_features.reshape(batch, steps, views, 13, height, width)
+        if gaussian_features is None:
+            # Deployment receives new observations, so NoPoSplat remains an
+            # online fixed feature extractor for inference.
+            flattened = images.reshape(batch * steps, views, channels, height, width)
+            with torch.no_grad():
+                _, gaussian_features = encode_gaussians(
+                    self.gaussian_encoder, flattened, return_features=True
+                )
+            gaussian_features = gaussian_features.reshape(batch, steps, views, 13, height, width)
+        else:
+            gaussian_features = gaussian_features[:, : self.n_obs_steps]
+            expected = (batch, steps, views, 13, height, width)
+            if tuple(gaussian_features.shape) != expected:
+                raise ValueError(
+                    f"expected cached Gaussian features {expected}, got {tuple(gaussian_features.shape)}"
+                )
+            gaussian_features = gaussian_features.to(dtype=images.dtype)
         fused = self.gaussian_fusion(gaussian_features, images)
         fused = fused.reshape(batch * steps, views, 3, height, width)
         encoded = self.obs_encoder(fused, state.reshape(batch * steps, PROPRIO_DIM))
         return encoded.reshape(batch, steps * self.obs_encoder.output_dim)
 
-    def compute_loss(self, batch: dict[str, torch.Tensor]) -> torch.Tensor:
+    def compute_loss(
+        self,
+        batch: dict[str, torch.Tensor],
+        *,
+        return_metrics: bool = False,
+    ) -> torch.Tensor | tuple[torch.Tensor, dict[str, float]]:
         images, state, action = batch["images"], batch["state"], batch["action"]
         if action.shape[-1] != ACTION_DIM:
             raise ValueError(f"expected {ACTION_DIM}D action, got {action.shape[-1]}")
@@ -165,8 +191,60 @@ class GauDPPolicy(nn.Module):
             device=action.device,
         ).long()
         noisy = self.noise_scheduler.add_noise(normalized_action, noise, timesteps)
-        prediction = self.diffusion(noisy, timesteps, global_cond=self._global_condition(images, state))
-        return F.mse_loss(prediction, noise)
+        prediction = self.diffusion(
+            noisy,
+            timesteps,
+            global_cond=self._global_condition(images, state, batch.get("gaussian_features")),
+        )
+        loss = F.mse_loss(prediction, noise)
+        if not return_metrics:
+            return loss
+
+        # DDPM predicts epsilon. Convert that prediction to a clean normalized
+        # action estimate for diagnostics only; clipping follows the scheduler's
+        # configured action range and avoids low-SNR timesteps dominating x0.
+        alphas_cumprod = self.noise_scheduler.alphas_cumprod.to(
+            device=timesteps.device, dtype=normalized_action.dtype
+        )
+        alpha = alphas_cumprod[timesteps]
+        alpha = alpha.reshape((-1,) + (1,) * (normalized_action.ndim - 1))
+        predicted_x0 = (
+            noisy - (1.0 - alpha).sqrt() * prediction
+        ) / alpha.sqrt().clamp_min(1e-6)
+        predicted_x0 = predicted_x0.clamp(-1.0, 1.0)
+        squared_error = (predicted_x0 - normalized_action).square()
+        absolute_error = (predicted_x0 - normalized_action).abs()
+
+        def group_mse(indices: list[int]) -> float:
+            return float(squared_error[..., indices].mean().detach())
+
+        robot_a = list(range(0, ROBOT_ACTION_DIM))
+        robot_b = list(range(ROBOT_ACTION_DIM, ACTION_DIM))
+        eef = list(range(0, 14)) + list(range(ROBOT_ACTION_DIM, ROBOT_ACTION_DIM + 14))
+        hand = list(range(14, 18)) + list(range(ROBOT_ACTION_DIM + 14, ROBOT_ACTION_DIM + 18))
+        base = list(range(18, 21)) + list(range(ROBOT_ACTION_DIM + 18, ROBOT_ACTION_DIM + 21))
+        height = [ROBOT_ACTION_DIM - 1, ACTION_DIM - 1]
+        snr = alpha / (1.0 - alpha).clamp_min(1e-6)
+        noise_cosine = F.cosine_similarity(
+            prediction.flatten(1), noise.flatten(1), dim=1
+        ).mean()
+        metrics = {
+            "diffusion/noise_mse": float(loss.detach()),
+            "diffusion/noise_cosine": float(noise_cosine.detach()),
+            "diffusion/pred_noise_rms": float(prediction.square().mean().sqrt().detach()),
+            "diffusion/target_noise_rms": float(noise.square().mean().sqrt().detach()),
+            "diffusion/timestep_mean": float(timesteps.float().mean().detach()),
+            "diffusion/snr_mean": float(snr.mean().detach()),
+            "action/x0_clipped_mse": float(squared_error.mean().detach()),
+            "action/x0_clipped_mae": float(absolute_error.mean().detach()),
+            "action/robot_a_mse": group_mse(robot_a),
+            "action/robot_b_mse": group_mse(robot_b),
+            "action/eef_pose_mse": group_mse(eef),
+            "action/hand_mse": group_mse(hand),
+            "action/base_velocity_mse": group_mse(base),
+            "action/height_mse": group_mse(height),
+        }
+        return loss, metrics
 
     @torch.no_grad()
     def predict_action(self, images: torch.Tensor, state: torch.Tensor) -> torch.Tensor:
