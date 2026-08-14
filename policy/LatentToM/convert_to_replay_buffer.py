@@ -177,7 +177,7 @@ def read_actions(demo: h5py.Group, key: str = "actions") -> np.ndarray:
 
 
 def read_rgb(demo: h5py.Group, cam: str) -> np.ndarray:
-    return np.asarray(demo[f"images/{cam}/rgb"])  # (T, H, W, 3) uint8
+    return np.asarray(demo[f"obs/images/{cam}/rgb"])  # (T, H, W, 3) uint8
 
 
 def read_sim_time(demo: h5py.Group) -> np.ndarray | None:
