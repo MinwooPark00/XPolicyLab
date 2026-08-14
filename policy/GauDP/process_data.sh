@@ -14,10 +14,20 @@ fi
 
 POLICY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MHBENCH_ROOT="$(cd "${POLICY_DIR}/../../../.." && pwd)"
-source_path="${MHBENCH_DATASET_PATH:-${MHBENCH_ROOT}/datasets/data}"
+default_source="${MHBENCH_ROOT}/datasets/${bench}_test"
+if [[ ! -e "${default_source}" ]]; then
+    # Backward-compatible fallback for the original HDF5 dataset layout.
+    default_source="${MHBENCH_ROOT}/datasets/data"
+fi
+source_path="${MHBENCH_DATASET_PATH:-${default_source}}"
 output="${POLICY_DIR}/data/${bench}-${ckpt}-${env_cfg}-${action_type}.hdf5"
 extra=()
 if [[ -n "${max_demos}" ]]; then extra+=(--max-demos "${max_demos}"); fi
 if [[ "${GAUDP_USE_SCENE:-0}" == "1" ]]; then extra+=(--use-scene); fi
 
-python "${POLICY_DIR}/process_data.py" "${source_path}" "${output}" "${extra[@]}"
+python_bin="${GAUDP_PYTHON:-python}"
+if ! command -v "${python_bin}" >/dev/null 2>&1; then
+    echo "[GauDP] Python executable not found: ${python_bin}; activate the GauDP environment or set GAUDP_PYTHON" >&2
+    exit 2
+fi
+PYTHONNOUSERSITE=1 "${python_bin}" "${POLICY_DIR}/process_data.py" "${source_path}" "${output}" "${extra[@]}"

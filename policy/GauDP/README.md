@@ -90,19 +90,63 @@ GauDP's own `encoder_state` checkpoints are both accepted.
 
 ## 1. Convert MHBench demonstrations
 
-`MHBENCH_DATASET_PATH` may name one raw `.hdf5`, a shard directory, or an
-MHBench dataset root understood by `scripts/_dataset.py`.
+`process_data.sh` now accepts both MHBench formats:
+
+- the current LeRobot v2.1 dataset root, containing `meta/info.json`,
+  `data/chunk-*/episode_*.parquet`, and
+  `videos/chunk-*/observation.images.<camera>/episode_*.mp4`;
+- a legacy raw `.hdf5`, HDF5 shard directory, or HDF5 dataset root understood
+  by `scripts/_dataset.py`.
+
+For `bench=cocarry`, the default source is `datasets/cocarry_test`. Override it
+with `MHBENCH_DATASET_PATH` when the dataset is elsewhere:
 
 ```bash
-export MHBENCH_DATASET_PATH=/path/to/raw/mhbench/data
+export MHBENCH_DATASET_PATH=/lustre/meat124/MHBench/datasets/cocarry_test
 bash process_data.sh cocarry experiment cocarry ee 100
 ```
 
-This writes `data/cocarry-experiment-cocarry-ee.hdf5`, including 42D state,
-44D action, RGB, depth, normalized-ready intrinsics, camera poses, and episode
-boundaries. The optional fifth argument limits demonstration count.
+Do not point `MHBENCH_DATASET_PATH` at its `data/` child: GauDP also needs the
+sibling `meta/` and `videos/` directories. The optional fifth argument limits
+episode count.
+
+This writes `data/cocarry-experiment-cocarry-ee.hdf5` with the stable GauDP
+42D state, 44D action, RGB, Gaussian reconstruction supervision, and episode
+boundaries. LeRobot columns are mapped by their dimension names in
+`meta/info.json`, not by fragile numeric offsets:
+
+- state: `observation.robots_state` + `observation.eef_state`;
+- EEF action: `action.eef`;
+- four compressed hand controls: the named `index_0`/`middle_0` joints in
+  `action`;
+- locomotion: `teleop.navigate_command` and
+  `teleop.base_height_command`;
+- images: `observation.images.ego_a`, `observation.images.ego_b`, and optional
+  `observation.images.scene` MP4 streams.
+- Gaussian geometry: `observation.depth.ego_a/ego_b`,
+  `observation.camera_pose`, and the per-camera `camera.intrinsics` metadata.
+
+Depth MP4s use the dataset-declared lossless `uint16_hi_lo_rgb` encoding and
+are converted from millimetres to metres. Camera poses are converted from the
+Isaac camera frame (+X forward, +Y left, +Z up) to the OpenCV convention used
+by NoPoSplat. The release has ego-camera depth but no scene depth; with
+`GAUDP_USE_SCENE=1`, the scene still receives RGB reconstruction loss while its
+NaN depth is excluded from depth L1.
+
+The recommended end-to-end path for this export is therefore:
+
+```bash
+bash process_data.sh cocarry experiment cocarry ee 100
+bash train_gaussian.sh cocarry experiment cocarry ee 0 0 --finetune-mode heads
+bash extract_gaussian_features.sh cocarry experiment cocarry ee 0 0
+bash train.sh cocarry experiment cocarry ee 0 0
+```
 
 ## 2. Fine-tune Gaussian reconstruction
+
+This optional stage requires RGB, depth, camera intrinsics, and camera poses.
+The current LeRobot v2.1 release contains all required supervision for the two
+ego views, so both `train_gaussian.sh` and `eval_gaussian.sh` are supported.
 
 The six positional arguments are `<bench> <ckpt> <env_cfg> <action_type>
 <seed> <gpu>`. Any remaining arguments are forwarded to
@@ -220,10 +264,11 @@ numbers do not measure held-out novel-view synthesis.
 ## 3. Extract Gaussian features offline
 
 Policy training uses Policy-Lightning's offline feature workflow: run the
-fine-tuned, frozen NoPoSplat encoder once over every converted RGB frame, then
+selected frozen NoPoSplat encoder once over every converted RGB frame, then
 read its pixel-aligned 13-channel features from HDF5 during every policy epoch.
-The default command uses the matching
-`checkpoints/<run>/gaussian/best.ckpt`:
+The launcher uses the matching `checkpoints/<run>/gaussian/best.ckpt` when it
+exists. Otherwise, when Gaussian fine-tuning is intentionally skipped, it
+automatically downloads and uses the official NoPoSplat checkpoint:
 
 ```bash
 bash extract_gaussian_features.sh cocarry experiment cocarry ee 0 0
@@ -252,7 +297,7 @@ The default output is `checkpoints/<run>/gaussian/features.hdf5`. Extraction
 uses FP16 storage by default, supports interruption/resume, and refuses to use
 an incomplete cache for policy training. `--dtype float32` preserves features
 at full precision; `--compression lzf` or `--compression gzip` trades extraction
-and loading speed for disk space. For the current 23,701-frame, two-camera
+and loading speed for disk space. For the current 23,651-frame, two-camera
 dataset, the uncompressed cache is approximately 88 GiB in FP16 or 176 GiB in
 FP32. Put `GAUDP_GAUSSIAN_FEATURES` on server-local NVMe when possible.
 
@@ -265,12 +310,14 @@ cache, pass `--overwrite`. A one-batch extraction test can be run with
 ## 4. Train the policy
 
 ```bash
-# Uses the matching Gaussian best.ckpt and offline features, GPU 0, and seed 0.
+# Uses the Gaussian checkpoint recorded by the offline cache, GPU 0, and seed 0.
 bash train.sh cocarry experiment cocarry ee 0 0
 ```
 
-The matching Gaussian `best.ckpt` and its completed `features.hdf5` are
-mandatory. NoPoSplat is not constructed or executed during policy training;
+The completed `features.hdf5` and the exact Gaussian checkpoint recorded in
+that cache are mandatory. `train.sh` uses a matching run-local `best.ckpt` when
+available and otherwise reads the external checkpoint path from the cache.
+NoPoSplat is not constructed or executed during policy training;
 only the Gaussian-image fusion CNN, shared ResNet observation encoder, and
 centralized DDPM are trained. Defaults are horizon 8, 3 observation steps, 6
 returned execution steps, and 100 diffusion steps. Outputs are under the
@@ -304,7 +351,10 @@ bash train.sh cocarry experiment cocarry ee 0 0 --debug
 Offline features are a training optimization only. During MHBench evaluation,
 `model.py` still loads the selected Gaussian encoder checkpoint and extracts
 features online from each new RGB observation; the deployment/inference path
-does not read `features.hdf5`.
+does not read `features.hdf5`. Policy checkpoints record the absolute encoder
+path. If the run is moved to another machine, set `GAUDP_GAUSSIAN_CKPT` or the
+`gaussian_checkpoint` key in `deploy.yml` to the same encoder file; the adapter
+also checks `weights/<recorded-filename>` as a portable fallback.
 
 The policy stage writes `policy/{best.ckpt,last.ckpt,metrics.jsonl}` and a
 `policy/wandb/` directory. `best.ckpt` minimizes `val/loss`, which is the DDPM
@@ -423,8 +473,10 @@ per-environment history padding, six-action chunks, and `reset()` are handled.
 
 ## Data contract
 
-Images remain RGB throughout; no RGB/BGR swap is applied. The default views
-are `ego_a` and `ego_b`. Set `GAUDP_USE_SCENE=1` consistently for conversion,
+Images remain RGB throughout. LeRobot MP4 decoding performs the required
+OpenCV BGR-to-RGB conversion immediately after `VideoCapture.read`; no later
+channel swap is applied. The default views are `ego_a` and `ego_b`. Set
+`GAUDP_USE_SCENE=1` consistently for conversion, feature extraction, policy
 training, and evaluation to add `scene` as a third view.
 
 The centralized state is real proprioception, never a copy of action:
@@ -435,8 +487,11 @@ robot_b 21 = pelvis xyz+quat_xyzw (7) + left EEF (7) + right EEF (7)
 state       = robot_a + robot_b = 42D
 ```
 
-Each raw MHBench robot action has 32 values. Its 14 hand joints are compressed
-to `[left index, left middle, right index, right middle]`, giving:
+Legacy HDF5 stores a raw 32D action per robot. LeRobot v2.1 stores the same
+control components in separate named columns: wrist targets in `action.eef`,
+hand joints in `action`, base velocity in `teleop.navigate_command`, and height
+in `teleop.base_height_command`. In both formats, the hand joints are reduced
+to `[left index_0, left middle_0, right index_0, right middle_0]`, giving:
 
 ```text
 robot 22 = left EEF pose (7) + right EEF pose (7) + hands (4)
@@ -472,6 +527,11 @@ Common failures:
   `gaudp/third_party/noposplat/model/encoder/backbone/croco/curope` package.
 - view-count mismatch: use `GAUDP_USE_SCENE=1` (or omit it) consistently across
   all three phases and set `use_scene` equivalently in `deploy.yml`.
+- `LeRobot parquet conversion requires pyarrow`: rerun `install.sh`; GauDP now
+  installs the pinned parquet reader used by `process_data.py`.
+- `no Gaussian reconstruction supervision`: the converted source is an older
+  RGB-only export. Use the current release, or skip Gaussian fine-tuning and
+  run `extract_gaussian_features.sh` with the official/existing checkpoint.
 - missing `mhbench_state`: use `scripts/mhbench_xpolicylab_env.py`; GauDP
   intentionally refuses the lossy generic-state/action fallback.
 - missing policy checkpoint: run the Gaussian stage first, then policy training;

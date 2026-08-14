@@ -11,6 +11,7 @@ run="${POLICY_DIR}/checkpoints/${bench}-${ckpt}-${env_cfg}-${action_type}-${seed
 if [[ ! -f "${data}" ]]; then bash "${POLICY_DIR}/process_data.sh" "${bench}" "${ckpt}" "${env_cfg}" "${action_type}"; fi
 
 source "${POLICY_DIR}/resolve_noposplat_checkpoint.sh"
+require_gaussian_supervision "${data}"
 pretrained="$(resolve_noposplat_checkpoint "${data}" "${POLICY_DIR}")"
 python_bin="${GAUDP_PYTHON:-python}"
 

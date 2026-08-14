@@ -2,6 +2,24 @@
 
 # Resolve (and, when needed, download) the official NoPoSplat initialization.
 # This file is sourced by the Gaussian train/evaluation launchers.
+require_gaussian_supervision() {
+    local data=$1
+    local python_bin="${GAUDP_PYTHON:-python}"
+    PYTHONNOUSERSITE=1 "${python_bin}" - "${data}" <<'PY'
+import sys
+import h5py
+
+with h5py.File(sys.argv[1], "r") as source:
+    if not bool(source.attrs.get("gaussian_supervision", True)):
+        source_format = str(source.attrs.get("source_format", "this"))
+        raise SystemExit(
+            f"[GauDP] {source_format} dataset has no depth, camera intrinsics, or camera poses; "
+            "Gaussian reconstruction training/evaluation is unavailable. "
+            "Run extract_gaussian_features.sh with a pretrained or existing checkpoint instead."
+        )
+PY
+}
+
 resolve_noposplat_checkpoint() {
     local data=$1
     local policy_dir=$2

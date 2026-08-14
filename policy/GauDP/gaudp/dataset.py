@@ -15,6 +15,15 @@ from .schema import ACTION_DIM, PROPRIO_DIM, pose7_xyzw_to_matrix
 
 IMAGE_SIZE = (240, 320)
 _OPENGL_TO_OPENCV = np.diag([1.0, -1.0, -1.0, 1.0]).astype(np.float32)
+_OPENCV_TO_ISAAC_CAMERA = np.asarray(
+    [
+        [0.0, 0.0, 1.0, 0.0],
+        [-1.0, 0.0, 0.0, 0.0],
+        [0.0, -1.0, 0.0, 0.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ],
+    dtype=np.float32,
+)
 
 
 def _episode_ranges(episode_ends: np.ndarray) -> list[tuple[int, int]]:
@@ -49,6 +58,9 @@ class _LazyH5Dataset(Dataset):
         with h5py.File(self.path, "r") as source:
             self.episode_ends = np.asarray(source["episode_ends"], dtype=np.int64)
             self.camera_order = json.loads(source.attrs["camera_order"])
+            self.source_format = str(source.attrs.get("source_format", "mhbench-hdf5"))
+            self.gaussian_supervision = bool(source.attrs.get("gaussian_supervision", True))
+            self.camera_pose_convention = str(source.attrs.get("camera_pose_convention", "opengl"))
             if int(source.attrs["state_dim"]) != PROPRIO_DIM or int(source.attrs["action_dim"]) != ACTION_DIM:
                 raise ValueError("dataset does not follow GauDP's 42D state / 44D action contract")
 
@@ -170,6 +182,21 @@ class GauDPSequenceDataset(_LazyH5Dataset):
 class GaussianFrameDataset(_LazyH5Dataset):
     def __init__(self, path: str | Path, train: bool) -> None:
         super().__init__(path)
+        required = [
+            f"{field}_{camera_index}"
+            for camera_index in range(len(self.camera_order))
+            for field in ("depth", "intrinsics", "pose")
+        ]
+        with h5py.File(self.path, "r") as source:
+            missing = [key for key in required if key not in source]
+        if not self.gaussian_supervision or missing:
+            raise ValueError(
+                f"{self.source_format} data has RGB but no Gaussian reconstruction supervision "
+                f"(missing {missing}). train_gaussian.sh and eval_gaussian.sh require depth, "
+                "camera intrinsics, and camera poses in the converted dataset. "
+                "Use a pretrained/already fine-tuned NoPoSplat checkpoint with "
+                "extract_gaussian_features.sh instead."
+            )
         ranges = _episode_ranges(self.episode_ends)
         chosen = [ranges[i] for i in split_episode_ids(len(ranges), train)]
         self.indices = [index for start, end in chosen for index in range(start, end)]
@@ -189,7 +216,16 @@ class GaussianFrameDataset(_LazyH5Dataset):
             height, width = rgb.shape[:2]
             intrinsic[0] /= float(width)
             intrinsic[1] /= float(height)
-            camera_matrix = pose7_xyzw_to_matrix(pose) @ _OPENGL_TO_OPENCV
+            if self.camera_pose_convention == "opengl":
+                camera_basis = _OPENGL_TO_OPENCV
+            elif self.camera_pose_convention == "isaac_x_forward_y_left_z_up":
+                # LeRobot's observation.camera_pose is the Isaac camera actor
+                # pose. OpenCV (right, down, forward) maps to actor
+                # coordinates as (z, -x, -y), matching the dataset contract.
+                camera_basis = _OPENCV_TO_ISAAC_CAMERA
+            else:
+                raise ValueError(f"unsupported camera pose convention {self.camera_pose_convention!r}")
+            camera_matrix = pose7_xyzw_to_matrix(pose) @ camera_basis
 
             image_tensor = torch.from_numpy(rgb).permute(2, 0, 1).float().div_(255.0)
             depth_tensor = torch.from_numpy(depth).unsqueeze(0).unsqueeze(0)

@@ -91,10 +91,33 @@ class Model(ModelTemplate):
         )
         preference = str(model_cfg.get("checkpoint", "best"))
         policy_path = _checkpoint_file(root, "policy", preference)
-        gaussian_path = _checkpoint_file(root, "gaussian", preference)
         payload = torch.load(policy_path, map_location="cpu", weights_only=False)
         if payload.get("format") != "mhbench-gaudp-policy-v1":
             raise ValueError(f"unsupported GauDP policy checkpoint: {policy_path}")
+        configured_gaussian = os.environ.get("GAUDP_GAUSSIAN_CKPT") or model_cfg.get("gaussian_checkpoint")
+        recorded = str(payload.get("gaussian_checkpoint", ""))
+        candidates = []
+        if configured_gaussian:
+            candidates.append(Path(str(configured_gaussian)).expanduser())
+        if recorded:
+            candidates.append(Path(recorded).expanduser())
+            candidates.append(root / "gaussian" / Path(recorded).name)
+            candidates.append(_POLICY_DIR / "weights" / Path(recorded).name)
+        for candidate in candidates:
+            if candidate.is_file():
+                gaussian_path = candidate.resolve()
+                break
+        else:
+            # Old policy checkpoints recorded only a filename. Retain their
+            # original run-local best/last lookup as the final fallback.
+            try:
+                gaussian_path = _checkpoint_file(root, "gaussian", preference)
+            except FileNotFoundError as local_error:
+                raise FileNotFoundError(
+                    f"could not resolve the Gaussian checkpoint recorded by {policy_path}: {recorded!r}. "
+                    "Set GAUDP_GAUSSIAN_CKPT or deploy.yml gaussian_checkpoint to the exact checkpoint "
+                    "used for offline feature extraction."
+                ) from local_error
         config = dict(payload["config"])
         expected_views = 3 if self.use_scene else 2
         if int(config["num_views"]) != expected_views:

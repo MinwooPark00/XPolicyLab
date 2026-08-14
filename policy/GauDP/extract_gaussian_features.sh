@@ -14,8 +14,15 @@ shift 6
 if (( $# > 0 )) && [[ "$1" != -* ]]; then
     gaussian=$1
     shift
+elif [[ -n "${GAUDP_GAUSSIAN_CKPT:-}" ]]; then
+    gaussian="${GAUDP_GAUSSIAN_CKPT}"
+elif [[ -s "${run}/gaussian/best.ckpt" ]]; then
+    gaussian="${run}/gaussian/best.ckpt"
 else
-    gaussian="${GAUDP_GAUSSIAN_CKPT:-${run}/gaussian/best.ckpt}"
+    # Keep Gaussian fine-tuning optional by falling back to the official
+    # pretrained checkpoint when no run-local checkpoint exists.
+    source "${POLICY_DIR}/resolve_noposplat_checkpoint.sh"
+    gaussian="$(resolve_noposplat_checkpoint "${data}" "${POLICY_DIR}")"
 fi
 if [[ ! -s "${gaussian}" ]]; then
     echo "[GauDP] Gaussian checkpoint not found or empty: ${gaussian}" >&2

@@ -32,6 +32,7 @@ def main() -> None:
         "diffusers",
         "einops",
         "h5py",
+        "pyarrow.parquet",
         "jaxtyping",
         "beartype",
         "timm",

@@ -107,7 +107,9 @@ def _save(path: Path, policy: GauDPPolicy, optimizer, scheduler, epoch, metrics,
             scheduler_state=scheduler.state_dict(),
             epoch=epoch,
             metrics=metrics,
-            gaussian_checkpoint=gaussian_checkpoint.name,
+            # Preserve checkpoints outside the run directory (for example the
+            # official NoPoSplat checkpoint used with RGB-only LeRobot data).
+            gaussian_checkpoint=str(gaussian_checkpoint.expanduser().resolve()),
         ),
         path,
     )

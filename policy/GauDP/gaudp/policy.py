@@ -263,8 +263,8 @@ class GauDPPolicy(nn.Module):
 
 
 def policy_checkpoint_payload(policy: GauDPPolicy, **metadata: Any) -> dict[str, Any]:
-    # The reconstruction weights live in gaussian/{best,last}.ckpt and are not
-    # duplicated in every policy checkpoint.
+    # Reconstruction weights stay in their Gaussian checkpoint (run-local or
+    # official/external) and are not duplicated in every policy checkpoint.
     state = {
         key: value
         for key, value in policy.state_dict().items()
