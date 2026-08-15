@@ -83,7 +83,7 @@ bash train.sh mhbench verify cocarry joint 0 0 training.debug=true
 export EVAL_ENV_TYPE=debug
 bash eval.sh mhbench verify verify cocarry joint 0 0 0 <policy_env> <policy_env>
 
-# 4) Evaluate against the real Isaac Sim env -- not yet working, see "Model contract details" below
+# 4) Evaluate against the real Isaac Sim env
 export EVAL_ENV_TYPE=sim   # or: unset EVAL_ENV_TYPE
 bash eval.sh mhbench verify verify cocarry joint 0 0 0 <policy_env> <policy_env>
 ```
@@ -98,6 +98,8 @@ bash eval.sh mhbench verify verify cocarry joint 0 0 0 <policy_env> <policy_env>
   throughout; no rotation representation to pick.
 - Camera mapping (`_encode_arm_obs` in `model.py`): `cam_left_wrist`→`camera_1` (arm1/robot_a
   private), `cam_head`→`camera_3` (shared), `cam_right_wrist`→`camera_4` (arm2/robot_b private).
-- `EVAL_ENV_TYPE=sim` doesn't work yet: `model.py` and `scripts/mhbench_xpolicylab_env.py` don't
-  decode a 35D joint-space action, and the Isaac Sim env itself only exposes a wrist-pose action
-  term. `EVAL_ENV_TYPE=debug` works (wiring check against fake observations, no decoding involved).
+- `EVAL_ENV_TYPE=sim`: `model.py` decodes/encodes joint-space now, and `MHBenchTaskEnv` drives the
+  env through `mhbench.g1.actions.joint_target_action_cfg` (Pink IK bypassed) and reports proprio
+  via `get_obs()`'s `mhbench_state.<robot>.joint_pos`. Structurally wired and consistent with
+  `convert_to_replay_buffer.py`'s training-side layout, but not yet run against a real checkpoint --
+  verify before trusting it end to end.

@@ -10,14 +10,9 @@ task_name: null
 ckpt_name: null
 env_cfg_type: null
 seed: null
-action_type: ee
+action_type: joint
 gpu_id: null
 eval_batch: false
 
 # LatentToM-specific.
 use_ema: true  # load arm{1,2}_ema_model when the checkpoint has it, else arm{1,2}_model
-rotation_rep: quat  # "quat" (22D action, native) or "rot6d" (26D, Zhou et al. continuity rep).
-                     # Must match what the loaded checkpoint was trained with -- Model.__init__
-                     # checks this against the checkpoint's own action_dim and raises if they
-                     # disagree. See diffusion_policy/dataset/mhbench_split_action_dataset.py
-                     # (training side) / model.py's _unpack_robot_action (eval side).
