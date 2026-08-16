@@ -112,6 +112,7 @@ training:
   sheaf_loss_weight: 0.5
 
 logging:
+  entity: null
   project: LatentToM
   resume: True
   mode: online

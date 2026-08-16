@@ -12,7 +12,7 @@ pip install \
   einops==0.4.1 diffusers==0.11.1 numba==0.56.4 \
   moviepy imageio av imagecodecs matplotlib termcolor sympy \
   h5py opencv-python numpy==1.23.5 threadpoolctl \
-  huggingface_hub==0.25.2 pandas
+  huggingface_hub==0.25.2 pandas pyarrow
 
 # install XPolicyLab itself, so `XPolicyLab.policy.LatentToM.model` and
 # `client_server.ws` resolve in this policy's environment (same as
