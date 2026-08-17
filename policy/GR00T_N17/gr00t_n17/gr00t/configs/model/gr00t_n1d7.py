@@ -50,6 +50,12 @@ class Gr00tN1d7Config(PretrainedConfig):
     load_bf16: bool = False  # Enable BF16 loading
     backbone_trainable_params_fp32: bool = True
 
+    ### LoRA (ported from n1.5-release; 0 = off)
+    lora_rank: int = 0
+    lora_alpha: int = 16
+    lora_dropout: float = 0.1
+    lora_full_model: bool = False  # False: action head only
+
     ### Processing parameters
     image_crop_size: tuple[int, int] | None = (230, 230)
     image_target_size: tuple[int, int] | None = (256, 256)

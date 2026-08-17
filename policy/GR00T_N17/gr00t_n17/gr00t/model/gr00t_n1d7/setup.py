@@ -128,6 +128,17 @@ class Gr00tN1d7Pipeline(ModelPipeline):
                 transformers_loading_kwargs=self.transformers_loading_kwargs,
             )
 
+        if getattr(self.config.model, "lora_rank", 0) > 0:
+            from gr00t.utils.peft import get_lora_model
+
+            model = get_lora_model(
+                model,
+                rank=self.config.model.lora_rank,
+                lora_alpha=self.config.model.lora_alpha,
+                lora_dropout=self.config.model.lora_dropout,
+                action_head_only=not self.config.model.lora_full_model,
+            )
+
         logging.debug(f"Model Config: {model.config}")
         if get_rank() == 0:
             with open(self.save_cfg_dir / "final_model_config.json", "w") as f:

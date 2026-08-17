@@ -12,6 +12,10 @@ GLOBAL_BATCH_SIZE="${GLOBAL_BATCH_SIZE:-32}"
 SHARD_SIZE="${SHARD_SIZE:-1024}"
 NUM_SHARDS_PER_EPOCH="${NUM_SHARDS_PER_EPOCH:-100000}"
 EPISODE_SAMPLING_RATE="${EPISODE_SAMPLING_RATE:-0.1}"
+LORA_RANK="${LORA_RANK:-0}"
+LORA_ALPHA="${LORA_ALPHA:-16}"
+LORA_DROPOUT="${LORA_DROPOUT:-0.1}"
+LORA_FULL_MODEL="${LORA_FULL_MODEL:-0}"
 
 BASE_MODEL_PATH=""
 DATASET_PATH=""
@@ -135,6 +139,12 @@ if [ -n "$EXPERIMENT_NAME" ]; then
 fi
 if [ -n "$WANDB_PROJECT" ]; then
     LAUNCH_CMD+=(--wandb_project "$WANDB_PROJECT")
+fi
+if [ "$LORA_RANK" != "0" ]; then
+    LAUNCH_CMD+=(--lora_rank "$LORA_RANK" --lora_alpha "$LORA_ALPHA" --lora_dropout "$LORA_DROPOUT")
+    if [ "$LORA_FULL_MODEL" = "1" ]; then
+        LAUNCH_CMD+=(--lora_full_model)
+    fi
 fi
 
 if [ -n "$STATE_DROPOUT_PROB" ]; then
