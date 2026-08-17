@@ -5,9 +5,14 @@ shared version fetches an observation and ships it to the server after *every*
 executed step, but `model.py`'s `update_obs_batch` only stores the latest one
 and `get_action` reads only that. With `exec_horizon` 40 that is 39 of every 40
 observations rendered, serialised (three 320x240 RGB frames, ~690 KB) and sent
-over the websocket to be overwritten unread. Reading the cameras is 85 ms of a
-110 ms control step, so the waste is most of eval's wall clock: dropping it
-takes a step to ~58 ms.
+over the websocket to be overwritten unread. Dropping it took a measured
+337 ms control step to 119 ms over a 50-episode run, 2.9x.
+
+Not more than that, and it is worth knowing why: IsaacLab renders *lazily*, when
+`sensor.data.output` is read, and the video recorder below reads the scene camera
+every step. So one render per step survives this change (~58 ms of the 119, on
+top of ~59 ms of CPU physics); what the change removes is the two ego cameras and
+the websocket payload on 39 of every 40 steps.
 
 **This is safe only for a policy that conditions on the current frame.**
 GR00T N1.7 here does (its video modality is a single frame, `delta_indices`
