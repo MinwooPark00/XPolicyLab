@@ -21,14 +21,48 @@ fi
 POLICY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 run_setting="${bench_name}-${ckpt_name}-${env_cfg_type}-${action_type}-${seed}"
 run_dir="${POLICY_DIR}/checkpoints/${run_setting}"
-dataset_path="${POLICY_DIR}/data/${bench_name}-${ckpt_name}-${env_cfg_type}-${action_type}"
+# Defaults to this run's own directory, which ties one conversion to one
+# ckpt_name. LATENTTOM_DATA_DIR unties them so a sweep can share one converted
+# copy while `ckpt_name` still keeps the checkpoints apart.
+dataset_path="${LATENTTOM_DATA_DIR:-${POLICY_DIR}/data/${bench_name}-${ckpt_name}-${env_cfg_type}-${action_type}}"
 
 if [ ! -d "${dataset_path}" ]; then
+    # Only the default path is auto-converted: a LATENTTOM_DATA_DIR that does
+    # not exist is a typo, not a request to convert.
+    if [[ -n "${LATENTTOM_DATA_DIR:-}" ]]; then
+        echo "[LatentToM] LATENTTOM_DATA_DIR=${LATENTTOM_DATA_DIR} is not a directory" >&2
+        exit 1
+    fi
     bash "${POLICY_DIR}/process_data.sh" "${bench_name}" "${ckpt_name}" "${env_cfg_type}" "${action_type}"
 fi
 
+# Trailing arguments (from $7 on) are hydra overrides. `training.debug=true`
+# is the plumbing check, so that one logs offline; everything else stays
+# online. The config's own tags never name the task, hence the list here.
+wandb_args=("logging.tags=[latenttom,${env_cfg_type},${action_type},${ckpt_name}]")
+for arg in "${@:7}"; do
+    case "${arg,,}" in
+        training.debug=true|training.debug=1)
+            wandb_args+=(logging.mode=offline)
+            break
+            ;;
+    esac
+done
+
 export HYDRA_FULL_ERROR=1
-export CUDA_VISIBLE_DEVICES=${gpu_id}
+
+if [[ -n "${SLURM_JOB_ID:-}" && -n "${CUDA_VISIBLE_DEVICES:-}" ]]; then
+    echo "[LatentToM] slurm allocated CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}; ignoring gpu_id=${gpu_id}"
+else
+    export CUDA_VISIBLE_DEVICES=${gpu_id}
+fi
+
+# One BLAS/OpenMP thread per process. DataLoader workers cannot set this
+# themselves (see _limit_threads_once in the dataset), so they inherit it.
+export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
+export MKL_NUM_THREADS="${MKL_NUM_THREADS:-1}"
+export OPENBLAS_NUM_THREADS="${OPENBLAS_NUM_THREADS:-1}"
+export NUMEXPR_NUM_THREADS="${NUMEXPR_NUM_THREADS:-1}"
 
 python "${POLICY_DIR}/train.py" \
     --config-name=sheaf_xarm_split_diffusion_workspace \
@@ -37,7 +71,7 @@ python "${POLICY_DIR}/train.py" \
     task_name="${ckpt_name}" \
     training.seed="${seed}" \
     hydra.run.dir="${run_dir}" \
-    logging.mode=offline \
+    "${wandb_args[@]}" \
     "${@:7}"
 
 echo "[LatentToM] checkpoints written to ${run_dir}/checkpoints/{arm1,arm2}_latest.ckpt"

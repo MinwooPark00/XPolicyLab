@@ -225,7 +225,10 @@ class TrainDiffusionSheafSplitWorkspace(BaseWorkspace):
 
         log_path = os.path.join(self.output_dir, 'logs.json.txt')
         with JsonLogger(log_path) as json_logger:
-            for local_epoch_idx in range(cfg.training.num_epochs):
+            # `num_epochs` is where training stops, not how many more to do:
+            # `self.epoch` is restored from the checkpoint, so looping from 0
+            # would make a resumed run train the whole schedule again.
+            for local_epoch_idx in range(self.epoch, cfg.training.num_epochs):
                 step_log = dict()
                 if cfg.training.freeze_encoder:
                     self.arm1_model.obs_encoder.eval()
@@ -460,7 +463,11 @@ class TrainDiffusionSheafSplitWorkspace(BaseWorkspace):
                         del mse_arm2
                         del total_mse
 
-                if (self.epoch % cfg.training.checkpoint_every) == 0:
+                # +1 because the counter is incremented at the bottom of the
+                # loop. Without it the final epoch never matches -- a 600-epoch
+                # run with checkpoint_every=10 last saved at 590. policy/DP
+                # writes the same condition.
+                if ((self.epoch + 1) % cfg.training.checkpoint_every) == 0:
                     if cfg.checkpoint.save_last_ckpt:
                         arm1_exclude = tuple(
                             list(self.exclude_keys) + ['arm2_model', 'arm2_ema_model', 'optimizer_arm2'])
@@ -478,6 +485,9 @@ class TrainDiffusionSheafSplitWorkspace(BaseWorkspace):
                     for key, value in step_log.items():
                         new_key = key.replace('/', '_')
                         metric_dict[new_key] = value
+                    # Name the file by epochs finished, so a 600-epoch run
+                    # ends at 0600 and not 0599.
+                    metric_dict['epoch'] = self.epoch + 1
 
                     topk_ckpt_path_arm1, topk_ckpt_path_arm2 = topk_manager.get_ckpt_paths(metric_dict)
                     if topk_ckpt_path_arm1 is not None:

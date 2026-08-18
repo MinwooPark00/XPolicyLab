@@ -26,6 +26,27 @@ from diffusion_policy.common.normalize_util import (
 )
 
 
+_threads_limited = False
+
+
+def _limit_threads_once() -> None:
+    """Hold this process to one compute thread, once, without threadpoolctl.
+
+    Upstream called ``threadpool_limits(1)`` per ``__getitem__``. Its library
+    scan **aborts** inside a DataLoader worker forked from a CUDA-initialised
+    parent -- in the C loader, so the worker dies on SIGABRT with nothing on
+    stderr and shows up only as "DataLoader worker ... killed by signal:
+    Aborted". Measured: num_workers 0 and 1 survive, 2+ die on the first batch.
+    ``torch.set_num_threads`` is the same intent with no scan and no dlopen;
+    ``train.sh`` exports OMP_NUM_THREADS for the runtimes it cannot reach.
+    """
+    global _threads_limited
+    if not _threads_limited:
+        torch.set_num_threads(1)
+        cv2.setNumThreads(1)
+        _threads_limited = True
+
+
 class XarmSplitActionDataset(BaseImageDataset):
     def __init__(self,
             shape_meta: dict,
@@ -186,7 +207,7 @@ class XarmSplitActionDataset(BaseImageDataset):
         return len(self.sampler)
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
-        threadpool_limits(1)
+        _limit_threads_once()
         data = self.sampler.sample_sequence(idx)
         T_slice = slice(self.n_obs_steps)
 
