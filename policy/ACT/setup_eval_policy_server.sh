@@ -19,7 +19,7 @@ BENCH_ROOT="$(cd "${XPL_ROOT}/.." && pwd)"
 policy_name="$(basename "${SCRIPT_DIR}")"
 yaml_file="${XPL_ROOT}/policy/${policy_name}/deploy.yml"
 
-source "$(conda info --base)/etc/profile.d/conda.sh"
+source "$("${CONDA_EXE:-conda}" info --base)/etc/profile.d/conda.sh"
 conda activate "${policy_conda_env}"
 
 action_dim=$(
@@ -30,6 +30,20 @@ print(get_action_dim(sys.argv[1]))
 " "${env_cfg_type}"
 )
 export ACT_ACTION_DIM="${action_dim}"
+
+# state_dim is optional in the robot info -- omitted for robots where
+# qpos_dim == action_dim, in which case ACT_STATE_DIM stays unset and
+# detr/models/detr_vae.py falls back to ACT_ACTION_DIM.
+state_dim=$(
+    PYTHONPATH="${XPL_ROOT}" python -c "
+import sys
+from XPolicyLab.utils.process_data import get_robot_action_dim_info
+print(get_robot_action_dim_info(sys.argv[1]).get('state_dim', ''))
+" "${env_cfg_type}"
+)
+if [[ -n "${state_dim}" ]]; then
+    export ACT_STATE_DIM="${state_dim}"
+fi
 
 # ckpt_name is the checkpoint directory under checkpoints/ (full run dir name).
 if [[ "${ckpt_name}" == /* ]]; then
