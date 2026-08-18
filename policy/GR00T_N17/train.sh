@@ -34,7 +34,13 @@ output_dir="${POLICY_DIR}/checkpoints/${ckpt_setting}"
 
 export CUDA_VISIBLE_DEVICES="${gpu_id}"
 export NUM_GPUS="${NUM_GPUS:-$(tr ',' '\n' <<< "${gpu_id}" | sed '/^$/d' | wc -l | xargs)}"
-export GR00T_COSMOS_MODEL="${cosmos_model}"
+# launch_finetune.py forces transformers_local_files_only=True whenever
+# GR00T_COSMOS_MODEL is merely *set* (os.environ.get(...) truthiness), not just
+# when it points at a local directory. Only export it when the caller actually
+# overrode the value, so the plain HF repo id default still downloads online.
+if [[ -n "${GR00T_COSMOS_MODEL:-}" ]]; then
+  export GR00T_COSMOS_MODEL="${cosmos_model}"
+fi
 export GR00T_VIDEO_BACKEND="${GR00T_VIDEO_BACKEND:-pyav}"
 
 if [[ ! -d "${dataset_path}" ]]; then
