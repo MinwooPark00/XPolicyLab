@@ -46,7 +46,7 @@ policy:
     # constant center crop
     random_crop: True
     use_group_norm: True
-    share_rgb_model: False
+    share_rgb_model: True
     imagenet_norm: True
 
   horizon: ${horizon}
@@ -101,8 +101,8 @@ training:
   resume: True
   # optimization
   lr_scheduler: cosine
-  lr_warmup_steps: 1
-  num_epochs: 10
+  lr_warmup_steps: 500
+  num_epochs: 600
   gradient_accumulate_every: 1
   # EMA destroys performance when used with BatchNorm
   # replace BatchNorm with GroupNorm.
@@ -110,10 +110,10 @@ training:
   freeze_encoder: False
   # training loop control
   # in epochs
-  rollout_every: 2
-  checkpoint_every: 5
+  rollout_every: 50
+  checkpoint_every: 600
   val_every: 1
-  sample_every: 2
+  sample_every: 5
   # steps per epoch
   max_train_steps: null
   max_val_steps: null
@@ -121,7 +121,7 @@ training:
   tqdm_interval_sec: 1.0
 
 logging:
-  project: mhbench-dp
+  project: diffusion_policy_debug
   resume: True
   mode: online
   name: ${now:%Y.%m.%d-%H.%M.%S}_${name}_${task_name}

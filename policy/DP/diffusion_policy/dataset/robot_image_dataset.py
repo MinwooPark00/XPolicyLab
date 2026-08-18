@@ -35,10 +35,7 @@ class RobotImageDataset(BaseImageDataset):
     ):
 
         super().__init__()
-        # keys=None copies every array under the zarr's data/ group, so this
-        # picks up however many camera arrays scripts/data_convertion.py
-        # actually wrote (1-3: head_camera, optionally left_camera, optionally
-        # right_camera) instead of requiring exactly three.
+
         self.replay_buffer = ReplayBuffer.copy_from_path(zarr_path, keys=None)
         self.camera_keys = sorted(
             k for k in self.replay_buffer.keys() if k not in ("state", "action")
