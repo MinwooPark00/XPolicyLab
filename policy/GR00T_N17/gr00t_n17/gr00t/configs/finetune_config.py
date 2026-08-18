@@ -98,6 +98,19 @@ class FinetuneConfig:
     If None, no extra augmentations are applied.
     """
 
+    # --- LoRA (ported from n1.5-release) ---
+    lora_rank: int = 0
+    """Rank for the LoRA model. If 0, no LoRA will be used."""
+
+    lora_alpha: int = 16
+    """Alpha value for the LoRA model."""
+
+    lora_dropout: float = 0.1
+    """Dropout rate for the LoRA model."""
+
+    lora_full_model: bool = False
+    """Whether to adapt the full model. If False, only the action head gets LoRA."""
+
     # --- Training Configuration ---
     global_batch_size: int = 64
     """Total effective batch size across all GPUs and accumulation steps."""

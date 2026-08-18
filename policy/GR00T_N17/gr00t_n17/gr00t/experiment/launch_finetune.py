@@ -86,6 +86,11 @@ if __name__ == "__main__":
     else:
         config.model.extra_augmentation_config = None
 
+    config.model.lora_rank = ft_config.lora_rank
+    config.model.lora_alpha = ft_config.lora_alpha
+    config.model.lora_dropout = ft_config.lora_dropout
+    config.model.lora_full_model = ft_config.lora_full_model
+
     config.model.load_bf16 = False
     config.model.reproject_vision = False
     cosmos_model = os.environ.get("GR00T_COSMOS_MODEL", "nvidia/Cosmos-Reason2-2B")

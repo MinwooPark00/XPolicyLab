@@ -10,7 +10,7 @@ from typing import Any, Iterator
 import numpy as np
 
 from XPolicyLab.model_template import ModelTemplate
-from XPolicyLab.utils.checkpoint_resolver import resolve_checkpoint_root
+from XPolicyLab.utils.checkpoint_resolver import build_run_dir_name, resolve_checkpoint_root
 
 _POLICY_DIR = Path(__file__).resolve().parent
 _GR00T_ROOT = _POLICY_DIR / "gr00t_n17"
@@ -306,8 +306,120 @@ def _gr00t_action_to_env(action: dict[str, np.ndarray], action_type: str) -> lis
     return action_list
 
 
+# --------------------------------------------------------------------------
+# MHBench (two-humanoid, decentralized): one server hosts BOTH robots' policies
+# and answers with the env's joint-space `mhbench_raw_action`
+# (`scripts/mhbench_xpolicylab_env.py`: {joint_targets(31), base_vel(3),
+# height(1)} per robot, Pink IK bypassed since MHBench a7d24c6).
+# --------------------------------------------------------------------------
+
+# observation.state's 43-D URDF-group layout (mhbench_keys.JOINT_GROUPS /
+# mhbench.g1.actions.mhbench_state_joint_names()) -- the order
+# MHBenchTaskEnv.get_obs() delivers `joint_pos` in.
+MHBENCH_STATE_SLICES = {
+    "left_leg": slice(0, 6), "right_leg": slice(6, 12), "waist": slice(12, 15),
+    "left_arm": slice(15, 22), "left_hand": slice(22, 29),
+    "right_arm": slice(29, 36), "right_hand": slice(36, 43),
+}
+
+# The 31 joint-target columns of the env action, in
+# mhbench.g1.actions.gr00t_joint_names() order == the policy's own action
+# groups concatenated in this sequence (mhbench_keys.ACTION_JOINT_GROUPS).
+MHBENCH_JOINT_TARGET_GROUPS = ("left_arm", "right_arm", "left_hand", "right_hand", "waist")
+
+# The sentences each robot's policy was trained on (meta/tasks.jsonl, indices
+# 1/2 -- the shared sentence at index 0 belongs to the centralized policy).
+MHBENCH_TASK_PROMPTS = {
+    "cocarry": {
+        "robot_a": "Hold your end of the board with both hands and side-step to your right, keeping the board level, until it rests on the stands.",
+        "robot_b": "Hold your end of the board with both hands and side-step to your left, keeping the board level, until it rests on the stands.",
+    },
+    "handover": {
+        "robot_a": "Pick up the bottle from the counter with your left hand, transfer it to your right hand, and hand it across to your partner.",
+        "robot_b": "Receive the bottle with your right hand, transfer it to your left hand, and set it down at the far end of the counter.",
+    },
+}
+
+# Which env camera slot carries each robot's own head camera
+# (MHBenchTaskEnv.get_obs maps ego_a/ego_b/scene onto XPolicyLab's slot names).
+MHBENCH_CAMERA_SLOT = {"robot_a": "cam_left_wrist", "robot_b": "cam_right_wrist"}
+
+# The training run token: checkpoints were trained as
+# mhbench-<task>_robot_<r>-unitree_g1x2_decentralized-joint-<seed>.
+MHBENCH_TRAIN_ENV_CFG_TYPE = "unitree_g1x2_decentralized"
+
+
+def _is_mhbench(model_cfg: dict[str, Any]) -> bool:
+    return str(model_cfg.get("bench_name") or "") == "mhbench"
+
+
+def _resolve_mhbench_model_dir(model_cfg: dict[str, Any], robot: str) -> Path:
+    """The merged (standalone) model dir for one robot's decentralized policy.
+
+    Training wrote PEFT adapters; `merge_lora_checkpoint.py` folded each into a
+    `merged-<step>` dir next to its `checkpoint-<step>`. Explicit override:
+    deploy key `model_dir_<robot>`.
+    """
+    explicit = model_cfg.get(f"model_dir_{robot}")
+    if explicit:
+        path = Path(explicit)
+        if not path.is_dir():
+            raise FileNotFoundError(f"model_dir_{robot} does not exist: {path}")
+        return path
+
+    task = str(model_cfg.get("ckpt_name") or "").strip()
+    if not task:
+        raise ValueError("mhbench mode needs ckpt_name=<task> (e.g. cocarry) or model_dir_<robot>")
+    run_cfg = dict(model_cfg)
+    run_cfg["ckpt_name"] = f"{task}_{robot}"  # e.g. cocarry_robot_a
+    run_cfg["env_cfg_type"] = MHBENCH_TRAIN_ENV_CFG_TYPE
+    run_name = build_run_dir_name(run_cfg)
+    if run_name is None:
+        raise ValueError("bench_name/ckpt_name/action_type/seed required to name the run dir")
+    root = _CHECKPOINTS_DIR / run_name
+    search_roots = [root, root / run_name]  # train.sh doubles the run dir
+    wanted = str(model_cfg.get("merged_checkpoint", model_cfg.get("checkpoint_num", "last")))
+    candidates = [d for r in search_roots if r.is_dir() for d in sorted(r.glob("merged-*")) if d.is_dir()]
+    if not candidates:
+        raise FileNotFoundError(
+            f"no merged-* model dir under {root} -- run baselines/scripts/merge_lora_checkpoint.py first"
+        )
+    if wanted in ("last", "None", ""):
+        return max(candidates, key=lambda d: _extract_step_number(d.name) or -1)
+    for d in candidates:
+        if str(_extract_step_number(d.name)) == wanted:
+            return d
+    raise FileNotFoundError(f"merged-{wanted} not found; available: {[d.name for d in candidates]}")
+
+
+def _encode_mhbench_observation(obs: dict[str, Any], robot: str, prompt: str) -> dict[str, Any]:
+    """MHBenchTaskEnv obs -> one robot's Gr00tPolicy observation dict."""
+    slot = MHBENCH_CAMERA_SLOT[robot]
+    image = obs["vision"][slot]["color"]
+    image = np.ascontiguousarray(_ensure_hwc_uint8(image))[None, None, ...]  # (1,1,H,W,3)
+
+    robot_state = obs["mhbench_state"][robot]
+    joints = np.asarray(robot_state["joint_pos"], dtype=np.float32).reshape(-1)
+    if joints.shape[0] != 43:
+        raise ValueError(f"{robot} joint_pos has {joints.shape[0]} dims, expected 43")
+    state = {
+        f"{robot}_{group}": joints[sl][None, None, :].astype(np.float32)
+        for group, sl in MHBENCH_STATE_SLICES.items()
+    }
+
+    return {
+        "video": {("ego_a" if robot == "robot_a" else "ego_b"): image},
+        "state": state,
+        "language": {f"annotation.human.task_description_{robot}": [[prompt]]},
+    }
+
+
 class Model(ModelTemplate):
     def __init__(self, model_cfg: dict[str, Any]):
+        if _is_mhbench(model_cfg):
+            self._init_mhbench(model_cfg)
+            return
+        self._mhbench = False
         self.model_cfg = model_cfg
         self.action_type = model_cfg.get("action_type", "joint")
         self.default_prompt = model_cfg.get("default_prompt", model_cfg.get("task_name", "Perform the robot manipulation task."))
@@ -336,6 +448,83 @@ class Model(ModelTemplate):
         print(f"[GR00T_N17] cosmos_model={cosmos_model}")
         print(f"[GR00T_N17] action_horizon={self.action_horizon}, embodiment_tag={embodiment_tag}")
 
+    def _init_mhbench(self, model_cfg: dict[str, Any]) -> None:
+        """Two decentralized Gr00tPolicy instances, one per robot, one server."""
+        self._mhbench = True
+        self.model_cfg = model_cfg
+        self.device = model_cfg.get("device", "cuda:0" if self._has_cuda() else "cpu")
+        task = str(model_cfg.get("ckpt_name") or "").strip()
+        embodiment_tag = model_cfg.get("embodiment_tag", "NEW_EMBODIMENT")
+
+        default_prompt = model_cfg.get("default_prompt", "Perform the robot manipulation task.")
+        task_prompts = MHBENCH_TASK_PROMPTS.get(task, {})
+        self._prompts = {
+            robot: str(model_cfg.get(f"prompt_{robot}") or task_prompts.get(robot) or default_prompt)
+            for robot in ("robot_a", "robot_b")
+        }
+
+        self._policies: dict[str, Gr00tPolicy] = {}
+        for robot in ("robot_a", "robot_b"):
+            model_dir = _resolve_mhbench_model_dir(model_cfg, robot)
+            policy = Gr00tPolicy(
+                model_path=str(model_dir),
+                embodiment_tag=embodiment_tag,
+                device=self.device,
+                strict=True,
+            )
+            expected_cam = "ego_a" if robot == "robot_a" else "ego_b"
+            video_keys = policy.modality_configs["video"].modality_keys
+            if list(video_keys) != [expected_cam]:
+                raise RuntimeError(
+                    f"{robot} checkpoint at {model_dir} was trained on video keys {video_keys}, "
+                    f"expected ['{expected_cam}'] -- wrong checkpoint pairing?"
+                )
+            self._policies[robot] = policy
+            print(f"[GR00T_N17][mhbench] {robot}: {model_dir}")
+            print(f"[GR00T_N17][mhbench] {robot} prompt: {self._prompts[robot]!r}")
+
+        self.model = self._policies["robot_a"]
+        self.action_horizon = len(self._policies["robot_a"].modality_configs["action"].delta_indices)
+        self.exec_horizon = max(1, min(int(model_cfg.get("exec_horizon") or self.action_horizon), self.action_horizon))
+        self._obs_list = []
+        self._latest_env_idx_list = [0]
+        print(f"[GR00T_N17][mhbench] action_horizon={self.action_horizon} exec_horizon={self.exec_horizon}")
+
+    def _get_action_mhbench(self, obs: dict[str, Any]) -> list[dict[str, Any]]:
+        per_robot: dict[str, list[dict[str, np.ndarray]]] = {}
+        for robot, policy in self._policies.items():
+            encoded = _encode_mhbench_observation(obs, robot, self._prompts[robot])
+            action, _ = policy.get_action(encoded)
+            groups = {
+                key[len(robot) + 1 :]: np.asarray(value[0], dtype=np.float32)[: self.exec_horizon]
+                for key, value in action.items()
+                if key.startswith(robot + "_")
+            }
+            missing = [
+                g for g in (*MHBENCH_JOINT_TARGET_GROUPS, "navigate_command", "base_height_command")
+                if g not in groups
+            ]
+            if missing:
+                raise KeyError(f"{robot} action is missing groups {missing}; got {sorted(groups)}")
+            steps = min(len(groups[g]) for g in groups)
+            per_robot[robot] = [
+                {
+                    # The policy predicts the same Pink-solved joint targets the
+                    # env action consumes -- packing is a pure group reorder.
+                    "joint_targets": np.concatenate(
+                        [groups[g][t].reshape(-1) for g in MHBENCH_JOINT_TARGET_GROUPS]
+                    ).astype(np.float32),
+                    "base_vel": groups["navigate_command"][t].reshape(3).astype(np.float32),
+                    "height": groups["base_height_command"][t].reshape(1).astype(np.float32),
+                }
+                for t in range(steps)
+            ]
+        steps = min(len(per_robot["robot_a"]), len(per_robot["robot_b"]))
+        return [
+            {"mhbench_raw_action": {"robot_a": per_robot["robot_a"][t], "robot_b": per_robot["robot_b"][t]}}
+            for t in range(steps)
+        ]
+
     @staticmethod
     def _has_cuda() -> bool:
         try:
@@ -350,7 +539,10 @@ class Model(ModelTemplate):
 
     def update_obs_batch(self, obs_list):
         self._latest_env_idx_list = [obs.get("env_idx", index) for index, obs in enumerate(obs_list)]
-        self._obs_list = [_encode_observation(obs, self.default_prompt) for obs in obs_list]
+        if self._mhbench:
+            self._obs_list = list(obs_list)  # encoded lazily per robot in get_action
+        else:
+            self._obs_list = [_encode_observation(obs, self.default_prompt) for obs in obs_list]
 
     def get_action(self, **kwargs):
         if not self._obs_list:
@@ -361,6 +553,9 @@ class Model(ModelTemplate):
         if not self._obs_list:
             raise AssertionError("update_obs or update_obs_batch first!")
 
+        if self._mhbench:
+            return [self._get_action_mhbench(obs) for obs in self._obs_list]
+
         action_list = []
         for encoded_obs in self._obs_list:
             gr00t_action, _ = self.policy.get_action(encoded_obs, **kwargs)
@@ -370,4 +565,8 @@ class Model(ModelTemplate):
     def reset(self):
         self._obs_list = []
         self._latest_env_idx_list = [0]
-        self.policy.reset()
+        if self._mhbench:
+            for policy in self._policies.values():
+                policy.reset()
+        else:
+            self.policy.reset()
