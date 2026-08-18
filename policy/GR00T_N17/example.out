@@ -1,144 +1,0 @@
-[GR00T_N17] dataset_path=/scratch2/soochul/MHBench/baselines/XPolicyLab/policy/GR00T_N17/lerobot_data/mhbench-cocarry_a-unitree_g1x2_decentralized-joint
-[GR00T_N17] base_model=nvidia/GR00T-N1.7-3B
-[GR00T_N17] cosmos_model=nvidia/Cosmos-Reason2-2B
-[GR00T_N17] video_backend=pyav
-[GR00T_N17] output_dir=/scratch2/soochul/MHBench/baselines/XPolicyLab/policy/GR00T_N17/checkpoints/mhbench-cocarry_a-unitree_g1x2_decentralized-joint-0
-[GR00T_N17] num_gpus=1
-[GR00T_N17] global_batch_size=8
-[GR00T_N17] per_gpu_batch_size=8
-[GR00T_N17] max_steps=5
-[GR00T_N17] save_steps=5
-+ NUM_GPUS=1
-+ MASTER_PORT=29500
-+ SAVE_STEPS=5
-+ MAX_STEPS=5
-+ USE_WANDB=0
-+ DATALOADER_NUM_WORKERS=8
-+ GLOBAL_BATCH_SIZE=8
-+ SHARD_SIZE=1024
-+ NUM_SHARDS_PER_EPOCH=100000
-+ EPISODE_SAMPLING_RATE=0.1
-+ BASE_MODEL_PATH=
-+ DATASET_PATH=
-+ MODALITY_CONFIG_PATH=
-+ EMBODIMENT_TAG=
-+ OUTPUT_DIR=
-+ EXPERIMENT_NAME=
-+ WANDB_PROJECT=
-+ STATE_DROPOUT_PROB=
-+ EXTRA_ARGS=()
-+ '[' 12 -gt 0 ']'
-+ case "$1" in
-+ BASE_MODEL_PATH=nvidia/GR00T-N1.7-3B
-+ shift 2
-+ '[' 10 -gt 0 ']'
-+ case "$1" in
-+ DATASET_PATH=/scratch2/soochul/MHBench/baselines/XPolicyLab/policy/GR00T_N17/lerobot_data/mhbench-cocarry_a-unitree_g1x2_decentralized-joint
-+ shift 2
-+ '[' 8 -gt 0 ']'
-+ case "$1" in
-+ EMBODIMENT_TAG=NEW_EMBODIMENT
-+ shift 2
-+ '[' 6 -gt 0 ']'
-+ case "$1" in
-+ MODALITY_CONFIG_PATH=/scratch2/soochul/MHBench/baselines/XPolicyLab/policy/GR00T_N17/configs/unitree_g1x2_decentralized_config.py
-+ shift 2
-+ '[' 4 -gt 0 ']'
-+ case "$1" in
-+ OUTPUT_DIR=/scratch2/soochul/MHBench/baselines/XPolicyLab/policy/GR00T_N17/checkpoints/mhbench-cocarry_a-unitree_g1x2_decentralized-joint-0
-+ shift 2
-+ '[' 2 -gt 0 ']'
-+ case "$1" in
-+ EXPERIMENT_NAME=mhbench-cocarry_a-unitree_g1x2_decentralized-joint-0
-+ shift 2
-+ '[' 0 -gt 0 ']'
-+ for required_var in BASE_MODEL_PATH DATASET_PATH EMBODIMENT_TAG OUTPUT_DIR
-+ '[' -z nvidia/GR00T-N1.7-3B ']'
-+ for required_var in BASE_MODEL_PATH DATASET_PATH EMBODIMENT_TAG OUTPUT_DIR
-+ '[' -z /scratch2/soochul/MHBench/baselines/XPolicyLab/policy/GR00T_N17/lerobot_data/mhbench-cocarry_a-unitree_g1x2_decentralized-joint ']'
-+ for required_var in BASE_MODEL_PATH DATASET_PATH EMBODIMENT_TAG OUTPUT_DIR
-+ '[' -z NEW_EMBODIMENT ']'
-+ for required_var in BASE_MODEL_PATH DATASET_PATH EMBODIMENT_TAG OUTPUT_DIR
-+ '[' -z /scratch2/soochul/MHBench/baselines/XPolicyLab/policy/GR00T_N17/checkpoints/mhbench-cocarry_a-unitree_g1x2_decentralized-joint-0 ']'
-+ WANDB_FLAG=()
-+ '[' 0 = 1 ']'
-+ LAUNCH_CMD=(gr00t/experiment/launch_finetune.py --base_model_path "$BASE_MODEL_PATH" --dataset_path "$DATASET_PATH" --embodiment_tag "$EMBODIMENT_TAG" --num_gpus "$NUM_GPUS" --output_dir "$OUTPUT_DIR" --save_steps "$SAVE_STEPS" --save_total_limit 5 --max_steps "$MAX_STEPS" --warmup_ratio 0.05 --weight_decay 1e-5 --learning_rate 1e-4 "${WANDB_FLAG[@]}" --global_batch_size "$GLOBAL_BATCH_SIZE" --color_jitter_params brightness 0.3 contrast 0.4 saturation 0.5 hue 0.08 --dataloader_num_workers "$DATALOADER_NUM_WORKERS" --shard_size "$SHARD_SIZE" --num_shards_per_epoch "$NUM_SHARDS_PER_EPOCH" --episode_sampling_rate "$EPISODE_SAMPLING_RATE")
-+ '[' -n /scratch2/soochul/MHBench/baselines/XPolicyLab/policy/GR00T_N17/configs/unitree_g1x2_decentralized_config.py ']'
-+ LAUNCH_CMD+=(--modality_config_path "$MODALITY_CONFIG_PATH")
-+ '[' -n mhbench-cocarry_a-unitree_g1x2_decentralized-joint-0 ']'
-+ LAUNCH_CMD+=(--experiment_name "$EXPERIMENT_NAME")
-+ '[' -n '' ']'
-+ '[' -n '' ']'
-+ '[' -n '' ']'
-+ '[' 0 -gt 0 ']'
-+ '[' 1 = 1 ']'
-+ export CUDA_VISIBLE_DEVICES=0
-+ CUDA_VISIBLE_DEVICES=0
-+ exec python gr00t/experiment/launch_finetune.py --base_model_path nvidia/GR00T-N1.7-3B --dataset_path /scratch2/soochul/MHBench/baselines/XPolicyLab/policy/GR00T_N17/lerobot_data/mhbench-cocarry_a-unitree_g1x2_decentralized-joint --embodiment_tag NEW_EMBODIMENT --num_gpus 1 --output_dir /scratch2/soochul/MHBench/baselines/XPolicyLab/policy/GR00T_N17/checkpoints/mhbench-cocarry_a-unitree_g1x2_decentralized-joint-0 --save_steps 5 --save_total_limit 5 --max_steps 5 --warmup_ratio 0.05 --weight_decay 1e-5 --learning_rate 1e-4 --global_batch_size 8 --color_jitter_params brightness 0.3 contrast 0.4 saturation 0.5 hue 0.08 --dataloader_num_workers 8 --shard_size 1024 --num_shards_per_epoch 100000 --episode_sampling_rate 0.1 --modality_config_path /scratch2/soochul/MHBench/baselines/XPolicyLab/policy/GR00T_N17/configs/unitree_g1x2_decentralized_config.py --experiment_name mhbench-cocarry_a-unitree_g1x2_decentralized-joint-0
-/scratch2/soochul/MHBench/baselines/XPolicyLab/policy/GR00T_N17/gr00t_n17/.venv/lib/python3.10/site-packages/albumentations/__init__.py:13: UserWarning: A new version of Albumentations is available: 2.0.8 (you have 1.4.18). Upgrade using: pip install -U albumentations. To disable automatic update checks, set the environment variable NO_ALBUMENTATIONS_UPDATE to 1.
-  check_for_updates()
-/scratch2/soochul/MHBench/baselines/XPolicyLab/policy/GR00T_N17/gr00t_n17/gr00t/experiment/experiment.py:58: UserWarning: video_backend is not torchcodec. Only torchcodec will be supported in the future.
-  warnings.warn(
-/scratch2/soochul/MHBench/baselines/XPolicyLab/policy/GR00T_N17/gr00t_n17/gr00t/experiment/experiment.py:96: UserWarning: image_crop_size and image_target_size will be deprecated in the future. Please use shortest_image_edge and crop_fraction instead.
-  warnings.warn(
-08/13/2026 20:24:25 - INFO - Saved config to /scratch2/soochul/MHBench/baselines/XPolicyLab/policy/GR00T_N17/checkpoints/mhbench-cocarry_a-unitree_g1x2_decentralized-joint-0/mhbench-cocarry_a-unitree_g1x2_decentralized-joint-0/experiment_cfg
-Flash Attention 2 only supports torch.float16 and torch.bfloat16 dtypes, but the current dype in Qwen3VLForConditionalGeneration is torch.float32. You should run training or inference using Automatic Mixed-Precision via the `with torch.autocast(device_type='torch_device'):` decorator, or load the model with the `dtype` argument. Example: `model = AutoModel.from_pretrained("openai/whisper-tiny", attn_implementation="flash_attention_2", dtype=torch.float16)`
-Flash Attention 2 only supports torch.float16 and torch.bfloat16 dtypes, but the current dype in Qwen3VLModel is torch.float32. You should run training or inference using Automatic Mixed-Precision via the `with torch.autocast(device_type='torch_device'):` decorator, or load the model with the `dtype` argument. Example: `model = AutoModel.from_pretrained("openai/whisper-tiny", attn_implementation="flash_attention_2", dtype=torch.float16)`
-Flash Attention 2 only supports torch.float16 and torch.bfloat16 dtypes, but the current dype in Qwen3VLVisionModel is torch.float32. You should run training or inference using Automatic Mixed-Precision via the `with torch.autocast(device_type='torch_device'):` decorator, or load the model with the `dtype` argument. Example: `model = AutoModel.from_pretrained("openai/whisper-tiny", attn_implementation="flash_attention_2", dtype=torch.float16)`
-Flash Attention 2 only supports torch.float16 and torch.bfloat16 dtypes, but the current dype in Qwen3VLTextModel is torch.float32. You should run training or inference using Automatic Mixed-Precision via the `with torch.autocast(device_type='torch_device'):` decorator, or load the model with the `dtype` argument. Example: `model = AutoModel.from_pretrained("openai/whisper-tiny", attn_implementation="flash_attention_2", dtype=torch.float16)`
-/scratch2/soochul/MHBench/baselines/XPolicyLab/policy/GR00T_N17/gr00t_n17/gr00t/model/modules/dit.py:255: FutureWarning: Accessing config attribute `compute_dtype` directly via 'AlternateVLDiT' object attribute is deprecated. Please access 'compute_dtype' over 'AlternateVLDiT's config object instead, e.g. 'unet.config.compute_dtype'.
-  embedding_dim=self.inner_dim, compute_dtype=self.compute_dtype
-/scratch2/soochul/MHBench/baselines/XPolicyLab/policy/GR00T_N17/gr00t_n17/gr00t/model/modules/dit.py:286: FutureWarning: Accessing config attribute `output_dim` directly via 'AlternateVLDiT' object attribute is deprecated. Please access 'output_dim' over 'AlternateVLDiT's config object instead, e.g. 'unet.config.output_dim'.
-  self.proj_out_2 = nn.Linear(self.inner_dim, self.output_dim)
-08/13/2026 20:24:54 - INFO - Using AlternateVLDiT for diffusion model
-Loaded modality config: /scratch2/soochul/MHBench/baselines/XPolicyLab/policy/GR00T_N17/configs/unitree_g1x2_decentralized_config.py
-[launch_finetune] cosmos backbone: nvidia/Cosmos-Reason2-2B, local_files_only=False
-[launch_finetune] video_backend=pyav
-Total number of DiT parameters:  1091722240
-Total number of SelfAttentionTransformer parameters:  201433088
-Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards:  50%|█████     | 1/2 [00:28<00:28, 28.30s/it]Loading checkpoint shards: 100%|██████████| 2/2 [00:38<00:00, 17.76s/it]Loading checkpoint shards: 100%|██████████| 2/2 [00:38<00:00, 19.34s/it]
-08/13/2026 20:25:37 - INFO - Total parameters: 3,144,016,000
-08/13/2026 20:25:37 - INFO - Trainable parameters: 1,620,515,968 (51.54%)
-Initializing datasets:   0%|          | 0/1 [00:00<?, ?it/s]Initializing datasets: 100%|██████████| 1/1 [00:00<00:00,  6.96it/s]Initializing datasets: 100%|██████████| 1/1 [00:00<00:00,  6.95it/s]
-08/13/2026 20:25:47 - INFO - Saved dataset statistics for inference
-08/13/2026 20:25:53 - INFO - 🚀 Starting training...
-08/13/2026 20:25:53 - WARNING - No valid checkpoint found in output directory (/scratch2/soochul/MHBench/baselines/XPolicyLab/policy/GR00T_N17/checkpoints/mhbench-cocarry_a-unitree_g1x2_decentralized-joint-0/mhbench-cocarry_a-unitree_g1x2_decentralized-joint-0)
-Generating stats for /scratch2/soochul/MHBench/baselines/XPolicyLab/policy/GR00T_N17/lerobot_data/mhbench-cocarry_a-unitree_g1x2_decentralized-joint
-Generated 4 shards for dataset /scratch2/soochul/MHBench/baselines/XPolicyLab/policy/GR00T_N17/lerobot_data/mhbench-cocarry_a-unitree_g1x2_decentralized-joint
-Total steps: 3718, average shard length: 929.5, shard length std: 35.5
-Overriding statistics for new_embodiment
-Current global step: 0
-Creating custom train dataloader
-  0%|          | 0/5 [00:00<?, ?it/s]Casting fp32 inputs back to torch.bfloat16 for flash-attn compatibility.
-Could not estimate the number of tokens of the input, floating-point operations will not be computed
- 20%|██        | 1/5 [00:11<00:45, 11.42s/it] 40%|████      | 2/5 [00:11<00:14,  4.86s/it] 60%|██████    | 3/5 [00:12<00:05,  2.82s/it] 80%|████████  | 4/5 [00:12<00:01,  1.86s/it]100%|██████████| 5/5 [00:12<00:00,  1.34s/it]                                             100%|██████████| 5/5 [00:42<00:00,  1.34s/it]100%|██████████| 5/5 [00:42<00:00,  8.60s/it]
-08/13/2026 20:26:50 - INFO - Model saved to /scratch2/soochul/MHBench/baselines/XPolicyLab/policy/GR00T_N17/checkpoints/mhbench-cocarry_a-unitree_g1x2_decentralized-joint-0/mhbench-cocarry_a-unitree_g1x2_decentralized-joint-0
-08/13/2026 20:26:50 - INFO - Training completed!
-Rank 0, Worker 4: Caching shard...
-Rank 0, Worker 4: Wait for shard 0 in dataset 0 in 7.19 seconds
-Rank 0, Worker 4: Caching shard...
-Rank 0, Worker 3: Caching shard...
-Rank 0, Worker 3: Wait for shard 2 in dataset 0 in 7.80 seconds
-Rank 0, Worker 3: Caching shard...
-Rank 0, Worker 1: Caching shard...
-Rank 0, Worker 1: Wait for shard 1 in dataset 0 in 8.17 seconds
-Rank 0, Worker 1: Caching shard...
-Rank 0, Worker 2: Caching shard...
-Rank 0, Worker 2: Wait for shard 0 in dataset 0 in 7.06 seconds
-Rank 0, Worker 2: Caching shard...
-Rank 0, Worker 5: Caching shard...
-Rank 0, Worker 5: Wait for shard 1 in dataset 0 in 7.55 seconds
-Rank 0, Worker 5: Caching shard...
-Rank 0, Worker 0: Caching shard...
-Rank 0, Worker 0: Wait for shard 3 in dataset 0 in 7.46 seconds
-Rank 0, Worker 0: Caching shard...
-Rank 0, Worker 7: Caching shard...
-Rank 0, Worker 7: Wait for shard 3 in dataset 0 in 7.67 seconds
-Rank 0, Worker 7: Caching shard...
-Rank 0, Worker 6: Caching shard...
-Rank 0, Worker 6: Wait for shard 2 in dataset 0 in 7.83 seconds
-Rank 0, Worker 6: Caching shard...
-Copying experiment config directory /scratch2/soochul/MHBench/baselines/XPolicyLab/policy/GR00T_N17/checkpoints/mhbench-cocarry_a-unitree_g1x2_decentralized-joint-0/mhbench-cocarry_a-unitree_g1x2_decentralized-joint-0/experiment_cfg to /scratch2/soochul/MHBench/baselines/XPolicyLab/policy/GR00T_N17/checkpoints/mhbench-cocarry_a-unitree_g1x2_decentralized-joint-0/mhbench-cocarry_a-unitree_g1x2_decentralized-joint-0/checkpoint-5/experiment_cfg
-Copying processor directory /scratch2/soochul/MHBench/baselines/XPolicyLab/policy/GR00T_N17/checkpoints/mhbench-cocarry_a-unitree_g1x2_decentralized-joint-0/mhbench-cocarry_a-unitree_g1x2_decentralized-joint-0/processor to /scratch2/soochul/MHBench/baselines/XPolicyLab/policy/GR00T_N17/checkpoints/mhbench-cocarry_a-unitree_g1x2_decentralized-joint-0/mhbench-cocarry_a-unitree_g1x2_decentralized-joint-0/checkpoint-5
-Copying wandb_config.json from /scratch2/soochul/MHBench/baselines/XPolicyLab/policy/GR00T_N17/checkpoints/mhbench-cocarry_a-unitree_g1x2_decentralized-joint-0/mhbench-cocarry_a-unitree_g1x2_decentralized-joint-0/wandb_config.json to /scratch2/soochul/MHBench/baselines/XPolicyLab/policy/GR00T_N17/checkpoints/mhbench-cocarry_a-unitree_g1x2_decentralized-joint-0/mhbench-cocarry_a-unitree_g1x2_decentralized-joint-0/checkpoint-5/wandb_config.json
-{'train_runtime': 42.988, 'train_samples_per_second': 0.93, 'train_steps_per_second': 0.116, 'train_loss': 1.4749496459960938}
