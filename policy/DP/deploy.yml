@@ -5,9 +5,18 @@ host: localhost
 port: null
 bench_name: null
 task_name: null
+ckpt_name: null
 env_cfg_type: null
 seed: null
 action_type: null
 eval_batch: true
 
 checkpoint_num: latest
+
+# --- MHBench (bench_name=mhbench, env_cfg_type=unitree_g1x2_decentralized): ---
+# one server drives both robots from two single-robot DP checkpoints. ckpt_name
+# is the task (cocarry/handover); per-robot dirs resolve to
+# checkpoints/mhbench-<task>_robot_<r>-unitree_g1x2_decentralized-<action_type>-<seed>.
+# Explicit override, same convention as ACT/GR00T_N17's model_dir_<robot>.
+model_dir_robot_a: null
+model_dir_robot_b: null

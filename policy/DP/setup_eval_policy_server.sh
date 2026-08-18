@@ -20,7 +20,7 @@ yaml_file="${XPL_ROOT}/policy/${policy_name}/deploy.yml"
 
 echo "[SERVER] policy=${policy_name}, task=${task_name}, policy_server_port=${policy_server_port}"
 
-source "$(conda info --base)/etc/profile.d/conda.sh"
+source "$("${CONDA_EXE:-conda}" info --base)/etc/profile.d/conda.sh"
 conda activate "${policy_conda_env}"
 
 exec env \

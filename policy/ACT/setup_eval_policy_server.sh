@@ -22,28 +22,20 @@ yaml_file="${XPL_ROOT}/policy/${policy_name}/deploy.yml"
 source "$("${CONDA_EXE:-conda}" info --base)/etc/profile.d/conda.sh"
 conda activate "${policy_conda_env}"
 
-action_dim=$(
-    PYTHONPATH="${XPL_ROOT}" python -c "
-import sys
-from XPolicyLab.utils.process_data import get_action_dim
-print(get_action_dim(sys.argv[1]))
-" "${env_cfg_type}"
-)
+# get_action_dim(env_cfg_type) in XPolicyLab.utils.process_data looks up
+# env_cfg/<env_cfg_type>.yml -- that file only exists for the original
+# single/bimanual-arm robots (piper, franka, ...), not for MHBench's
+# unitree_g1x2_centralized/decentralized, which never got an env_cfg/*.yml of
+# their own (their scene lives in MHBench's own Isaac Lab env_cfg tree, not
+# XPolicyLab's). utils/get_action_dim.sh and utils/get_state_dim.sh key
+# straight off utils/robot/_robot_info.json by env_cfg_type -- the same
+# lookup GR00T_N17/setup_eval_policy_server.sh already uses -- so they resolve
+# both MHBench env_cfg_types and the original robots without that detour.
+action_dim=$(bash "${UTILS_DIR}/get_action_dim.sh" "${BENCH_ROOT}" "${env_cfg_type}")
 export ACT_ACTION_DIM="${action_dim}"
 
-# state_dim is optional in the robot info -- omitted for robots where
-# qpos_dim == action_dim, in which case ACT_STATE_DIM stays unset and
-# detr/models/detr_vae.py falls back to ACT_ACTION_DIM.
-state_dim=$(
-    PYTHONPATH="${XPL_ROOT}" python -c "
-import sys
-from XPolicyLab.utils.process_data import get_robot_action_dim_info
-print(get_robot_action_dim_info(sys.argv[1]).get('state_dim', ''))
-" "${env_cfg_type}"
-)
-if [[ -n "${state_dim}" ]]; then
-    export ACT_STATE_DIM="${state_dim}"
-fi
+state_dim=$(bash "${UTILS_DIR}/get_state_dim.sh" "${BENCH_ROOT}" "${env_cfg_type}")
+export ACT_STATE_DIM="${state_dim}"
 
 # ckpt_name is the checkpoint directory under checkpoints/ (full run dir name).
 if [[ "${ckpt_name}" == /* ]]; then

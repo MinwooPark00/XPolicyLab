@@ -118,7 +118,7 @@ class ACT:
         self.temporal_agg = args_override.get("temporal_agg", False)
         self.num_queries = args_override["chunk_size"]
         self.state_dim = model_cfg.action_dim  # Standard joint dimension for bimanual robot
-        self.max_timesteps = 5000  # Large enough for deployment
+        self.max_timesteps = 1100  
 
         # Set query frequency based on temporal_agg - matching imitate_episodes.py logic
         self.query_frequency = self.num_queries

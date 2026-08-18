@@ -79,19 +79,17 @@ class DPRunner:
         ]
 
         with torch.no_grad():
-            obs_dict_input = {}
-            obs_dict_input["head_cam"] = torch.stack(
-                [obs_torch["head_cam"] for obs_torch in obs_list_numpy], dim=0
-            )
-            obs_dict_input["left_cam"] = torch.stack(
-                [obs_torch["left_cam"] for obs_torch in obs_list_numpy], dim=0
-            )
-            obs_dict_input["right_cam"] = torch.stack(
-                [obs_torch["right_cam"] for obs_torch in obs_list_numpy], dim=0
-            )
-            obs_dict_input["agent_pos"] = torch.stack(
-                [obs_torch["agent_pos"] for obs_torch in obs_list_numpy], dim=0
-            )
+            # Whatever keys encode_obs actually produced -- not a hardcoded
+            # head_cam/left_cam/right_cam/agent_pos set. A robot trained with
+            # fewer camera streams (MHBench's decentralized per-robot DP
+            # checkpoints: 1 camera, via train.sh's num_cameras-gated
+            # shape_meta) only ever has those keys in obs_list_numpy, and
+            # stacking a key the policy was never trained with would feed it
+            # an input it doesn't expect.
+            obs_dict_input = {
+                key: torch.stack([obs_torch[key] for obs_torch in obs_list_numpy], dim=0)
+                for key in obs_list_numpy[0].keys()
+            }
 
             action_dict = policy.predict_action(obs_dict_input)
 
