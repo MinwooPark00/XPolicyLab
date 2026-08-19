@@ -38,6 +38,7 @@ from typing import Any, Optional
 import torch
 from transformers.trainer import TRAINER_STATE_NAME, Trainer, TrainerState, get_last_checkpoint
 from transformers.trainer_callback import TrainerCallback
+from transformers.trainer_pt_utils import nested_detach
 from transformers.trainer_utils import EvalPrediction
 
 
@@ -255,6 +256,56 @@ class Gr00tTrainer(Trainer):
             dataloader_params["multiprocessing_context"] = self.multiprocessing_context
 
         return torch.utils.data.DataLoader(self.train_dataset, **dataloader_params)
+
+    def get_eval_dataloader(self, eval_dataset=None):  # noqa: D401
+        """Mirror `get_train_dataloader` for the (iterable) evaluation mixture.
+
+        The base implementation reaches for a sampler the sharded mixture does not
+        use. Workers are capped at two: the validation split has few shards, and
+        `filter_shard_sample_schedule` gives any worker beyond them nothing to do.
+        """
+        eval_dataset = self.eval_dataset if eval_dataset is None else eval_dataset
+        if eval_dataset is None:
+            raise ValueError("Trainer: evaluation requires an eval_dataset.")
+
+        data_collator = self._get_collator_with_removed_columns(
+            self.data_collator, description="evaluation"
+        )
+        num_workers = min(self.args.dataloader_num_workers, 2)
+        dataloader_params = {
+            "batch_size": self.args.per_device_eval_batch_size,
+            "collate_fn": data_collator,
+            "num_workers": num_workers,
+            "pin_memory": self.args.dataloader_pin_memory,
+            "persistent_workers": False,
+        }
+        if num_workers > 0:
+            dataloader_params["multiprocessing_context"] = self.multiprocessing_context
+
+        return torch.utils.data.DataLoader(eval_dataset, **dataloader_params)
+
+    def prediction_step(
+        self,
+        model,
+        inputs,
+        prediction_loss_only: bool,
+        ignore_keys: Optional[list[str]] = None,
+    ):  # type: ignore[override]
+        """Score one evaluation batch with the training loss.
+
+        The action head returns `{"loss": ...}` and no labels, so the base
+        `prediction_step` takes its no-label branch and reports no loss at all.
+        Labels stay None for the same reason -- there are none to hand back.
+        """
+        with torch.no_grad():
+            with self.compute_loss_context_manager():
+                loss, outputs = self.compute_loss(model, inputs, return_outputs=True)
+            loss = loss.mean().detach()
+        if prediction_loss_only:
+            return (loss, None, None)
+        ignore = set(ignore_keys or []) | {"loss"}
+        logits = nested_detach(tuple(v for k, v in outputs.items() if k not in ignore))
+        return (loss, logits[0] if len(logits) == 1 else logits, None)
 
     def train(
         self,

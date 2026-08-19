@@ -12,6 +12,12 @@ GLOBAL_BATCH_SIZE="${GLOBAL_BATCH_SIZE:-32}"
 SHARD_SIZE="${SHARD_SIZE:-1024}"
 NUM_SHARDS_PER_EPOCH="${NUM_SHARDS_PER_EPOCH:-100000}"
 EPISODE_SAMPLING_RATE="${EPISODE_SAMPLING_RATE:-0.1}"
+SEED="${SEED:-42}"
+GRAD_ACCUM="${GRAD_ACCUM:-1}"
+EVAL_STRATEGY="${EVAL_STRATEGY:-no}"
+EVAL_STEPS="${EVAL_STEPS:-500}"
+EVAL_BATCH_SIZE="${EVAL_BATCH_SIZE:-32}"
+EVAL_MAX_SAMPLES="${EVAL_MAX_SAMPLES:-0}"
 LORA_RANK="${LORA_RANK:-0}"
 LORA_ALPHA="${LORA_ALPHA:-16}"
 LORA_DROPOUT="${LORA_DROPOUT:-0.1}"
@@ -22,7 +28,7 @@ MODALITY_CONFIG_PATH=""
 EMBODIMENT_TAG=""
 OUTPUT_DIR=""
 EXPERIMENT_NAME=""
-WANDB_PROJECT=""
+WANDB_PROJECT="${WANDB_PROJECT:-}"
 STATE_DROPOUT_PROB=""
 EXTRA_ARGS=()
 
@@ -123,11 +129,17 @@ LAUNCH_CMD=(
     --learning_rate 1e-4
     "${WANDB_FLAG[@]}"
     --global_batch_size "$GLOBAL_BATCH_SIZE"
+    --gradient_accumulation_steps "$GRAD_ACCUM"
+    --seed "$SEED"
     --color_jitter_params brightness 0.3 contrast 0.4 saturation 0.5 hue 0.08
     --dataloader_num_workers "$DATALOADER_NUM_WORKERS"
     --shard_size "$SHARD_SIZE"
     --num_shards_per_epoch "$NUM_SHARDS_PER_EPOCH"
     --episode_sampling_rate "$EPISODE_SAMPLING_RATE"
+    --eval_strategy "$EVAL_STRATEGY"
+    --eval_steps "$EVAL_STEPS"
+    --eval_batch_size "$EVAL_BATCH_SIZE"
+    --eval_max_samples "$EVAL_MAX_SAMPLES"
 )
 
 if [ -n "$MODALITY_CONFIG_PATH" ]; then

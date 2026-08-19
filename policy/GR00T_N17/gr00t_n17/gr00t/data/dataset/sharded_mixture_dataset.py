@@ -13,8 +13,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from concurrent.futures import Future, ThreadPoolExecutor
+import math
 import time
+from concurrent.futures import Future, ThreadPoolExecutor
 
 import numpy as np
 import torch.distributed as dist
@@ -150,6 +151,8 @@ class ShardedMixtureDataset(IterableDataset):
         seed: Random seed for reproducible sampling
         training: Whether in training mode (affects sampling strategy)
         num_shards_per_epoch: Number of shards to sample per epoch during training
+        max_samples: Stop iteration after this many samples (evaluation only, None = no cap),
+            split across dataloader workers so one pass yields ~max_samples in total.
 
     Example:
         >>> mixture = ShardedMixtureDataset(
@@ -172,6 +175,7 @@ class ShardedMixtureDataset(IterableDataset):
         training: bool = True,
         num_shards_per_epoch: int = int(1e5),
         override_pretraining_statistics: bool = False,
+        max_samples: int | None = None,
     ):
         """Initialize mixture dataset with datasets, weights, and configuration."""
         self.datasets = datasets
@@ -179,6 +183,12 @@ class ShardedMixtureDataset(IterableDataset):
         self.seed = seed
         self.training = training
         self.num_shards_per_epoch = num_shards_per_epoch
+        # Training iterates forever (the Trainer stops it); an evaluation pass has to
+        # end on its own, or Trainer.evaluate() never returns.
+        assert training or max_samples is None or max_samples > 0, (
+            f"max_samples must be positive when set, got {max_samples}"
+        )
+        self.max_samples = max_samples if not training else None
         self.epoch = 0
         self.processor = processor
         self.override_pretraining_statistics = override_pretraining_statistics
@@ -366,10 +376,23 @@ class ShardedMixtureDataset(IterableDataset):
         # Initialize worker-specific shard schedule
         self.worker_shard_sampling_schedule = self.filter_shard_sample_schedule()
         self.curr_shard_index = -1
+
+        # An evaluation pass walks this worker's shards once and stops at
+        # `max_samples`. It counts shards consumed rather than reading
+        # `curr_shard_index`, which `cache_next_shard` resets on schedule rollover.
+        shards_this_pass = len(self.worker_shard_sampling_schedule)
+        if not self.training and shards_this_pass == 0:
+            # Fewer shards than workers: this one has nothing to yield.
+            self._shutdown_executor()
+            return
+        max_samples = self._max_samples_this_worker()
+
         self.cache_next_shard()
         rng = np.random.default_rng(self.seed + self.epoch)
 
         # Continuous iteration with epoch management
+        samples_yielded = 0
+        shards_consumed = 0
         while True:
             self.curr_shard_index += 1
 
@@ -392,9 +415,33 @@ class ShardedMixtureDataset(IterableDataset):
             rng.shuffle(indices_in_shard)
             for index in indices_in_shard:
                 yield self.curr_shard[index]
+                samples_yielded += 1
+                if max_samples is not None and samples_yielded >= max_samples:
+                    self.delete_cached_shard()
+                    self._shutdown_executor()
+                    return
 
             # Clean up cached shard to free memory
             self.delete_cached_shard()
+
+            shards_consumed += 1
+            if not self.training and shards_consumed >= shards_this_pass:
+                self._shutdown_executor()
+                return
+
+    def _max_samples_this_worker(self) -> int | None:
+        """Split `max_samples` across the dataloader workers sharing this pass."""
+        if self.max_samples is None:
+            return None
+        num_workers = self.num_workers or 1
+        return max(1, math.ceil(self.max_samples / (num_workers * self.world_size)))
+
+    def _shutdown_executor(self) -> None:
+        """Drop the background caching thread (and any shard it is still loading)."""
+        if self._executor is not None:
+            self._executor.shutdown(wait=False, cancel_futures=True)
+            self._executor = None
+        self._cache_job = None
 
     def cache_next_shard(self):
         """

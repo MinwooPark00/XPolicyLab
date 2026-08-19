@@ -70,6 +70,9 @@ class DataConfig:
     download_cache: bool = False
     shard_size: int = 2**10
     episode_sampling_rate: float = 0.1
+    # Samples per evaluation pass, 0 = the whole split. Capped because each sample
+    # costs a video decode; deterministic, so every eval scores the same subset.
+    eval_max_samples: int = 0
     num_shards_per_epoch: int = int(1e5)
 
     # Override statistics from the pretrained checkpoint

@@ -111,6 +111,26 @@ class FinetuneConfig:
     lora_full_model: bool = False
     """Whether to adapt the full model. If False, only the action head gets LoRA."""
 
+    seed: int = 42
+    """Seed for weight init, data order and dropout (DataConfig.seed / TrainingArguments.seed)."""
+
+    # --- Evaluation ---
+    eval_strategy: str = "no"
+    """When to score the held-out split: "no" (default), "steps", or "epoch"."""
+
+    eval_steps: int = 500
+    """Training steps between evaluations when eval_strategy="steps"."""
+
+    eval_batch_size: int = 64
+    """Per-device batch size for evaluation; matches global_batch_size's default."""
+
+    eval_max_samples: int = 0
+    """Samples scored per evaluation pass; 0 walks the whole validation split."""
+
+    eval_set_split_ratio: float = 0.1
+    """Fraction of episodes held out when the dataset's meta/info.json declares no
+    validation split. Ignored when it does."""
+
     # --- Training Configuration ---
     global_batch_size: int = 64
     """Total effective batch size across all GPUs and accumulation steps."""
