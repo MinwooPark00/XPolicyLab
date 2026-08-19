@@ -1,76 +1,81 @@
-"""GR00T modality config for the MHBench two-humanoid *centralized* dataset.
+"""GR00T modality config for the MHBench two-humanoid *centralized* dataset --
+one policy driving both robots, against the same ``datasets/<task>`` export the
+decentralized configs read (the modality config does the slicing).
 
-Matches scripts/data_convertion.py --format groot --type centralized:
-  - video: both robots' own ego view (ego_a, ego_b) -- no third-person "scene"
-    camera by default (pass --cameras to the converter to add it back).
-  - state: pelvis root_pose (7D) + left/right eef_pos (3D each) + left/right
-    eef_rot (4D each) per robot -- 21D/robot, 42D combined. eef_rot won't
-    appear in the converted meta/modality.json until the recorder writes it
-    (see scripts/data_convertion.py's DEFAULT_STATE_FIELDS/build_state_schema);
-    listing it here is harmless either way, GR00T only loads keys present in
-    modality.json.
-  - action: one "robot_a"/"robot_b" field each, 22D per robot (14D arm EEF
-    pose + 4D hand signals + 3D base velocity + 1D height, via
-    --compress-hands), 44D combined.
+Thin shim, like ``unitree_g1x2_decentralized_config.py``: the key lists live in
+MHBench's ``configs/gr00t/mhbench_modality.py``, the authority shared with the
+exporter. For the duo target that means:
 
-Usage:
-    bash examples/finetune.sh \
-        --base-model-path <path> \
-        --dataset-path <path/to/..._lerobot> \
-        --embodiment-tag new_embodiment \
-        --modality-config-path configs/unitree_g1x2_centralized_config.py \
-        --output-dir <dir>
+  - video: both robots' ego views (``ego_a``, ``ego_b``), and the fixed room
+    camera (``scene``) only when asked for -- see below.
+  - state: 86 = both robots' 43 joint angles.
+  - action: 70 = both robots' 35 (arms 14 + hands 14 + waist 3 + base height 1
+    + navigation 3), arms RELATIVE and the rest ABSOLUTE.
+  - language: the pair's shared instruction
+    (``annotation.human.task_description``).
+
+MHBENCH_SCENE_CAMERA (default 0) adds the room camera. It is off by default
+because the two ego views are what a deployed pair actually has; the room
+camera is a third-person view of the scene that no robot carries. Every view is
+just another image in the same VLM prompt -- N1.7 has no per-camera encoder --
+so adding it costs image tokens (VRAM and step time) rather than new weights.
+
+MHBENCH_ACTION_HORIZON (default 40 = ``ACTION_HORIZON_FINETUNE_SAFE``): the
+released N1.7-3B checkpoint is a 40-step model. ``meta/relative_stats.json``
+must be generated at the same horizon (gr00t/data/stats.py with this config).
 """
 
-from gr00t.configs.data.embodiment_configs import register_modality_config
-from gr00t.data.embodiment_tags import EmbodimentTag
-from gr00t.data.types import (
-    ActionConfig,
-    ActionFormat,
-    ActionRepresentation,
-    ActionType,
-    ModalityConfig,
+import os
+import sys
+from pathlib import Path
+
+# baselines/XPolicyLab/policy/GR00T_N17/configs -> the MHBench checkout root
+_MHBENCH_ROOT = Path(__file__).resolve().parents[5]
+_MHBENCH_GR00T_CONFIG_DIR = Path(
+    os.environ.get("MHBENCH_CONFIG_DIR", _MHBENCH_ROOT / "configs" / "gr00t")
+)
+if str(_MHBENCH_GR00T_CONFIG_DIR) not in sys.path:
+    sys.path.insert(0, str(_MHBENCH_GR00T_CONFIG_DIR))
+
+import mhbench_keys  # noqa: E402
+import mhbench_modality  # noqa: E402
+
+from gr00t.configs.data.embodiment_configs import register_modality_config  # noqa: E402
+from gr00t.data.embodiment_tags import EmbodimentTag  # noqa: E402
+from gr00t.data.types import ModalityConfig  # noqa: E402
+
+
+def _env_flag(name: str, default: str = "0") -> bool:
+    value = os.environ.get(name, default).strip().lower()
+    if value in ("1", "true", "yes", "on"):
+        return True
+    if value in ("0", "false", "no", "off", ""):
+        return False
+    raise ValueError(f"{name} must be a boolean flag (0/1), got {os.environ[name]!r}")
+
+
+scene_camera = _env_flag("MHBENCH_SCENE_CAMERA")
+
+action_horizon = int(
+    os.environ.get("MHBENCH_ACTION_HORIZON", mhbench_keys.ACTION_HORIZON_FINETUNE_SAFE)
 )
 
-# How many future action steps to predict per query; tunable, matches this
-# project's ACT chunk_size (policy/ACT/train.sh --chunk_size 50) and the
-# pre-registered "unitree_g1_full_body_with_waist_height_nav_cmd" config in
-# gr00t/configs/data/embodiment_configs.py.
-ACTION_HORIZON = 50
-
-_STATE_FIELDS = ("root_pose", "left_eef_pos", "right_eef_pos", "left_eef_rot", "right_eef_rot")
-
-# rep=ABSOLUTE (the converter writes absolute poses/signals, not deltas);
-# type=NON_EEF, format=DEFAULT for every group, not just the non-pose ones --
-# ActionFormat has no plain xyz+quat option (only xyz+rot6d/xyz+rotvec), and
-# the pre-registered G1 config in this same repo uses NON_EEF/DEFAULT for its
-# arm groups too, so this follows that precedent rather than reshaping our
-# 7D-per-eef quat data into a representation nothing here asked for.
-_ROBOT_ACTION_CONFIG = ActionConfig(
-    rep=ActionRepresentation.ABSOLUTE,
-    type=ActionType.NON_EEF,
-    format=ActionFormat.DEFAULT,
+unitree_g1x2_centralized_config = mhbench_modality.build(
+    robot=None, action_horizon=action_horizon
 )
 
-unitree_g1x2_centralized_config = {
-    "video": ModalityConfig(
-        delta_indices=[0],
-        modality_keys=["ego_a", "ego_b"],
-    ),
-    "state": ModalityConfig(
-        delta_indices=[0],
-        modality_keys=[f"robot_a_{f}" for f in _STATE_FIELDS] + [f"robot_b_{f}" for f in _STATE_FIELDS],
-    ),
-    "action": ModalityConfig(
-        delta_indices=list(range(ACTION_HORIZON)),
-        modality_keys=["robot_a", "robot_b"],
-        action_configs=[_ROBOT_ACTION_CONFIG, _ROBOT_ACTION_CONFIG],
-    ),
-    "language": ModalityConfig(
-        delta_indices=[0],
-        modality_keys=["annotation.human.task_description"],
-    ),
-}
+if not scene_camera:
+    # Derived from the per-robot lists rather than by dropping "scene" by name,
+    # so this keeps meaning what it says if the camera set is ever renamed.
+    ego_views = [key for robot in ("robot_a", "robot_b") for key in mhbench_keys.video_keys(robot)]
+    duo_views = unitree_g1x2_centralized_config["video"].modality_keys
+    missing = [key for key in ego_views if key not in duo_views]
+    if missing:
+        raise ValueError(f"ego views {missing} are not in the duo camera set {duo_views}")
+    unitree_g1x2_centralized_config["video"] = ModalityConfig(
+        delta_indices=unitree_g1x2_centralized_config["video"].delta_indices,
+        modality_keys=ego_views,
+    )
 
 register_modality_config(
     unitree_g1x2_centralized_config,

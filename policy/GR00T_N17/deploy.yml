@@ -13,6 +13,12 @@ eval_batch: false
 # Model / checkpoint configuration (local paths relative to policy/GR00T_N17/)
 action_type: joint
 embodiment_tag: NEW_EMBODIMENT
+# decentralized = one policy per robot (two checkpoints, one server);
+# centralized = the single policy driving both. model_dir_robot_a/_robot_b
+# override the first, model_dir the second.
+mhbench_mode: decentralized
+# Suffix train.sh gave the run directory (CKPT_TAG): full, scene, ...
+ckpt_tag: null
 # Finetuned step under checkpoints/<ckpt_name>/; null = auto-resolve + checkpoint_num
 checkpoint_num: last
 model_dir: null

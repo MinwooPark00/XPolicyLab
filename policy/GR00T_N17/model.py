@@ -340,42 +340,66 @@ MHBENCH_TASK_PROMPTS = {
     },
 }
 
-# Which env camera slot carries each robot's own head camera
-# (MHBenchTaskEnv.get_obs maps ego_a/ego_b/scene onto XPolicyLab's slot names).
-MHBENCH_CAMERA_SLOT = {"robot_a": "cam_left_wrist", "robot_b": "cam_right_wrist"}
+# Which env camera slot carries each dataset camera: MHBenchTaskEnv.get_obs
+# packs ego_a/ego_b/scene into XPolicyLab's standard bimanual slot names.
+MHBENCH_VIDEO_SLOT = {
+    "ego_a": "cam_left_wrist", "ego_b": "cam_right_wrist", "scene": "cam_head",
+}
+MHBENCH_EGO_VIEW = {"robot_a": "ego_a", "robot_b": "ego_b"}
 
-# The training run token: checkpoints were trained as
-# mhbench-<task>_robot_<r>-unitree_g1x2_decentralized-joint-<seed>.
+# The shared instruction a centralized policy is trained on (meta/tasks.jsonl
+# index 0). Add a task here from its own dataset rather than guessing it -- a
+# policy prompted with a sentence it never saw is a silent failure.
+MHBENCH_DUO_PROMPTS = {
+    "handover": "Pass the bottle from one end of the counter to the other with a hand-to-hand handover.",
+}
+
+# The training run token per mode: checkpoints were trained as
+# mhbench-<task>_robot_<r>-unitree_g1x2_decentralized-joint-<seed>, or
+# mhbench-<task>-unitree_g1x2_centralized-joint-<seed> for one policy driving both.
 MHBENCH_TRAIN_ENV_CFG_TYPE = "unitree_g1x2_decentralized"
+MHBENCH_CENTRALIZED_ENV_CFG_TYPE = "unitree_g1x2_centralized"
 
 
 def _is_mhbench(model_cfg: dict[str, Any]) -> bool:
     return str(model_cfg.get("bench_name") or "") == "mhbench"
 
 
-def _resolve_mhbench_model_dir(model_cfg: dict[str, Any], robot: str) -> Path:
-    """The merged (standalone) model dir for one robot's decentralized policy.
+def _resolve_mhbench_model_dir(model_cfg: dict[str, Any], robot: str | None) -> Path:
+    """The merged (standalone) model dir for one mhbench policy.
 
-    Training wrote PEFT adapters; `merge_lora_checkpoint.py` folded each into a
-    `merged-<step>` dir next to its `checkpoint-<step>`. Explicit override:
-    deploy key `model_dir_<robot>`.
+    `robot` names one robot's decentralized policy, or is None for the
+    centralized one driving both. Training wrote PEFT adapters; a full finetune
+    or `merge_lora_checkpoint.py` leaves a `merged-<step>` dir beside the
+    `checkpoint-<step>`. Explicit override: deploy key `model_dir_<robot>`, or
+    `model_dir` when centralized.
     """
-    explicit = model_cfg.get(f"model_dir_{robot}")
+    explicit_key = "model_dir" if robot is None else f"model_dir_{robot}"
+    explicit = model_cfg.get(explicit_key)
     if explicit:
         path = Path(explicit)
         if not path.is_dir():
-            raise FileNotFoundError(f"model_dir_{robot} does not exist: {path}")
+            raise FileNotFoundError(f"{explicit_key} does not exist: {path}")
         return path
 
     task = str(model_cfg.get("ckpt_name") or "").strip()
     if not task:
-        raise ValueError("mhbench mode needs ckpt_name=<task> (e.g. cocarry) or model_dir_<robot>")
+        raise ValueError(f"mhbench mode needs ckpt_name=<task> (e.g. cocarry) or {explicit_key}")
     run_cfg = dict(model_cfg)
-    run_cfg["ckpt_name"] = f"{task}_{robot}"  # e.g. cocarry_robot_a
-    run_cfg["env_cfg_type"] = MHBENCH_TRAIN_ENV_CFG_TYPE
+    if robot is None:
+        run_cfg["env_cfg_type"] = MHBENCH_CENTRALIZED_ENV_CFG_TYPE
+    else:
+        run_cfg["ckpt_name"] = f"{task}_{robot}"  # e.g. cocarry_robot_a
+        run_cfg["env_cfg_type"] = MHBENCH_TRAIN_ENV_CFG_TYPE
     run_name = build_run_dir_name(run_cfg)
     if run_name is None:
         raise ValueError("bench_name/ckpt_name/action_type/seed required to name the run dir")
+    # train.sh appends CKPT_TAG to the run directory for runs that train the same
+    # data differently (full instead of LoRA, an extra camera). Carry it here too,
+    # or evaluating one would quietly load the other.
+    ckpt_tag = str(model_cfg.get("ckpt_tag") or "").strip()
+    if ckpt_tag:
+        run_name = f"{run_name}-{ckpt_tag}"
     root = _CHECKPOINTS_DIR / run_name
     search_roots = [root, root / run_name]  # train.sh doubles the run dir
     wanted = str(model_cfg.get("merged_checkpoint", model_cfg.get("checkpoint_num", "last")))
@@ -392,25 +416,47 @@ def _resolve_mhbench_model_dir(model_cfg: dict[str, Any], robot: str) -> Path:
     raise FileNotFoundError(f"merged-{wanted} not found; available: {[d.name for d in candidates]}")
 
 
-def _encode_mhbench_observation(obs: dict[str, Any], robot: str, prompt: str) -> dict[str, Any]:
-    """MHBenchTaskEnv obs -> one robot's Gr00tPolicy observation dict."""
-    slot = MHBENCH_CAMERA_SLOT[robot]
-    image = obs["vision"][slot]["color"]
-    image = np.ascontiguousarray(_ensure_hwc_uint8(image))[None, None, ...]  # (1,1,H,W,3)
+def _mhbench_view(obs: dict[str, Any], view: str) -> np.ndarray:
+    """One dataset camera as the (1, 1, H, W, 3) frame Gr00tPolicy expects."""
+    slot = MHBENCH_VIDEO_SLOT.get(view)
+    if slot is None:
+        raise KeyError(f"no env camera slot for view {view!r}; known: {sorted(MHBENCH_VIDEO_SLOT)}")
+    return np.ascontiguousarray(_ensure_hwc_uint8(obs["vision"][slot]["color"]))[None, None, ...]
 
-    robot_state = obs["mhbench_state"][robot]
-    joints = np.asarray(robot_state["joint_pos"], dtype=np.float32).reshape(-1)
+
+def _mhbench_state(obs: dict[str, Any], robot: str) -> dict[str, np.ndarray]:
+    """One robot's 43 joint angles, split into the policy's seven state groups."""
+    joints = np.asarray(obs["mhbench_state"][robot]["joint_pos"], dtype=np.float32).reshape(-1)
     if joints.shape[0] != 43:
         raise ValueError(f"{robot} joint_pos has {joints.shape[0]} dims, expected 43")
-    state = {
+    return {
         f"{robot}_{group}": joints[sl][None, None, :].astype(np.float32)
         for group, sl in MHBENCH_STATE_SLICES.items()
     }
 
+
+def _encode_mhbench_observation(obs: dict[str, Any], robot: str, prompt: str) -> dict[str, Any]:
+    """MHBenchTaskEnv obs -> one robot's Gr00tPolicy observation dict."""
     return {
-        "video": {("ego_a" if robot == "robot_a" else "ego_b"): image},
-        "state": state,
+        "video": {MHBENCH_EGO_VIEW[robot]: _mhbench_view(obs, MHBENCH_EGO_VIEW[robot])},
+        "state": _mhbench_state(obs, robot),
         "language": {f"annotation.human.task_description_{robot}": [[prompt]]},
+    }
+
+
+def _encode_mhbench_duo_observation(
+    obs: dict[str, Any], prompt: str, views: list[str]
+) -> dict[str, Any]:
+    """MHBenchTaskEnv obs -> the centralized policy's observation dict.
+
+    `views` comes from the loaded checkpoint rather than a constant, so a policy
+    trained with the room camera (MHBENCH_SCENE_CAMERA=1) and one trained on the
+    two ego views alone are both served without a second switch to set.
+    """
+    return {
+        "video": {view: _mhbench_view(obs, view) for view in views},
+        "state": {**_mhbench_state(obs, "robot_a"), **_mhbench_state(obs, "robot_b")},
+        "language": {"annotation.human.task_description": [[prompt]]},
     }
 
 
@@ -449,14 +495,28 @@ class Model(ModelTemplate):
         print(f"[GR00T_N17] action_horizon={self.action_horizon}, embodiment_tag={embodiment_tag}")
 
     def _init_mhbench(self, model_cfg: dict[str, Any]) -> None:
-        """Two decentralized Gr00tPolicy instances, one per robot, one server."""
+        """One server for one MHBench task, decentralized (default) or centralized.
+
+        Decentralized holds two Gr00tPolicy instances, one per robot; centralized
+        holds the single policy that drives both. `mhbench_mode` in deploy.yml or
+        the eval overrides picks between them.
+        """
         self._mhbench = True
         self.model_cfg = model_cfg
         self.device = model_cfg.get("device", "cuda:0" if self._has_cuda() else "cpu")
         task = str(model_cfg.get("ckpt_name") or "").strip()
         embodiment_tag = model_cfg.get("embodiment_tag", "NEW_EMBODIMENT")
+        self._mode = str(model_cfg.get("mhbench_mode") or "decentralized").strip().lower()
+        if self._mode not in ("decentralized", "centralized"):
+            raise ValueError(
+                f"mhbench_mode must be 'decentralized' or 'centralized', got {self._mode!r}"
+            )
 
         default_prompt = model_cfg.get("default_prompt", "Perform the robot manipulation task.")
+        if self._mode == "centralized":
+            self._init_mhbench_centralized(model_cfg, task, embodiment_tag, default_prompt)
+            return
+
         task_prompts = MHBENCH_TASK_PROMPTS.get(task, {})
         self._prompts = {
             robot: str(model_cfg.get(f"prompt_{robot}") or task_prompts.get(robot) or default_prompt)
@@ -490,35 +550,88 @@ class Model(ModelTemplate):
         self._latest_env_idx_list = [0]
         print(f"[GR00T_N17][mhbench] action_horizon={self.action_horizon} exec_horizon={self.exec_horizon}")
 
-    def _get_action_mhbench(self, obs: dict[str, Any]) -> list[dict[str, Any]]:
-        per_robot: dict[str, list[dict[str, np.ndarray]]] = {}
-        for robot, policy in self._policies.items():
-            encoded = _encode_mhbench_observation(obs, robot, self._prompts[robot])
-            action, _ = policy.get_action(encoded)
-            groups = {
-                key[len(robot) + 1 :]: np.asarray(value[0], dtype=np.float32)[: self.exec_horizon]
-                for key, value in action.items()
-                if key.startswith(robot + "_")
+    def _init_mhbench_centralized(
+        self, model_cfg: dict[str, Any], task: str, embodiment_tag: str, default_prompt: str
+    ) -> None:
+        """The single policy that sees both robots and answers for both."""
+        prompt = model_cfg.get("prompt_duo") or MHBENCH_DUO_PROMPTS.get(task)
+        if not prompt:
+            raise ValueError(
+                f"no shared instruction registered for task {task!r}: add it to "
+                "MHBENCH_DUO_PROMPTS from that dataset's meta/tasks.jsonl (index 0), "
+                "or pass prompt_duo. Falling back to a generic sentence would prompt "
+                "the policy with words it never trained on."
+            )
+        self._prompt_duo = str(prompt)
+
+        model_dir = _resolve_mhbench_model_dir(model_cfg, None)
+        policy = Gr00tPolicy(
+            model_path=str(model_dir),
+            embodiment_tag=embodiment_tag,
+            device=self.device,
+            strict=True,
+        )
+        self._views = list(policy.modality_configs["video"].modality_keys)
+        unknown = [view for view in self._views if view not in MHBENCH_VIDEO_SLOT]
+        if unknown:
+            raise RuntimeError(
+                f"checkpoint at {model_dir} was trained on video keys {unknown}, which the "
+                f"env does not carry; it has {sorted(MHBENCH_VIDEO_SLOT)}"
+            )
+        self._policy_duo = policy
+        self.model = policy
+        self.action_horizon = len(policy.modality_configs["action"].delta_indices)
+        self.exec_horizon = max(1, min(int(model_cfg.get("exec_horizon") or self.action_horizon), self.action_horizon))
+        self._obs_list = []
+        self._latest_env_idx_list = [0]
+        print(f"[GR00T_N17][mhbench] centralized: {model_dir}")
+        print(f"[GR00T_N17][mhbench] views={self._views} prompt={self._prompt_duo!r}")
+        print(f"[GR00T_N17][mhbench] action_horizon={self.action_horizon} exec_horizon={self.exec_horizon}")
+
+    def _pack_robot_action(
+        self, action: dict[str, np.ndarray], robot: str
+    ) -> list[dict[str, np.ndarray]]:
+        """One robot's slice of a policy output -> the env's `mhbench_raw_action`."""
+        groups = {
+            key[len(robot) + 1 :]: np.asarray(value[0], dtype=np.float32)[: self.exec_horizon]
+            for key, value in action.items()
+            if key.startswith(robot + "_")
+        }
+        missing = [
+            g for g in (*MHBENCH_JOINT_TARGET_GROUPS, "navigate_command", "base_height_command")
+            if g not in groups
+        ]
+        if missing:
+            raise KeyError(f"{robot} action is missing groups {missing}; got {sorted(groups)}")
+        steps = min(len(groups[g]) for g in groups)
+        return [
+            {
+                # The policy predicts the same Pink-solved joint targets the
+                # env action consumes -- packing is a pure group reorder.
+                "joint_targets": np.concatenate(
+                    [groups[g][t].reshape(-1) for g in MHBENCH_JOINT_TARGET_GROUPS]
+                ).astype(np.float32),
+                "base_vel": groups["navigate_command"][t].reshape(3).astype(np.float32),
+                "height": groups["base_height_command"][t].reshape(1).astype(np.float32),
             }
-            missing = [
-                g for g in (*MHBENCH_JOINT_TARGET_GROUPS, "navigate_command", "base_height_command")
-                if g not in groups
-            ]
-            if missing:
-                raise KeyError(f"{robot} action is missing groups {missing}; got {sorted(groups)}")
-            steps = min(len(groups[g]) for g in groups)
-            per_robot[robot] = [
-                {
-                    # The policy predicts the same Pink-solved joint targets the
-                    # env action consumes -- packing is a pure group reorder.
-                    "joint_targets": np.concatenate(
-                        [groups[g][t].reshape(-1) for g in MHBENCH_JOINT_TARGET_GROUPS]
-                    ).astype(np.float32),
-                    "base_vel": groups["navigate_command"][t].reshape(3).astype(np.float32),
-                    "height": groups["base_height_command"][t].reshape(1).astype(np.float32),
-                }
-                for t in range(steps)
-            ]
+            for t in range(steps)
+        ]
+
+    def _mhbench_policies(self) -> list[Gr00tPolicy]:
+        """Every policy this server holds: two robots' or the one driving both."""
+        return [self._policy_duo] if self._mode == "centralized" else list(self._policies.values())
+
+    def _get_action_mhbench(self, obs: dict[str, Any]) -> list[dict[str, Any]]:
+        if self._mode == "centralized":
+            encoded = _encode_mhbench_duo_observation(obs, self._prompt_duo, self._views)
+            action, _ = self._policy_duo.get_action(encoded)
+            per_robot = {robot: self._pack_robot_action(action, robot) for robot in ("robot_a", "robot_b")}
+        else:
+            per_robot = {}
+            for robot, policy in self._policies.items():
+                encoded = _encode_mhbench_observation(obs, robot, self._prompts[robot])
+                action, _ = policy.get_action(encoded)
+                per_robot[robot] = self._pack_robot_action(action, robot)
         steps = min(len(per_robot["robot_a"]), len(per_robot["robot_b"]))
         return [
             {"mhbench_raw_action": {"robot_a": per_robot["robot_a"][t], "robot_b": per_robot["robot_b"][t]}}
@@ -566,7 +679,7 @@ class Model(ModelTemplate):
         self._obs_list = []
         self._latest_env_idx_list = [0]
         if self._mhbench:
-            for policy in self._policies.values():
+            for policy in self._mhbench_policies():
                 policy.reset()
         else:
             self.policy.reset()
