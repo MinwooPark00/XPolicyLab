@@ -26,12 +26,15 @@ fi
 base_model="${GR00T_BASE_MODEL:-nvidia/GR00T-N1.7-3B}"
 cosmos_model="${GR00T_COSMOS_MODEL:-nvidia/Cosmos-Reason2-2B}"
 
+# CKPT_TAG separates runs over the same data (LoRA vs full finetune, say). It is
+# left out of data_setting on purpose: such runs share the dataset.
 data_setting="${bench_name}-${ckpt_name}-${env_cfg_type}-${action_type}"
-ckpt_setting="${bench_name}-${ckpt_name}-${env_cfg_type}-${action_type}-${seed}"
+ckpt_setting="${bench_name}-${ckpt_name}-${env_cfg_type}-${action_type}-${seed}${CKPT_TAG:+-${CKPT_TAG}}"
 dataset_path="${DATA_ROOT}/${data_setting}"
 modality_config="${POLICY_DIR}/configs/${env_cfg_type}_config.py"
 output_dir="${POLICY_DIR}/checkpoints/${ckpt_setting}"
 
+export SEED="${seed}"
 export CUDA_VISIBLE_DEVICES="${gpu_id}"
 export NUM_GPUS="${NUM_GPUS:-$(tr ',' '\n' <<< "${gpu_id}" | sed '/^$/d' | wc -l | xargs)}"
 # launch_finetune.py forces transformers_local_files_only=True whenever
