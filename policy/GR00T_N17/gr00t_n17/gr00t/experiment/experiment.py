@@ -177,11 +177,15 @@ def run(config: Config):
             "git_commit_hash": os.environ.get("GROOT_COMMIT_HASH", "unknown"),
         }
 
+        # wandb's own WANDB_TAGS env var is ignored once tags are passed here, so
+        # merge it in: callers label a run by what it is (robot, centralized or
+        # decentralized, lora or full) without touching this file.
+        env_tags = [t.strip() for t in os.environ.get("WANDB_TAGS", "").split(",") if t.strip()]
         wandb.init(
             project=config.training.wandb_project,
             name=experiment_name,
             config=config_dict,
-            tags=[config.data.mode],
+            tags=[config.data.mode, *env_tags],
         )
 
     # Setup model training pipeline.

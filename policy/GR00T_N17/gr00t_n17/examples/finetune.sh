@@ -12,6 +12,8 @@ GLOBAL_BATCH_SIZE="${GLOBAL_BATCH_SIZE:-32}"
 SHARD_SIZE="${SHARD_SIZE:-1024}"
 NUM_SHARDS_PER_EPOCH="${NUM_SHARDS_PER_EPOCH:-100000}"
 EPISODE_SAMPLING_RATE="${EPISODE_SAMPLING_RATE:-0.1}"
+TUNE_LLM="${TUNE_LLM:-0}"
+TUNE_VISUAL="${TUNE_VISUAL:-0}"
 SEED="${SEED:-42}"
 GRAD_ACCUM="${GRAD_ACCUM:-1}"
 EVAL_STRATEGY="${EVAL_STRATEGY:-no}"
@@ -152,6 +154,12 @@ if [ -n "$WANDB_PROJECT" ]; then
     LAUNCH_CMD+=(--wandb_project "$WANDB_PROJECT")
 fi
 
+if [ "$TUNE_LLM" = "1" ]; then
+    LAUNCH_CMD+=(--tune_llm)
+fi
+if [ "$TUNE_VISUAL" = "1" ]; then
+    LAUNCH_CMD+=(--tune_visual)
+fi
 if [ "$LORA_RANK" != "0" ]; then
     LAUNCH_CMD+=(--lora_rank "$LORA_RANK" --lora_alpha "$LORA_ALPHA" --lora_dropout "$LORA_DROPOUT")
     if [ "$LORA_FULL_MODEL" = "1" ]; then
