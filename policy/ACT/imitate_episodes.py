@@ -107,9 +107,9 @@ def main(args):
     best_epoch, min_val_loss, best_state_dict = best_ckpt_info
 
     # save best checkpoint
-    # ckpt_path = os.path.join(ckpt_dir, f"policy_best.ckpt")
-    # torch.save(best_state_dict, ckpt_path)
-    # print(f"Best ckpt, val loss {min_val_loss:.6f} @ epoch{best_epoch}")
+    ckpt_path = os.path.join(ckpt_dir, f"policy_best.ckpt")
+    torch.save(best_state_dict, ckpt_path)
+    print(f"Best ckpt, val loss {min_val_loss:.6f} @ epoch{best_epoch}")
 
 
 def make_policy(policy_class, policy_config):

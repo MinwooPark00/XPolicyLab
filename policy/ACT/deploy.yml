@@ -17,7 +17,7 @@ kl_weight: 10.0
 chunk_size: 50
 hidden_dim: 512
 dim_feedforward: 3200
-temporal_agg: true
+temporal_agg: false
 device: cuda:0
 
 # DETR parser args
@@ -38,7 +38,7 @@ enc_layers: 4
 dec_layers: 7
 pre_norm: false
 dropout: 0.1
-camera_names: ["cam_head", "cam_right_wrist", "cam_left_wrist"]
+camera_names: ["cam_right_wrist", "cam_left_wrist"]
 
 # --- MHBench (bench_name=mhbench, env_cfg_type=unitree_g1x2_decentralized): ---
 # one server drives both robots from two single-robot ACT checkpoints. ckpt_name

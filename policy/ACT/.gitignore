@@ -146,3 +146,4 @@ act-ckpt/
 processed_data/
 TASK_CONFIGS.json
 checkpoinst/*
+eval_results/*

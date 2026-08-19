@@ -137,7 +137,7 @@ class ACT:
         # running with an unnormalized/randomly initialized ACT policy is invalid.
         ckpt_dir = args_override.get("ckpt_dir", "")
         stats_path = os.path.join(ckpt_dir, "dataset_stats.pkl") if ckpt_dir else ""
-        ckpt_path = os.path.join(ckpt_dir, "policy_last.ckpt") if ckpt_dir else ""
+        ckpt_path = os.path.join(ckpt_dir, "policy_best.ckpt") if ckpt_dir else ""
         if not ckpt_dir:
             raise ValueError("ACT requires ckpt_dir during evaluation.")
         if not os.path.isdir(ckpt_dir):
@@ -149,7 +149,13 @@ class ACT:
             self.stats = pickle.load(f)
 
         if not os.path.isfile(ckpt_path):
-            raise FileNotFoundError(f"ACT policy checkpoint not found: {ckpt_path}")
+            # Runs trained before imitate_episodes.py's best-checkpoint save
+            # was restored (it was dead code) only have policy_last.ckpt.
+            last_ckpt_path = os.path.join(ckpt_dir, "policy_last.ckpt")
+            if not os.path.isfile(last_ckpt_path):
+                raise FileNotFoundError(f"ACT policy checkpoint not found: {ckpt_path}")
+            print(f"[ACT] policy_best.ckpt missing under {ckpt_dir}, falling back to policy_last.ckpt")
+            ckpt_path = last_ckpt_path
         self.policy.load_state_dict(torch.load(ckpt_path, map_location=self.device))
         
         self.obs_cache = None
@@ -185,6 +191,16 @@ class ACT:
         curr_image = np.stack(curr_images, axis=0)
         curr_image = torch.from_numpy(curr_image).float().to(self.device).unsqueeze(0)
 
+        import os
+        if os.environ.get("MHBENCH_ACT_DEBUG") and self.t % 10 == 0:
+            print(
+                f"[ACT_DEBUG] t={self.t} qpos_norm[min/max/mean]="
+                f"{qpos_normalized.min():.3f}/{qpos_normalized.max():.3f}/{qpos_normalized.mean():.3f} "
+                f"image_shape={tuple(curr_image.shape)} "
+                f"image[min/max/mean]={curr_image.min().item():.3f}/{curr_image.max().item():.3f}/{curr_image.mean().item():.3f}",
+                flush=True,
+            )
+
         with torch.no_grad():
             # Only query the policy at specified intervals - exactly like imitate_episodes.py
             if self.t % self.query_frequency == 0:
@@ -211,6 +227,16 @@ class ACT:
         # Denormalize action
         raw_action = raw_action.cpu().numpy()
         action = self.post_process(raw_action)
+
+        if os.environ.get("MHBENCH_ACT_DEBUG") and (self.t - 1) % 10 == 0:
+            qpos_action_delta = action[0, : qpos_numpy.shape[0]] - qpos_numpy if action.shape[1] >= qpos_numpy.shape[0] else None
+            print(
+                f"[ACT_DEBUG] t={self.t - 1} raw_action_norm[min/max/mean]="
+                f"{raw_action.min():.3f}/{raw_action.max():.3f}/{raw_action.mean():.3f} "
+                f"action_denorm[min/max/mean]={action.min():.3f}/{action.max():.3f}/{action.mean():.3f} "
+                + (f"qpos_action_delta[abs max]={np.abs(qpos_action_delta).max():.4f}" if qpos_action_delta is not None else ""),
+                flush=True,
+            )
 
         self.t += 1
         return action

@@ -22,6 +22,12 @@ from XPolicyLab.utils.checkpoint_resolver import resolve_checkpoint_root, build_
 # comes from the env, not the policy.
 MHBENCH_CAMERA_SLOT = {"robot_a": "cam_left_wrist", "robot_b": "cam_right_wrist"}
 
+# encode_obs()'s normalizer key -> the XPolicyLab vision slot it reads from.
+# Which of these a checkpoint actually expects is read back from its own
+# normalizer (Model.get_model), since train.sh's num_cameras gate means not
+# every checkpoint was trained with all three (e.g. a head_cam-less run).
+CENTRALIZED_CAMERA_SLOT = {"head_cam": "cam_head", "left_cam": "cam_left_wrist", "right_cam": "cam_right_wrist"}
+
 
 def _prep_camera(color: np.ndarray) -> np.ndarray:
     """XPolicyLab vision obs (HWC uint8) -> DP's CHW float32 input, 320x240."""
@@ -75,6 +81,9 @@ class Model(ModelTemplate):
         self._mhbench_dual_robot = False  # set per-batch in update_obs_batch
         self.runner = DPRunner(n_obs_steps=self.n_obs_steps, n_action_steps=self.n_action_steps)
         self.model = self.get_model(model_cfg=model_cfg)
+        self.camera_keys = [
+            key for key in CENTRALIZED_CAMERA_SLOT if key in self.model.normalizer.params_dict
+        ]
         try:
             self.robot_action_dim_info = get_robot_action_dim_info(model_cfg['env_cfg_type'])
         except FileNotFoundError:
@@ -196,7 +205,7 @@ class Model(ModelTemplate):
 
         self._mhbench_dual_robot = bool(obs_list) and "mhbench_state" in obs_list[0]
         encoded_list = [
-            encode_obs(obs, self.action_type, self.robot_action_dim_info, self._mhbench_dual_robot)
+            encode_obs(obs, self.action_type, self.robot_action_dim_info, self.camera_keys, self._mhbench_dual_robot)
             for obs in obs_list
         ]
         self.runner.update_obs(encoded_list, env_idx_list)
@@ -266,10 +275,11 @@ class Model(ModelTemplate):
         self.runner.reset_obs()
         self._latest_env_idx_list = None
 
-def encode_obs(observation, action_type, robot_action_dim_info, mhbench_dual_robot=False):
-    head_img = _prep_camera(observation["vision"]["cam_head"]["color"])
-    left_cam = _prep_camera(observation["vision"]["cam_left_wrist"]["color"])
-    right_cam = _prep_camera(observation["vision"]["cam_right_wrist"]["color"])
+def encode_obs(observation, action_type, robot_action_dim_info, camera_keys, mhbench_dual_robot=False):
+    cams = {
+        key: _prep_camera(observation["vision"][CENTRALIZED_CAMERA_SLOT[key]]["color"])
+        for key in camera_keys
+    }
 
     if mhbench_dual_robot:
         # MHBench's two-full-humanoid state doesn't fit XPolicyLab's generic
@@ -284,4 +294,4 @@ def encode_obs(observation, action_type, robot_action_dim_info, mhbench_dual_rob
     else:
         agent_pos = pack_robot_state(observation, action_type, robot_action_dim_info, source_type='obs')
 
-    return dict(head_cam=head_img, left_cam=left_cam, right_cam=right_cam, agent_pos=agent_pos)
+    return dict(**cams, agent_pos=agent_pos)
