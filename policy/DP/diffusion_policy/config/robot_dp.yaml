@@ -46,7 +46,7 @@ policy:
     # constant center crop
     random_crop: True
     use_group_norm: True
-    share_rgb_model: False
+    share_rgb_model: True
     imagenet_norm: True
 
   horizon: ${horizon}

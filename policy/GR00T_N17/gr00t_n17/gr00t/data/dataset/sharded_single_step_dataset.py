@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -111,6 +112,8 @@ class ShardedSingleStepDataset(ShardedDataset):
         episode_sampling_rate: Fraction of episode timesteps to use (for efficiency)
         seed: Random seed for reproducible sharding and sampling
         allow_padding: Whether to allow padding of indices to valid range [0, max_length - 1]
+        episode_indices: Positions in meta/episodes.jsonl to shard. None = every episode.
+            Used to hold a validation split out of training (see DatasetFactory).
 
     Example:
         >>> dataset = ShardedSingleStepDataset(
@@ -140,6 +143,7 @@ class ShardedSingleStepDataset(ShardedDataset):
         episode_sampling_rate: float = 0.1,
         seed: int = 42,
         allow_padding: bool = False,
+        episode_indices: Sequence[int] | None = None,
     ):
         """Initialize single-step dataset with sharding configuration."""
         super().__init__(dataset_path)
@@ -151,6 +155,7 @@ class ShardedSingleStepDataset(ShardedDataset):
         self.episode_sampling_rate = episode_sampling_rate
         self.seed = seed
         self.allow_padding = allow_padding
+        self.episode_indices = None if episode_indices is None else list(episode_indices)
         self.processor = None
         self.rng = np.random.default_rng(seed)
         action_delta_indices = modality_configs["action"].delta_indices
@@ -181,7 +186,17 @@ class ShardedSingleStepDataset(ShardedDataset):
         - Diversity within shards (mix of episodes and timesteps)
         - Reproducible sharding based on seed
         """
-        shuffled_episode_indices = self.rng.permutation(len(self.episode_loader.episode_lengths))
+        num_episodes = len(self.episode_loader.episode_lengths)
+        if self.episode_indices is None:
+            candidate_episode_indices = np.arange(num_episodes)
+        else:
+            out_of_range = [i for i in self.episode_indices if not 0 <= i < num_episodes]
+            assert not out_of_range, (
+                f"episode_indices out of range for {self.dataset_path} "
+                f"({num_episodes} episodes): {out_of_range}"
+            )
+            candidate_episode_indices = np.array(sorted(set(self.episode_indices)), dtype=int)
+        shuffled_episode_indices = self.rng.permutation(candidate_episode_indices)
         num_splits = int(1 / self.episode_sampling_rate)
 
         assert len(shuffled_episode_indices) > 0, (

@@ -4,13 +4,21 @@ protocol: ws
 host: localhost
 bench_name: null
 task_name: null
+ckpt_name: null
 env_cfg_type: null
 seed: null
+gpu_id: null
 eval_batch: false
 
 # Model / checkpoint configuration (local paths relative to policy/GR00T_N17/)
 action_type: joint
 embodiment_tag: NEW_EMBODIMENT
+# decentralized = one policy per robot (two checkpoints, one server);
+# centralized = the single policy driving both. model_dir_robot_a/_robot_b
+# override the first, model_dir the second.
+mhbench_mode: decentralized
+# Suffix train.sh gave the run directory (CKPT_TAG): full, scene, ...
+ckpt_tag: null
 # Finetuned step under checkpoints/<ckpt_name>/; null = auto-resolve + checkpoint_num
 checkpoint_num: last
 model_dir: null
@@ -23,3 +31,13 @@ default_prompt: Perform the robot manipulation task.
 policy_uv_env_path: gr00t_n17
 
 port: 6000
+
+# --- MHBench (bench_name=mhbench): one server drives both decentralized robots ---
+# ckpt_name is the task (cocarry/handover); per-robot merged model dirs resolve to
+# checkpoints/mhbench-<task>_robot_<r>-unitree_g1x2_decentralized-joint-<seed>/<same>/merged-<step>.
+merged_checkpoint: last
+exec_horizon: 40
+model_dir_robot_a: null
+model_dir_robot_b: null
+prompt_robot_a: null
+prompt_robot_b: null
