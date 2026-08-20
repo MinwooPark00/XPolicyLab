@@ -405,9 +405,21 @@ def _resolve_mhbench_model_dir(model_cfg: dict[str, Any], robot: str | None) -> 
     wanted = str(model_cfg.get("merged_checkpoint", model_cfg.get("checkpoint_num", "last")))
     candidates = [d for r in search_roots if r.is_dir() for d in sorted(r.glob("merged-*")) if d.is_dir()]
     if not candidates:
-        raise FileNotFoundError(
-            f"no merged-* model dir under {root} -- run baselines/scripts/merge_lora_checkpoint.py first"
-        )
+        # A full finetune writes the whole model into checkpoint-<step>, so there
+        # is nothing to merge and no merged-<step> to find. Only a LoRA run needs
+        # one, and it says so by leaving an adapter_config.json behind.
+        checkpoints = [d for r in search_roots if r.is_dir() for d in sorted(r.glob("checkpoint-*")) if d.is_dir()]
+        candidates = [d for d in checkpoints if not (d / "adapter_config.json").is_file()]
+        if not candidates:
+            raise FileNotFoundError(
+                f"no loadable model dir under {root}: "
+                + (
+                    "its checkpoints hold LoRA adapters -- run "
+                    "baselines/scripts/merge_lora_checkpoint.sbatch first"
+                    if checkpoints
+                    else "it has no checkpoint-* at all"
+                )
+            )
     if wanted in ("last", "None", ""):
         return max(candidates, key=lambda d: _extract_step_number(d.name) or -1)
     for d in candidates:
