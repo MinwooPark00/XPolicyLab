@@ -33,12 +33,10 @@ def _limit_threads_once() -> None:
     """Hold this process to one compute thread, once, without threadpoolctl.
 
     Upstream called ``threadpool_limits(1)`` per ``__getitem__``. Its library
-    scan **aborts** inside a DataLoader worker forked from a CUDA-initialised
+    scan aborts inside a DataLoader worker forked from a CUDA-initialised
     parent -- in the C loader, so the worker dies on SIGABRT with nothing on
-    stderr and shows up only as "DataLoader worker ... killed by signal:
-    Aborted". Measured: num_workers 0 and 1 survive, 2+ die on the first batch.
-    ``torch.set_num_threads`` is the same intent with no scan and no dlopen;
-    ``train.sh`` exports OMP_NUM_THREADS for the runtimes it cannot reach.
+    stderr. Measured: num_workers 0 and 1 survive, 2+ die on the first batch.
+    ``train.sh`` exports OMP_NUM_THREADS for the runtimes this cannot reach.
     """
     global _threads_limited
     if not _threads_limited:
@@ -139,10 +137,21 @@ class XarmSplitActionDataset(BaseImageDataset):
             for key in rgb_keys + lowdim_keys:
                 key_first_k[key] = n_obs_steps
 
-        val_mask = get_val_mask(
-            n_episodes=replay_buffer.n_episodes, 
-            val_ratio=val_ratio,
-            seed=seed)
+        # The export's own train/val boundary is temporal; drawing one at
+        # random here would straddle it. val_ratio is the fallback for buffers
+        # converted before the converter started recording the mask.
+        if "val_mask" in replay_buffer.meta:
+            val_mask = np.asarray(replay_buffer.meta["val_mask"][:], dtype=bool)
+            assert val_mask.shape == (replay_buffer.n_episodes,), (
+                f"val_mask has {val_mask.shape[0]} entries for "
+                f"{replay_buffer.n_episodes} episodes")
+            print(f"[LatentToM] val split from the dataset: {int(val_mask.sum())} val / "
+                  f"{int((~val_mask).sum())} train episodes")
+        else:
+            val_mask = get_val_mask(
+                n_episodes=replay_buffer.n_episodes,
+                val_ratio=val_ratio,
+                seed=seed)
         train_mask = ~val_mask
         train_mask = downsample_mask(
             mask=train_mask, 
@@ -159,6 +168,7 @@ class XarmSplitActionDataset(BaseImageDataset):
         
         self.replay_buffer = replay_buffer
         self.sampler = sampler
+        self.key_first_k = key_first_k
         self.shape_meta = shape_meta
         self.rgb_keys = rgb_keys
         self.lowdim_keys = lowdim_keys
@@ -171,29 +181,48 @@ class XarmSplitActionDataset(BaseImageDataset):
 
     def get_validation_dataset(self):
         val_set = copy.copy(self)
+        # Without key_first_k the sampler reads `horizon` camera frames per
+        # sample and __getitem__ discards all but `n_obs_steps` of them.
         val_set.sampler = SequenceSampler(
-            replay_buffer=self.replay_buffer, 
+            replay_buffer=self.replay_buffer,
             sequence_length=self.horizon+self.n_latency_steps,
-            pad_before=self.pad_before, 
+            pad_before=self.pad_before,
             pad_after=self.pad_after,
-            episode_mask=self.val_mask
+            episode_mask=self.val_mask,
+            key_first_k=self.key_first_k,
             )
         val_set.val_mask = ~self.val_mask
         return val_set
 
+    def _train_frames(self) -> np.ndarray:
+        """Boolean index over frames, true for the ones in train episodes.
+
+        Fitting the normalizer on the whole buffer would put the val episodes'
+        min/max into the scale every train sample is divided by -- a leak that
+        no later split can undo. All-true when nothing is held out.
+        """
+        ends = np.asarray(self.replay_buffer.episode_ends[:])
+        starts = np.concatenate([[0], ends[:-1]])
+        keep = np.zeros(int(ends[-1]), dtype=bool)
+        for start, end, is_val in zip(starts, ends, self.val_mask):
+            if not is_val:
+                keep[start:end] = True
+        return keep
+
     def get_normalizer(self, **kwargs) -> LinearNormalizer:
         normalizer = LinearNormalizer()
+        train = self._train_frames()
 
         # action
         normalizer['arm1_action'] = SingleFieldLinearNormalizer.create_fit(
-            self.replay_buffer['arm1_action'])
+            self.replay_buffer['arm1_action'][:][train])
         normalizer['arm2_action'] = SingleFieldLinearNormalizer.create_fit(
-            self.replay_buffer['arm2_action'])
+            self.replay_buffer['arm2_action'][:][train])
         
         # obs
         for key in self.lowdim_keys:
             normalizer[key] = SingleFieldLinearNormalizer.create_fit(
-                self.replay_buffer[key])
+                self.replay_buffer[key][:][train])
         
         # image
         for key in self.rgb_keys:

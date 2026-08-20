@@ -64,7 +64,14 @@ export MKL_NUM_THREADS="${MKL_NUM_THREADS:-1}"
 export OPENBLAS_NUM_THREADS="${OPENBLAS_NUM_THREADS:-1}"
 export NUMEXPR_NUM_THREADS="${NUMEXPR_NUM_THREADS:-1}"
 
-python "${POLICY_DIR}/train.py" \
+# The policy env's own interpreter, not whatever `python` resolves to: a venv
+# activated by the login shell (MHBench's .venv, which holds Isaac Sim and none
+# of the training dependencies) keeps its PATH entry ahead of conda's, so
+# `python` there is the wrong one and the run dies on the first import.
+PY="${CONDA_PREFIX:-}/bin/python"
+[ -x "$PY" ] || PY=python
+
+"$PY" "${POLICY_DIR}/train.py" \
     --config-name=sheaf_xarm_split_diffusion_workspace \
     task=mhbench_cocarry_sheaf_split \
     task.dataset_path="${dataset_path}" \

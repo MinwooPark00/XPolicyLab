@@ -23,10 +23,13 @@ echo "[SERVER] policy=${policy_name}, task=${task_name}, policy_server_port=${po
 source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate "${policy_conda_env}"
 
+PY="${CONDA_PREFIX:-}/bin/python"
+[ -x "$PY" ] || PY=python
+
 exec env \
     PYTHONWARNINGS=ignore::UserWarning \
     CUDA_VISIBLE_DEVICES="${policy_gpu_id}" \
-    python "${XPL_ROOT}/setup_policy_server.py" \
+    "$PY" "${XPL_ROOT}/setup_policy_server.py" \
         --config_path "${yaml_file}" \
         --overrides \
             port="${policy_server_port}" \

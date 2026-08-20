@@ -78,7 +78,7 @@ dataloader:
   persistent_workers: True
 
 val_dataloader:
-  batch_size: 16
+  batch_size: 32
   num_workers: 8
   shuffle: False
   pin_memory: True
@@ -104,7 +104,7 @@ training:
   freeze_encoder: False
   rollout_every: 50
   checkpoint_every: 50
-  val_every: 1
+  val_every: 50
   sample_every: 5
   max_train_steps: null
   max_val_steps: null

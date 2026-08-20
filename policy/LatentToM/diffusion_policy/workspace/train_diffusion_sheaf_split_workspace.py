@@ -296,7 +296,10 @@ class TrainDiffusionSheafSplitWorkspace(BaseWorkspace):
 
                         raw_loss_sheaf = self.compute_sheaf_loss(sheaf_embedding_arm1, sheaf_embedding_arm2, private_arm1, private_arm2, self.arm1_model, self.arm2_model)
                         loss_sheaf = raw_loss_sheaf / cfg.training.gradient_accumulate_every
-                        weighted_loss_sheaf = 0.5 * loss_sheaf
+                        # The configured weight, not a literal: this is the one knob
+                        # that is LatentToM's own, and a hardcoded 0.5 made
+                        # training.sheaf_loss_weight dead config.
+                        weighted_loss_sheaf = cfg.training.sheaf_loss_weight * loss_sheaf
 
                         loss_arm1_total = loss_arm1 + weighted_loss_sheaf
                         loss_arm1_total.backward(retain_graph=True)
@@ -361,13 +364,16 @@ class TrainDiffusionSheafSplitWorkspace(BaseWorkspace):
                 arm1_policy.eval()
                 arm2_policy.eval()
 
-                if env_runner is not None and (self.epoch % cfg.training.rollout_every) == 0:
+                if env_runner is not None and ((self.epoch + 1) % cfg.training.rollout_every) == 0:
                     runner_log_arm1 = env_runner.run(arm1_policy)
                     runner_log_arm2 = env_runner.run(arm2_policy)
                     step_log.update(runner_log_arm1)
                     step_log.update(runner_log_arm2)
 
-                if (self.epoch % cfg.training.val_every) == 0:
+                # +1 like checkpoint_every below: the counter is incremented at
+                # the bottom of the loop, so without it the last epoch of a run
+                # never matches and the final model is never validated.
+                if ((self.epoch + 1) % cfg.training.val_every) == 0:
                     with torch.no_grad():
                         val_losses_arm1 = list()
                         val_losses_arm2 = list()
@@ -380,13 +386,22 @@ class TrainDiffusionSheafSplitWorkspace(BaseWorkspace):
                                 arm1_batch = build_arm_sub_batch(batch, arm_id=1)
                                 arm2_batch = build_arm_sub_batch(batch, arm_id=2)
 
-                                loss_arm1, val_sheaf_embedding_arm1 = self.arm1_model.compute_loss(arm1_batch)
+                                # Unpacked and weighted exactly as the training loop
+                                # above does. This block had never run -- the val set
+                                # was always empty -- so it still took two return
+                                # values from a three-value compute_loss, dropped the
+                                # private embeddings compute_sheaf_loss requires, and
+                                # *added* the weight instead of multiplying by it.
+                                loss_arm1, val_sheaf_arm1, val_private_arm1 = self.arm1_model.compute_loss(arm1_batch)
                                 val_losses_arm1.append(loss_arm1.item())
-                                loss_arm2, val_sheaf_embedding_arm2 = self.arm2_model.compute_loss(arm2_batch)
+                                loss_arm2, val_sheaf_arm2, val_private_arm2 = self.arm2_model.compute_loss(arm2_batch)
                                 val_losses_arm2.append(loss_arm2.item())
 
-                                loss_sheaf = self.compute_sheaf_loss(val_sheaf_embedding_arm1, val_sheaf_embedding_arm2)
-                                weighted_loss_sheaf = loss_sheaf + cfg.training.sheaf_loss_weight
+                                loss_sheaf = self.compute_sheaf_loss(
+                                    val_sheaf_arm1, val_sheaf_arm2,
+                                    val_private_arm1, val_private_arm2,
+                                    self.arm1_model, self.arm2_model)
+                                weighted_loss_sheaf = cfg.training.sheaf_loss_weight * loss_sheaf
                                 val_losses_sheaf.append(weighted_loss_sheaf.item())
 
                                 if (cfg.training.max_val_steps is not None) \
@@ -402,7 +417,7 @@ class TrainDiffusionSheafSplitWorkspace(BaseWorkspace):
                             val_loss_sheaf = torch.mean(torch.tensor(val_losses_sheaf)).item()
                             step_log['val_loss_sheaf'] = val_loss_sheaf
 
-                if (self.epoch % cfg.training.sample_every) == 0:
+                if ((self.epoch + 1) % cfg.training.sample_every) == 0:
                     with torch.no_grad():
                         batch = dict_apply(train_sampling_batch, lambda x: x.to(device, non_blocking=True))
 
