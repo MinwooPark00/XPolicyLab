@@ -122,14 +122,6 @@ class DatasetFactory:
                 embodiment_tag = dataset_spec.embodiment_tag
                 assert embodiment_tag is not None, "Embodiment tag is required"
                 assert self.config.data.mode == "single_turn", "Only single turn mode is supported"
-                if torch.distributed.is_initialized():
-                    if torch.distributed.get_rank() == 0:
-                        generate_stats(dataset_path)
-                        generate_rel_stats(dataset_path, EmbodimentTag(embodiment_tag))
-                else:
-                    generate_stats(dataset_path)
-                    generate_rel_stats(dataset_path, EmbodimentTag(embodiment_tag))
-                barrier()
                 train_episodes, eval_episodes = (None, None)
                 if want_eval:
                     train_episodes, eval_episodes = resolve_episode_splits(
@@ -140,6 +132,19 @@ class DatasetFactory:
                         f"episodes could be resolved for {dataset_path}: declare a validation "
                         f"range in meta/info.json's splits, or set eval_set_split_ratio > 0."
                     )
+                # Statistics come from the training episodes alone. They are part
+                # of what the model learns from, so computing them over the held-out
+                # episodes would leak the split the eval is meant to measure.
+                if torch.distributed.is_initialized():
+                    if torch.distributed.get_rank() == 0:
+                        generate_stats(dataset_path, train_episodes)
+                        generate_rel_stats(
+                            dataset_path, EmbodimentTag(embodiment_tag), train_episodes
+                        )
+                else:
+                    generate_stats(dataset_path, train_episodes)
+                    generate_rel_stats(dataset_path, EmbodimentTag(embodiment_tag), train_episodes)
+                barrier()
                 common_kwargs = dict(
                     dataset_path=dataset_path,
                     embodiment_tag=EmbodimentTag(embodiment_tag),
