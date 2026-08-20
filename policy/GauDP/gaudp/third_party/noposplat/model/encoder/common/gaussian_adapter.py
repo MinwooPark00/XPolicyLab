@@ -130,6 +130,11 @@ class UnifiedGaussianAdapter(GaussianAdapter):
         intrinsics: Optional[Float[Tensor, "*#batch 3 3"]] = None,
         coordinates: Optional[Float[Tensor, "*#batch 2"]] = None,
     ) -> Gaussians:
+        # Keep pose-free predictions inside the workspace used by GauDP.  The
+        # upstream Policy-Lightning implementation applies the same bound; in
+        # particular, it prevents unbounded exponential depth predictions from
+        # overflowing when Gaussian features are cached as float16.
+        means = means.clamp(-5.0, 5.0)
         scales, rotations, sh = raw_gaussians.split((3, 4, 3 * self.d_sh), dim=-1)
 
         scales = 0.001 * F.softplus(scales)

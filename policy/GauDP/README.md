@@ -102,7 +102,7 @@ For `bench=cocarry`, the default source is `datasets/cocarry_test`. Override it
 with `MHBENCH_DATASET_PATH` when the dataset is elsewhere:
 
 ```bash
-export MHBENCH_DATASET_PATH=/lustre/meat124/MHBench/datasets/cocarry_test
+export MHBENCH_DATASET_PATH=/lustre/meat124/mhbench_ws/MHBench/datasets/cocarry_test
 bash process_data.sh cocarry experiment cocarry ee 100
 ```
 
@@ -328,7 +328,7 @@ steps, and 100 DDPM inference steps. For example:
 ```bash
 bash train.sh cocarry experiment cocarry ee 0 0 \
   --epochs 300 \
-  --batch-size 8 \
+  --batch-size 16 \
   --num-workers 8 \
   --lr 1e-4 \
   --horizon 8 \
