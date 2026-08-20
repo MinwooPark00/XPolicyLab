@@ -1,0 +1,20 @@
+policy_name: GauDP
+protocol: ws
+host: localhost
+port: null
+bench_name: null
+task_name: null
+ckpt_name: null
+env_cfg_type: null
+seed: null
+action_type: ee
+gpu_id: null
+eval_batch: false
+
+# GauDP-specific. Must match GAUDP_USE_SCENE during data conversion/training.
+use_scene: false
+# best falls back to last when best.ckpt does not exist (and vice versa).
+checkpoint: best
+# Optional portability override when the policy used an external/official
+# NoPoSplat checkpoint rather than gaussian/{best,last}.ckpt.
+gaussian_checkpoint: null
