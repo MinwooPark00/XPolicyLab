@@ -1,0 +1,23 @@
+# GauDP policy and the vendored NoPoSplat runtime.
+# PyTorch/torchvision/torchaudio are installed separately by install.sh.
+numpy==1.26.4
+h5py==3.11.0
+# Reading the MHBench LeRobot-v2.1 episode parquet files.
+pyarrow==17.0.0
+diffusers==0.27.2
+huggingface-hub==0.25.2
+einops==0.8.0
+jaxtyping==0.2.36
+beartype==0.19.0
+timm==1.0.12
+dacite==1.8.1
+e3nn==0.5.6
+plyfile==1.1
+lpips==0.1.4
+scipy==1.13.1
+pillow==10.4.0
+scikit-image==0.24.0
+opencv-python-headless==4.10.0.84
+tqdm==4.67.1
+# 0.22.3+ accepts the longer API keys issued by current W&B accounts.
+wandb==0.22.3

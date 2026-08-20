@@ -1,0 +1,1 @@
+"""Vendored NoPoSplat Gaussian helpers."""

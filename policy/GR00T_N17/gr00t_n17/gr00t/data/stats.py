@@ -95,6 +95,48 @@ def calculate_dataset_statistics(
     return dataset_statistics
 
 
+STATS_PROVENANCE_FILENAME = "meta/stats_provenance.json"
+
+
+def _episode_id(parquet_path: Path) -> int:
+    """`.../episode_000012.parquet` -> 12."""
+    return int(parquet_path.stem.rsplit("_", 1)[-1])
+
+
+def _read_provenance(dataset_path: Path) -> dict:
+    path = Path(dataset_path) / STATS_PROVENANCE_FILENAME
+    if not path.is_file():
+        return {}
+    with open(path, "r") as f:
+        return json.load(f)
+
+
+def _write_provenance(dataset_path: Path, key: str, episode_indices: list[int] | None) -> None:
+    """Record which episodes a statistics file was computed from.
+
+    Statistics are cached by existence: a file with the expected keys is reused
+    as is. That is wrong once the episodes can differ -- holding a validation
+    split out changes every number in it -- so the episode list travels beside
+    the file, and a run that wants different episodes recomputes instead of
+    silently normalising against the split it was supposed to hold out.
+    """
+    path = Path(dataset_path) / STATS_PROVENANCE_FILENAME
+    provenance = _read_provenance(dataset_path)
+    provenance[key] = None if episode_indices is None else sorted(episode_indices)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w") as f:
+        json.dump(provenance, f, indent=2)
+
+
+def _provenance_matches(dataset_path: Path, key: str, episode_indices: list[int] | None) -> bool:
+    provenance = _read_provenance(dataset_path)
+    if key not in provenance:
+        return False
+    recorded = provenance[key]
+    wanted = None if episode_indices is None else sorted(episode_indices)
+    return recorded == wanted
+
+
 def check_stats_validity(dataset_path: Path | str, features: list[str]):
     stats_path = Path(dataset_path) / LE_ROBOT_STATS_FILENAME
     if not stats_path.exists():
@@ -112,7 +154,13 @@ def check_stats_validity(dataset_path: Path | str, features: list[str]):
     return True
 
 
-def generate_stats(dataset_path: Path | str):
+def generate_stats(dataset_path: Path | str, episode_indices: list[int] | None = None):
+    """Normalisation statistics over `episode_indices`, or every episode if None.
+
+    Pass the training episodes when a validation split is held out: statistics
+    are part of what the model learns from, so computing them over the held-out
+    episodes too leaks them into training.
+    """
     dataset_path = Path(dataset_path)
     print(f"Generating stats for {str(dataset_path)}")
     lowdim_features = []
@@ -121,14 +169,21 @@ def generate_stats(dataset_path: Path | str):
     for feature in le_features:
         if "float" in le_features[feature]["dtype"]:
             lowdim_features.append(feature)
-    if check_stats_validity(dataset_path, lowdim_features):
+    if check_stats_validity(dataset_path, lowdim_features) and _provenance_matches(
+        dataset_path, "stats", episode_indices
+    ):
         return
 
-    parquet_files = list(dataset_path.glob(LE_ROBOT_DATA_FILENAME))
+    parquet_files = sorted(dataset_path.glob(LE_ROBOT_DATA_FILENAME))
+    if episode_indices is not None:
+        wanted = set(episode_indices)
+        parquet_files = [f for f in parquet_files if _episode_id(f) in wanted]
+        assert parquet_files, f"no episodes of {sorted(wanted)[:5]}... found under {dataset_path}"
     stats = calculate_dataset_statistics(parquet_files, lowdim_features)
     stats_path = dataset_path / LE_ROBOT_STATS_FILENAME
     with open(stats_path, "w") as f:
         json.dump(stats, f, indent=4)
+    _write_provenance(dataset_path, "stats", episode_indices)
 
 
 class RelativeActionLoader:
@@ -208,13 +263,18 @@ def calculate_stats_for_key(
     embodiment_tag: EmbodimentTag,
     group_key: str,
     max_episodes: int = -1,
+    episode_indices: list[int] | None = None,
 ) -> dict:
     loader = RelativeActionLoader(dataset_path, embodiment_tag, group_key)
+    wanted = None if episode_indices is None else set(episode_indices)
     trajectories = []
     for episode_id in tqdm(range(len(loader)), desc=f"Loading trajectories for key {group_key}"):
         if max_episodes != -1 and episode_id >= max_episodes:
             break
+        if wanted is not None and episode_id not in wanted:
+            continue
         trajectories.extend(loader.load_relative_actions(episode_id))
+    assert trajectories, f"no episodes left for {group_key} after filtering {dataset_path}"
     return {
         "max": np.max(trajectories, axis=0),
         "min": np.min(trajectories, axis=0),
@@ -225,7 +285,12 @@ def calculate_stats_for_key(
     }
 
 
-def generate_rel_stats(dataset_path: Path | str, embodiment_tag: EmbodimentTag) -> None:
+def generate_rel_stats(
+    dataset_path: Path | str,
+    embodiment_tag: EmbodimentTag,
+    episode_indices: list[int] | None = None,
+) -> None:
+    """Relative-action statistics over `episode_indices`, or every episode if None."""
     dataset_path = Path(dataset_path)
     action_config = MODALITY_CONFIGS[embodiment_tag.value]["action"]
     if action_config.action_configs is None:
@@ -236,7 +301,11 @@ def generate_rel_stats(dataset_path: Path | str, embodiment_tag: EmbodimentTag) 
         if action_config.rep == ActionRepresentation.RELATIVE
     ]
     stats_path = Path(dataset_path) / LE_ROBOT_REL_STATS_FILENAME
-    if stats_path.exists():
+    # Keys already present are kept -- two robots write their own into the same
+    # file -- but only while they came from the same episodes. They did not if
+    # the split changed, so start over rather than mix the two.
+    same_episodes = _provenance_matches(dataset_path, "relative_stats", episode_indices)
+    if stats_path.exists() and same_episodes:
         with open(stats_path, "r") as f:
             stats = json.load(f)
     else:
@@ -245,9 +314,12 @@ def generate_rel_stats(dataset_path: Path | str, embodiment_tag: EmbodimentTag) 
         if action_key in stats:
             continue
         print(f"Generating relative stats for {dataset_path} {embodiment_tag} {action_key}")
-        stats[action_key] = calculate_stats_for_key(dataset_path, embodiment_tag, action_key)
+        stats[action_key] = calculate_stats_for_key(
+            dataset_path, embodiment_tag, action_key, episode_indices=episode_indices
+        )
     with open(stats_path, "w") as f:
         json.dump(to_json_serializable(dict(stats)), f, indent=4)
+    _write_provenance(dataset_path, "relative_stats", episode_indices)
 
 
 def main(

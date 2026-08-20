@@ -1,0 +1,1 @@
+"""Vendored NoPoSplat dataset shims."""
