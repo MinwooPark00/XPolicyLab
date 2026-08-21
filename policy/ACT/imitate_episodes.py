@@ -7,6 +7,7 @@ import torch
 import numpy as np
 import pickle
 import argparse
+import wandb
 
 import matplotlib
 
@@ -44,9 +45,11 @@ def main(args):
     num_episodes = task_config["num_episodes"]
     episode_len = task_config["episode_len"]
     camera_names = task_config["camera_names"]
+    val_dataset_dir = task_config.get("val_dataset_dir")
+    num_val_episodes = task_config.get("num_val_episodes")
 
     # fixed parameters
-    state_dim = int(os.environ.get("ACT_ACTION_DIM"))
+    state_dim = int(os.environ.get("ACT_STATE_DIM", os.environ.get("ACT_ACTION_DIM")))
     lr_backbone = 1e-5
     backbone = "resnet18"
     if policy_class == "ACT":
@@ -94,7 +97,7 @@ def main(args):
     }
 
     train_dataloader, val_dataloader, stats, _ = load_data(dataset_dir, num_episodes, camera_names, batch_size_train,
-                                                           batch_size_val)
+                                                           batch_size_val, val_dataset_dir, num_val_episodes)
 
     # save dataset stats
     if not os.path.isdir(ckpt_dir):
@@ -106,9 +109,9 @@ def main(args):
     best_epoch, min_val_loss, best_state_dict = best_ckpt_info
 
     # save best checkpoint
-    # ckpt_path = os.path.join(ckpt_dir, f"policy_best.ckpt")
-    # torch.save(best_state_dict, ckpt_path)
-    # print(f"Best ckpt, val loss {min_val_loss:.6f} @ epoch{best_epoch}")
+    ckpt_path = os.path.join(ckpt_dir, f"policy_best.ckpt")
+    torch.save(best_state_dict, ckpt_path)
+    print(f"Best ckpt, val loss {min_val_loss:.6f} @ epoch{best_epoch}")
 
 
 def make_policy(policy_class, policy_config):
@@ -159,6 +162,9 @@ def train_bc(train_dataloader, val_dataloader, config):
     policy_config = config["policy_config"]
 
     set_seed(seed)
+    
+    wandb.init(project="mhbench-act", name=f"{config['ckpt_setting']}-seed{seed}", config=config)
+
 
     policy = make_policy(policy_class, policy_config)
     policy.cuda()
@@ -187,7 +193,9 @@ def train_bc(train_dataloader, val_dataloader, config):
         summary_string = ""
         for k, v in epoch_summary.items():
             summary_string += f"{k}: {v.item():.3f} "
-
+        print(f"[epoch {epoch}] val:   {summary_string}")
+        wandb.log({f"val/{k}": v.item() for k, v in epoch_summary.items()}, step=epoch)
+        
         # training
         policy.train()
         optimizer.zero_grad()
@@ -203,7 +211,9 @@ def train_bc(train_dataloader, val_dataloader, config):
         summary_string = ""
         for k, v in epoch_summary.items():
             summary_string += f"{k}: {v.item():.3f} "
-
+        print(f"[epoch {epoch}] train: {summary_string}")
+        wandb.log({f"train/{k}": v.item() for k, v in epoch_summary.items()}, step=epoch)
+        
         if (epoch + 1) % config['save_freq'] == 0:
             ckpt_path = os.path.join(ckpt_dir, f"policy_epoch_{epoch + 1}_seed_{seed}.ckpt")
             torch.save(policy.state_dict(), ckpt_path)
@@ -211,11 +221,10 @@ def train_bc(train_dataloader, val_dataloader, config):
     ckpt_path = os.path.join(ckpt_dir, f"policy_last.ckpt")
     torch.save(policy.state_dict(), ckpt_path)
 
-    # best_epoch, min_val_loss, best_state_dict = best_ckpt_info
-    # ckpt_path = os.path.join(ckpt_dir, f"policy_epoch_{best_epoch}_seed_{seed}.ckpt")
-    # torch.save(best_state_dict, ckpt_path)
-    # print(f"Training finished:\nSeed {seed}, val loss {min_val_loss:.6f} at epoch {best_epoch}")
-
+    best_epoch, best_val_loss, _ = best_ckpt_info
+    print(f"Training finished:\nSeed {seed}, val loss {best_val_loss:.6f} at epoch {best_epoch}")
+    wandb.finish()
+    
     return best_ckpt_info
 
 

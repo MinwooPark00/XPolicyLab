@@ -136,20 +136,41 @@ def get_norm_stats(dataset_dir, num_episodes):
     return stats, max_action_len
 
 
-def load_data(dataset_dir, num_episodes, camera_names, batch_size_train, batch_size_val):
-    print(f"\nData from: {dataset_dir}\n")
-    # obtain train test split
-    train_ratio = 0.8
-    shuffled_indices = np.random.permutation(num_episodes)
-    train_indices = shuffled_indices[:int(train_ratio * num_episodes)]
-    val_indices = shuffled_indices[int(train_ratio * num_episodes):]
+def load_data(dataset_dir, num_episodes, camera_names, batch_size_train, batch_size_val,
+              val_dataset_dir=None, num_val_episodes=None):
+    """Load train (and validation) episodes.
 
-    # obtain normalization stats for qpos and action
-    norm_stats, max_action_len = get_norm_stats(dataset_dir, num_episodes)
+    With `val_dataset_dir` given (a task config's own held-out split, e.g. from
+    `scripts/data_convertion.py --split val`), every episode in `dataset_dir` is
+    training and every episode in `val_dataset_dir` is validation -- no random
+    carve. Without it, this falls back to an 80/20 random split of
+    `dataset_dir` alone, as before.
+    """
+    print(f"\nData from: {dataset_dir}\n")
+    if val_dataset_dir:
+        print(f"Validation data from: {val_dataset_dir}\n")
+        train_indices = np.arange(num_episodes)
+        val_indices = np.arange(num_val_episodes)
+        norm_stats, max_action_len = get_norm_stats(dataset_dir, num_episodes)
+        # Padding length only -- val is normalized with the *train* stats above,
+        # never its own, so a policy is never evaluated against leaked val stats.
+        _, val_max_action_len = get_norm_stats(val_dataset_dir, num_val_episodes)
+        max_action_len = max(max_action_len, val_max_action_len)
+        val_dataset_dir_for_val = val_dataset_dir
+    else:
+        # obtain train test split
+        train_ratio = 0.8
+        shuffled_indices = np.random.permutation(num_episodes)
+        train_indices = shuffled_indices[:int(train_ratio * num_episodes)]
+        val_indices = shuffled_indices[int(train_ratio * num_episodes):]
+
+        # obtain normalization stats for qpos and action
+        norm_stats, max_action_len = get_norm_stats(dataset_dir, num_episodes)
+        val_dataset_dir_for_val = dataset_dir
 
     # construct dataset and dataloader
     train_dataset = EpisodicDataset(train_indices, dataset_dir, camera_names, norm_stats, max_action_len)
-    val_dataset = EpisodicDataset(val_indices, dataset_dir, camera_names, norm_stats, max_action_len)
+    val_dataset = EpisodicDataset(val_indices, val_dataset_dir_for_val, camera_names, norm_stats, max_action_len)
     train_dataloader = DataLoader(
         train_dataset,
         batch_size=batch_size_train,

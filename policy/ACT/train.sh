@@ -17,9 +17,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 UTILS_DIR="${ROOT_DIR}/XPolicyLab/utils"
 action_dim=$(bash "${UTILS_DIR}/get_action_dim.sh" "${ROOT_DIR}" "${env_cfg_type}"); echo -e "\033[33m[INFO] Action dim: ${action_dim}\033[0m"
-
+state_dim=$(bash "${UTILS_DIR}/get_state_dim.sh" "${ROOT_DIR}" "${env_cfg_type}"); echo -e "\033[33m[INFO] State dim: ${state_dim}\033[0m"
 export ACT_ACTION_DIM=${action_dim}
-
+export ACT_STATE_DIM=${state_dim}
 ckpt_setting="${bench_name}-${ckpt_name}-${env_cfg_type}-${action_type}"
 
 python3 imitate_episodes.py \
@@ -31,9 +31,9 @@ python3 imitate_episodes.py \
     --kl_weight 10 \
     --chunk_size 50 \
     --hidden_dim 512 \
-    --batch_size 16 \
+    --batch_size 128 \
     --dim_feedforward 3200 \
-    --num_epochs 600 \
-    --lr 1e-5 \
-    --save_freq 600 \
+    --num_epochs 20000 \
+    --lr 1e-4 \
+    --save_freq 1000 \
     --seed ${seed}
