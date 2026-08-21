@@ -21,13 +21,17 @@ cd "${GR00T_ROOT}"
 # must resolve the (missing) aarch64 wheels. We instead create the venv and use
 # `uv pip install -e .`, which resolves only for the *current* platform (x86_64) and
 # honors [tool.uv.sources] / [[tool.uv.index]] while ignoring required-environments.
+# For the same reason the checks below call the venv's python directly: a bare
+# `uv run` syncs first and dies on that wheel, after `uv pip install -e .` already
+# succeeded, leaving the venv without XPolicyLab.
 uv venv --clear --python 3.10
 uv pip install -e .
-uv run python -c "import gr00t; print('GR00T ok')"
+PYTHON_BIN="${GR00T_ROOT}/.venv/bin/python"
+"${PYTHON_BIN}" -c "import gr00t; print('GR00T ok')"
 
 uv pip install -e "${XPOLICYLAB_ROOT}"
 uv pip install h5py pyyaml
-uv run python -c "import XPolicyLab; print('XPolicyLab ok')"
+"${PYTHON_BIN}" -c "import XPolicyLab; print('XPolicyLab ok')"
 
 echo "[GR00T_N17] Installation finished."
 echo "[GR00T_N17] Policy server env: source ${GR00T_ROOT}/.venv/bin/activate"

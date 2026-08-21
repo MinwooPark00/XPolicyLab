@@ -86,6 +86,11 @@ if __name__ == "__main__":
     else:
         config.model.extra_augmentation_config = None
 
+    config.model.lora_rank = ft_config.lora_rank
+    config.model.lora_alpha = ft_config.lora_alpha
+    config.model.lora_dropout = ft_config.lora_dropout
+    config.model.lora_full_model = ft_config.lora_full_model
+
     config.model.load_bf16 = False
     config.model.reproject_vision = False
     cosmos_model = os.environ.get("GR00T_COSMOS_MODEL", "nvidia/Cosmos-Reason2-2B")
@@ -116,11 +121,17 @@ if __name__ == "__main__":
     config.training.weight_decay = ft_config.weight_decay
     config.training.warmup_ratio = ft_config.warmup_ratio
     config.training.wandb_project = ft_config.wandb_project
+    config.training.eval_strategy = ft_config.eval_strategy
+    config.training.eval_steps = ft_config.eval_steps
+    config.training.eval_batch_size = ft_config.eval_batch_size
+    config.training.eval_set_split_ratio = ft_config.eval_set_split_ratio
 
     config.data.shard_size = ft_config.shard_size
     config.data.episode_sampling_rate = ft_config.episode_sampling_rate
     config.data.num_shards_per_epoch = ft_config.num_shards_per_epoch
     config.data.video_backend = os.environ.get("GR00T_VIDEO_BACKEND", "pyav")
+    config.data.eval_max_samples = ft_config.eval_max_samples
+    config.data.seed = ft_config.seed
     if get_rank() == 0:
         print(f"[launch_finetune] video_backend={config.data.video_backend}")
 

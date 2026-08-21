@@ -15,7 +15,7 @@ env_gpu_id="${11}"
 policy_server_ip="${12:-localhost}"
 protocol="${13:-ws}"
 
-source "$(conda info --base)/etc/profile.d/conda.sh"
+source "$("${CONDA_EXE:-conda}" info --base)/etc/profile.d/conda.sh"
 conda deactivate || true
 conda activate "${eval_env_conda_env}"
 

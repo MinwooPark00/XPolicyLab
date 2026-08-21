@@ -1,4 +1,9 @@
 #!/bin/bash
+
+# bash eval.sh mhbench cocarry cocarry unitree_g1x2_decentralized joint 0 0 0 mhbench_act mhbench_act
+# bash eval.sh mhbench cocarry mhbench-cocarry-unitree_g1x2_centralized-joint-0 unitree_g1x2_centralized joint 0 0 0 mhbench_act mhbench_act
+
+
 set -euo pipefail
 # ==================== Argument definitions ====================
 policy_name=ACT

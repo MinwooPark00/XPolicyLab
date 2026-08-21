@@ -4,11 +4,7 @@ image_shape: [3, 240, 320]
 # process_data.sh's convert_to_replay_buffer.py output directory (holding
 # replay_buffer.zarr/ + videos/) -- overridden per run via
 # task.dataset_path=..., train.sh derives it from
-# <bench_name>-<ckpt_name>-<env_cfg_type>-<action_type>-<rotation_rep>.
-# rotation_rep itself ("quat"=22D/arm or "rot6d"=26D/arm, see
-# rotation_conversion.py) is baked into the converted data on disk, not read
-# by XarmSplitActionDataset -- train.sh overrides arm{1,2}_action.shape below
-# to match whichever rotation_rep the data was actually converted with.
+# <bench_name>-<ckpt_name>-<env_cfg_type>-<action_type>.
 dataset_path: ???
 
 shape_meta:
@@ -24,22 +20,21 @@ shape_meta:
       shape: ${task.image_shape}
       type: rgb
     arm1_proprio:
-      shape: [21]  # pelvis pose(7) + left eef pose(7) + right eef pose(7)
+      shape: [43]  # 7 URDF joint groups (configs/gr00t/mhbench_keys.py's JOINT_GROUPS): legs+waist+arms+hands
       type: low_dim
     arm2_proprio:
-      shape: [21]
+      shape: [43]
       type: low_dim
   arm1_action:
-    shape: [22]  # 22 for quat, 26 for rot6d -- train.sh overrides this to match the data
+    shape: [35]  # GR00T's own action contract: joint targets(28) + base_height(1) + navigate_command(3)
   arm2_action:
-    shape: [22]
+    shape: [35]
 
 dataset:
   _target_: diffusion_policy.dataset.xarm_split_action_dataset.XarmSplitActionDataset
-  # OmegaConf interpolation (live), not a YAML anchor -- a
-  # train.sh -C task.shape_meta.arm1_action.shape=[26] override must reach
-  # here too, and a YAML anchor/alias copies at parse time, before Hydra CLI
-  # overrides apply, so it wouldn't.
+  # OmegaConf interpolation (live), not a YAML anchor -- a Hydra CLI override
+  # to task.shape_meta must reach here too, and a YAML anchor/alias copies at
+  # parse time, before CLI overrides apply, so it wouldn't.
   shape_meta: ${task.shape_meta}
   dataset_path: ${task.dataset_path}
   horizon: ${horizon}

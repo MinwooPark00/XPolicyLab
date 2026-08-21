@@ -278,6 +278,8 @@ class RobotWorkspace(BaseWorkspace):
                 self.global_step += 1
                 self.epoch += 1
 
+        wandb_run.finish()
+
 
 class BatchSampler:
 

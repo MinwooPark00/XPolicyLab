@@ -1,3 +1,4 @@
 data/*
 checkpoints/*
 *.out
+eval_results/*

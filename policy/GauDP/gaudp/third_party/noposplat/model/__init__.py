@@ -1,0 +1,1 @@
+"""NoPoSplat encoder and renderer."""

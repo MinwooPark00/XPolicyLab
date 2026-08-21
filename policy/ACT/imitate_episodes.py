@@ -166,6 +166,8 @@ def train_bc(train_dataloader, val_dataloader, config):
     wandb.init(project="mhbench-act", name=f"{config['ckpt_setting']}-seed{seed}", config=config)
 
 
+    wandb.init(project="mhbench-act", name=f"{config['ckpt_setting']}-seed{seed}", config=config)
+
     policy = make_policy(policy_class, policy_config)
     policy.cuda()
     optimizer = make_optimizer(policy_class, policy)
@@ -195,7 +197,7 @@ def train_bc(train_dataloader, val_dataloader, config):
             summary_string += f"{k}: {v.item():.3f} "
         print(f"[epoch {epoch}] val:   {summary_string}")
         wandb.log({f"val/{k}": v.item() for k, v in epoch_summary.items()}, step=epoch)
-        
+
         # training
         policy.train()
         optimizer.zero_grad()
@@ -213,7 +215,7 @@ def train_bc(train_dataloader, val_dataloader, config):
             summary_string += f"{k}: {v.item():.3f} "
         print(f"[epoch {epoch}] train: {summary_string}")
         wandb.log({f"train/{k}": v.item() for k, v in epoch_summary.items()}, step=epoch)
-        
+
         if (epoch + 1) % config['save_freq'] == 0:
             ckpt_path = os.path.join(ckpt_dir, f"policy_epoch_{epoch + 1}_seed_{seed}.ckpt")
             torch.save(policy.state_dict(), ckpt_path)
@@ -224,7 +226,7 @@ def train_bc(train_dataloader, val_dataloader, config):
     best_epoch, best_val_loss, _ = best_ckpt_info
     print(f"Training finished:\nSeed {seed}, val loss {best_val_loss:.6f} at epoch {best_epoch}")
     wandb.finish()
-    
+
     return best_ckpt_info
 
 

@@ -31,7 +31,7 @@ base_cfg="${base_cfg:-${BASE_CFG:-}}"
 
 echo -e "\033[31m[WARN] Real-world evaluation is not supported in the open-source release; attempting real env client startup anyway.\033[0m" >&2
 
-source "$(conda info --base)/etc/profile.d/conda.sh"
+source "$("${CONDA_EXE:-conda}" info --base)/etc/profile.d/conda.sh"
 conda deactivate || true
 conda activate "${eval_env_conda_env}"
 
