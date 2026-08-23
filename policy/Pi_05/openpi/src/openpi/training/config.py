@@ -4,6 +4,7 @@ import abc
 from collections.abc import Sequence
 import dataclasses
 import difflib
+import json
 import logging
 import pathlib
 from typing import Any, Literal, Protocol, TypeAlias
@@ -20,6 +21,7 @@ import openpi.models.tokenizer as _tokenizer
 import openpi.policies.aloha_policy as aloha_policy
 import openpi.policies.droid_policy as droid_policy
 import openpi.policies.libero_policy as libero_policy
+import openpi.policies.mhbench_policy as mhbench_policy
 import openpi.policies.wuji_policy as wuji_policy
 import openpi.shared.download as _download
 import openpi.shared.normalize as _normalize
@@ -98,6 +100,11 @@ class DataConfig:
 
     # If true, will use the LeRobot dataset task to define the prompt.
     prompt_from_task: bool = False
+    # Episodes to train on; None means the whole dataset. LeRobot declares its
+    # own splits in `meta/info.json`, and the loader does not read them: without
+    # this a dataset with a held-out validation split would be trained on in
+    # full.
+    episodes: Sequence[int] | None = None
 
     # Only used for RLDS data loader (ie currently only used for DROID).
     rlds_data_dir: str | None = None
@@ -421,6 +428,132 @@ class LeRobotWujiDataConfig(DataConfigFactory):
             data_transforms=data_transforms,
             model_transforms=model_transforms,
             action_sequence_keys=self.action_sequence_keys,
+        )
+
+
+@dataclasses.dataclass(frozen=True)
+class LeRobotMHBenchDataConfig(DataConfigFactory):
+    """MHBench: two Unitree G1 humanoids, one LeRobot export, three targets.
+
+    The same dataset trains a `centralized` policy (both robots: 86-dim state,
+    70-dim action, both ego views) and two `decentralized` ones (one robot:
+    43-dim state, 35-dim action, its own ego view). Which is which is `robot`;
+    everything else about the columns is derived in
+    `openpi.policies.mhbench_policy` from MHBench's own key authority.
+
+    Two MHBench-specific points:
+
+    * The dataset must be the **v3.0 view** written by
+      `baselines/scripts/convert_mhbench_lerobot_v30.py`. MHBench exports v2.1
+      for GR00T, and the pinned lerobot rejects that outright.
+    * The instruction is a constant per (task, role) -- the pair is told to carry
+      the basket, robot_a to side-step right, robot_b to side-step left. It is
+      therefore injected as a default prompt read from `meta/tasks.parquet`
+      rather than looked up per row, which also means training and serving use
+      the same sentence by construction: `ModelTransformFactory` runs in both.
+    """
+
+    # None for the pair, "robot_a"/"robot_b" for a single robot.
+    robot: str | None = None
+
+    # Row of `meta/tasks.parquet` holding this target's instruction. MHBench
+    # writes the pair's sentence at 0 and each robot's at 1 and 2 -- the order
+    # of `mhbench_keys.LANGUAGE_KEYS`.
+    prompt_task_index: int = 0
+
+    # Split of `meta/info.json` to train on. MHBench holds out the last ten
+    # episodes; without this the loader would take all sixty.
+    train_split: str = "train"
+
+    # The chunk is assembled from three columns: joint targets, the base height
+    # command and the navigation command. All three need delta_timestamps.
+    action_sequence_keys: Sequence[str] = (
+        "action",
+        "teleop.navigate_command",
+        "teleop.base_height_command",
+    )
+
+    def _dataset_root(self) -> pathlib.Path | None:
+        try:
+            from lerobot.datasets.lerobot_dataset import HF_LEROBOT_HOME
+        except ImportError:
+            return None
+        root = pathlib.Path(HF_LEROBOT_HOME) / self.repo_id
+        return root if (root / "meta" / "info.json").exists() else None
+
+    def _train_episodes(self, root: pathlib.Path | None) -> Sequence[int] | None:
+        # No dataset on this host means nothing is going to read it either --
+        # `create_trained_policy` builds a DataConfig just to reach the
+        # transforms. Only a dataset that is present but does not declare the
+        # split is an error worth raising.
+        if root is None:
+            return None
+        splits = json.loads((root / "meta" / "info.json").read_text()).get("splits") or {}
+        if self.train_split not in splits:
+            raise ValueError(
+                f"{root} declares no {self.train_split!r} split (has {sorted(splits) or 'none'}); "
+                "re-export it or training will silently include the held-out episodes."
+            )
+        start, end = (int(bound) for bound in splits[self.train_split].split(":"))
+        return tuple(range(start, end))
+
+    def _prompt(self, root: pathlib.Path | None) -> str:
+        if root is None:
+            raise ValueError(
+                f"MHBench dataset {self.repo_id!r} not found under HF_LEROBOT_HOME. It is needed even "
+                "for serving, because the instruction the policy was trained with is read from it. "
+                "Run baselines/scripts/convert_mhbench_lerobot_v30.py."
+            )
+        import pandas as pd
+
+        tasks = pd.read_parquet(root / "meta" / "tasks.parquet")
+        # v3.0 indexes by the sentence and stores the index as the column.
+        matches = tasks.index[tasks["task_index"] == self.prompt_task_index]
+        if len(matches) != 1:
+            raise ValueError(
+                f"{root}/meta/tasks.parquet has {len(matches)} rows with task_index="
+                f"{self.prompt_task_index}; expected exactly one."
+            )
+        return str(matches[0])
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        root = self._dataset_root()
+
+        repack_transform = _transforms.Group(
+            inputs=[
+                _transforms.RepackTransform(
+                    {
+                        "observation/state": "observation.state",
+                        "observation/ego_a": "observation.images.ego_a",
+                        "observation/ego_b": "observation.images.ego_b",
+                        "action/joints": "action",
+                        "action/navigate": "teleop.navigate_command",
+                        "action/base_height": "teleop.base_height_command",
+                    }
+                )
+            ]
+        )
+
+        # No DeltaActions. MHBench commands absolute joint targets, an absolute
+        # height and a velocity, and `state` (43 joints, URDF order, legs
+        # included) is not index-aligned with `actions` (35, GR00T group order,
+        # legs excluded) at any offset -- subtracting one from the other would
+        # train against a wrong target without failing.
+        data_transforms = _transforms.Group(
+            inputs=[mhbench_policy.MHBenchInputs(model_type=model_config.model_type, robot=self.robot)],
+            outputs=[mhbench_policy.MHBenchOutputs(robot=self.robot)],
+        )
+
+        model_transforms = ModelTransformFactory(default_prompt=self._prompt(root))(model_config)
+
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs, model_config),
+            repack_transforms=repack_transform,
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
+            action_sequence_keys=self.action_sequence_keys,
+            episodes=self._train_episodes(root),
         )
 
 
@@ -769,6 +902,88 @@ _CONFIGS = [
         ),
     ),
 ]
+
+# -- MHBench ----------------------------------------------------------------
+# Four tasks x three targets. The pair is one policy driving both robots; the
+# other two are the decentralized halves, trained independently and served side
+# by side. Generated rather than written out twelve times, because they differ
+# only in the task, the robot and the instruction row.
+#
+# LoRA, matching the GR00T_N17 baseline these are compared against -- same
+# batch, same step count. `action_dim` is the real action width -- pi0.5 has no
+# `state_proj`, so the state reaches the model as prompt text and its width is
+# independent of this number.
+MHBENCH_TASKS = ("cocarry", "handover", "framehang", "doorpassage")
+
+# (suffix, robot, tasks.parquet row). Row order is mhbench_keys.LANGUAGE_KEYS:
+# the pair's shared instruction, then robot_a's, then robot_b's.
+MHBENCH_TARGETS = (
+    ("centralized", None, 0),
+    ("robot_a", "robot_a", 1),
+    ("robot_b", "robot_b", 2),
+)
+
+# Measured, not guessed: pi0.5 spells the state out as digits in the prompt, and
+# PaligemmaTokenizer truncates past this with only a logging.warning. Worst case
+# over all four tasks with every value three digits wide is 384 tokens for the
+# 86-dim pair and 217 for a single robot's 43. The pi0.5 default of 200 would
+# cut both. `mhbench_policy_test.py` re-measures and asserts the headroom.
+MHBENCH_MAX_TOKEN_LEN = {None: 400, "robot_a": 256, "robot_b": 256}
+
+
+def _mhbench_lora_model(robot: str | None) -> pi0_config.Pi0Config:
+    return pi0_config.Pi0Config(
+        pi05=True,
+        paligemma_variant="gemma_2b_lora",
+        action_expert_variant="gemma_300m_lora",
+        action_dim=mhbench_policy.action_dim(robot),
+        # 50 steps at MHBench's 50 Hz is 1.0 s, and pi05_base is natively a
+        # 50-step model.
+        action_horizon=50,
+        max_token_len=MHBENCH_MAX_TOKEN_LEN[robot],
+        # Explicit, though it is also the pi05 default: with pi05=True there is
+        # no state_proj at all (see pi0.Pi0.__init__), so turning this off would
+        # drop the state from the model entirely while training happily.
+        discrete_state_input=True,
+    )
+
+
+_CONFIGS.extend(
+    TrainConfig(
+        name=f"pi05_mhbench_{task}_{suffix}",
+        project_name="MHBench-Pi05",
+        model=_mhbench_lora_model(robot),
+        data=LeRobotMHBenchDataConfig(
+            repo_id=f"mhbench-{task}",
+            robot=robot,
+            prompt_task_index=prompt_index,
+        ),
+        # pi05_base is a 32-dim-action model; the action projections cannot be
+        # reused at 35 or 70 and are left randomly initialised. Everything else
+        # -- SigLIP, both Gemmas, the pi05 time MLPs -- loads.
+        weight_loader=weight_loaders.PartialCheckpointWeightLoader(
+            "gs://openpi-assets/checkpoints/pi05_base/params"
+        ),
+        freeze_filter=_mhbench_lora_model(robot).get_freeze_filter(),
+        # LoRA: an EMA copy would shadow the frozen base weights too, for nothing.
+        ema_decay=None,
+        # Matched to the GR00T_N17 baseline these are compared against
+        # (train_groot_*.sbatch: GLOBAL_BATCH_SIZE=32, MAX_STEPS=20000,
+        # SAVE_STEPS=2000), so the two differ in method and not in budget.
+        batch_size=32,
+        num_train_steps=20_000,
+        save_interval=2000,
+        # 16 CPUs per GPU on the partitions these run on (DefCpuPerGPU=16);
+        # video decode is the loader's cost and 8 leaves half of them idle.
+        num_workers=12,
+        # Keep only the latest checkpoint. pi0.5 params are ~12 GB each, and the
+        # default (every 5000 steps kept forever) would put twelve runs near a
+        # terabyte.
+        keep_period=None,
+    )
+    for task in MHBENCH_TASKS
+    for suffix, robot, prompt_index in MHBENCH_TARGETS
+)
 
 if len({config.name for config in _CONFIGS}) != len(_CONFIGS):
     raise ValueError("Config names must be unique.")
