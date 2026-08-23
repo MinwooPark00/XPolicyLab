@@ -47,8 +47,17 @@ policy:
       name: resnet18
       weights: null
     resize_shape: [240, 320]
-    crop_shape: null
-    # constant center crop
+    # 90% of resize_shape. `random_crop` below is only read when this is set --
+    # MultiImageObsEncoder leaves an nn.Identity() in place of the CropRandomizer
+    # while crop_shape is null, so `random_crop: True` on its own trains the
+    # vision encoder with no augmentation at all. Every DP run before this one
+    # did exactly that, and their validation loss bottoms around epoch 58 and
+    # triples by 599.
+    crop_shape: [216, 288]
+    # Random crop while training, center crop at eval (CropRandomizer.forward_in
+    # branches on self.training). Set random_crop: False for the center crop in
+    # both. The ResNet's AdaptiveAvgPool2d makes the feature width 512 either
+    # way, so this does not change any downstream shape.
     random_crop: True
     use_group_norm: True
     share_rgb_model: True

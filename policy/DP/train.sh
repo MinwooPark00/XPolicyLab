@@ -88,11 +88,12 @@ OVERRIDES=()
 [ -n "${DP_LR:-}" ]             && OVERRIDES+=("optimizer.lr=${DP_LR}")
 [ -n "${DP_NUM_WORKERS:-}" ]    && OVERRIDES+=("dataloader.num_workers=${DP_NUM_WORKERS}" "val_dataloader.num_workers=${DP_NUM_WORKERS}")
 [ -n "${DP_OBS_NOISE:-}" ]      && OVERRIDES+=("training.obs_noise=${DP_OBS_NOISE}")
-# `random_crop: True` in robot_dp.yaml is a silent no-op while crop_shape is
-# null -- MultiImageObsEncoder only builds a CropRandomizer when a crop shape
-# is given, so the vision encoder trains with no augmentation at all. Written
-# HxW (e.g. 216x288) rather than as a list, because sbatch --export splits its
-# own argument on commas and `[216,288]` would not survive the trip.
+# Overrides robot_dp.yaml's [216, 288]. Written HxW (e.g. 200x264) rather than
+# as a list, because sbatch --export splits its own argument on commas and
+# `[200,264]` would not survive the trip. Note there is no way to spell "no
+# crop" here: an empty value is indistinguishable from an unset one, and
+# unset means the config's default, which is now a crop. Pass
+# `policy.obs_encoder.crop_shape=null` to train.py directly for that.
 if [ -n "${DP_CROP_SHAPE:-}" ]; then
     OVERRIDES+=("policy.obs_encoder.crop_shape=[${DP_CROP_SHAPE%x*},${DP_CROP_SHAPE#*x}]")
 fi
