@@ -13,6 +13,16 @@ eval_batch: true
 
 checkpoint_num: latest
 
+# --- evaluation-time sampler (null = whatever the checkpoint was trained with)
+# The trained checkpoints carry DDPMScheduler at num_inference_steps: 100, i.e.
+# 100 U-Net forwards per n_action_steps (6) environment steps. `ddim` swaps in
+# the Diffusion Policy release's own fast sampler -- identical betas, identical
+# prediction_type, weights untouched -- so num_inference_steps can drop to ~10.
+# It is a different (and, at eta=0, deterministic) solver, so turn it on only
+# behind a success-rate A/B, never for the speedup alone.
+inference_scheduler: null      # ddpm | ddim
+num_inference_steps: null      # e.g. 10 with ddim
+
 # --- MHBench (bench_name=mhbench, env_cfg_type=unitree_g1x2_decentralized): ---
 # one server drives both robots from two single-robot DP checkpoints. ckpt_name
 # is the task (cocarry/handover); per-robot dirs resolve to

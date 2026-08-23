@@ -5,6 +5,7 @@ import numpy as np
 import hydra
 import dill
 import sys, os
+from diffusers.schedulers.scheduling_ddim import DDIMScheduler
 
 current_file_path = os.path.abspath(__file__)
 parent_dir = os.path.dirname(current_file_path)
@@ -29,6 +30,71 @@ def _prep_camera(color: np.ndarray) -> np.ndarray:
     return np.transpose(
         cv2.resize(np.transpose(img, (1, 2, 0)), (320, 240), interpolation=cv2.INTER_AREA), (2, 0, 1)
     )
+
+
+DDPM_ONLY_CONFIG_KEYS = ("variance_type",)
+"""DDPM settings that have no DDIM counterpart and must not be forwarded."""
+
+
+def configure_sampler(policy, scheduler_name, num_inference_steps):
+    """Choose the denoiser used at *evaluation*, leaving the weights alone.
+
+    The trained checkpoints sample with `DDPMScheduler` at
+    `num_inference_steps: 100` -- read out of `600.ckpt`'s own cfg, not just
+    `robot_dp.yaml` -- which is 100 U-Net forwards for every `n_action_steps`
+    (6) environment steps, i.e. ~16,700 per 1000-step episode. DDPM cannot be
+    shortened: its reverse process is defined on the same grid it was trained
+    on. DDIM can, by subsampling that grid, and it is what the Diffusion Policy
+    release itself uses for fast inference -- with the identical betas
+    (`squaredcos_cap_v2`, 1e-4..0.02, 100 train steps), `prediction_type` and
+    `clip_sample`, so the model is unchanged and only the solver differs.
+
+    That is still a different sampler, and eta=0 DDIM is deterministic where
+    DDPM's `variance_type: fixed_small` is not -- so this is opt-in and has to
+    be justified by a success-rate A/B on real episodes, not by the speedup.
+
+    `policy.kwargs` is forwarded to `scheduler.step` by
+    `DiffusionUnetImagePolicy.conditional_sample`, and DDIM's `step` takes no
+    `**kwargs` (diffusers 0.11.1) where DDPM's does -- so anything the DDPM
+    path tolerated is filtered here rather than raising inside the rollout.
+    """
+    if scheduler_name is None and num_inference_steps is None:
+        return policy
+
+    name = (scheduler_name or "ddpm").lower()
+    if name not in ("ddpm", "ddim"):
+        raise ValueError(f"inference_scheduler must be 'ddpm' or 'ddim', got {scheduler_name!r}")
+
+    if name == "ddim" and not isinstance(policy.noise_scheduler, DDIMScheduler):
+        import inspect
+
+        trained = dict(policy.noise_scheduler.config)
+        carried = {
+            key: value
+            for key, value in trained.items()
+            if key not in DDPM_ONLY_CONFIG_KEYS and not key.startswith("_")
+        }
+        # The Diffusion Policy release's own DDIM settings; neither exists on
+        # the DDPM config this is derived from.
+        carried.setdefault("set_alpha_to_one", True)
+        carried.setdefault("steps_offset", 0)
+        policy.noise_scheduler = DDIMScheduler(**carried)
+
+        allowed = set(inspect.signature(DDIMScheduler.step).parameters)
+        dropped = {k: v for k, v in policy.kwargs.items() if k not in allowed}
+        if dropped:
+            print(f"[DP][sampler] dropping step kwargs DDIM does not take: {sorted(dropped)}")
+            policy.kwargs = {k: v for k, v in policy.kwargs.items() if k in allowed}
+
+    if num_inference_steps is not None:
+        policy.num_inference_steps = int(num_inference_steps)
+
+    print(
+        f"[DP][sampler] {type(policy.noise_scheduler).__name__} "
+        f"num_inference_steps={policy.num_inference_steps} "
+        f"(trained: {policy.noise_scheduler.config.num_train_timesteps} steps)"
+    )
+    return policy
 
 
 def _pack_single_robot_action(flat_action: np.ndarray) -> dict:
@@ -63,6 +129,10 @@ class Model(ModelTemplate):
         self.n_obs_steps = model_training_config['n_obs_steps']
         self.n_action_steps = model_training_config['n_action_steps']
         self.action_type = model_cfg['action_type']
+        # Evaluation-time sampler. Both default to None = whatever the
+        # checkpoint was trained and saved with (see configure_sampler).
+        self._inference_scheduler = model_cfg.get('inference_scheduler')
+        self._num_inference_steps = model_cfg.get('num_inference_steps')
 
         self._mhbench_decentralized = (
             str(model_cfg.get("bench_name") or "") == "mhbench"
@@ -139,6 +209,8 @@ class Model(ModelTemplate):
         policy = workspace.model
         if cfg.training.use_ema:
             policy = workspace.ema_model
+
+        configure_sampler(policy, self._inference_scheduler, self._num_inference_steps)
 
         device = torch.device("cuda:0")
         policy.to(device)

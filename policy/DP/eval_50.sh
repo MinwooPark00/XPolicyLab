@@ -1,10 +1,15 @@
 #!/bin/bash
 # N episodes against ONE persistent policy server -- baselines/scripts/
 # eval_groot_decentralized.sbatch's pattern, ported off SLURM/singularity.
+# Superseded on SLURM by baselines/scripts/eval_policy.sbatch, which adds
+# sharding, the render dials and a shared aggregator; this stays for running an
+# evaluation by hand off a login shell.
+#
 # Bypasses eval.sh (which restarts the server every episode too) and calls
 # eval_policy_xpolicylab.py directly per episode: XPolicyLab@b7c86e0 found a
-# second episode in the same client process reliably crashes Kit after a
-# grasp force-limit break, so the client alone is restarted per episode.
+# second episode in the same client process reliably crashed Kit after a
+# *magnetic*-grasp force-limit break. cb356c9 removed the magnetic latch, so
+# that reason has expired and nobody has retested it -- see docs/eval.md §5.
 #
 #   bash eval_50.sh mhbench cocarry cocarry mhbench_cocarry joint 0 0 0 mhbench_dp
 #   bash eval_50.sh mhbench handover handover mhbench_handover joint 0 0 0 mhbench_dp 50 eval_results/handover
