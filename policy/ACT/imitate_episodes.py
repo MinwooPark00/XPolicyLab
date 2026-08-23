@@ -45,6 +45,8 @@ def main(args):
     num_episodes = task_config["num_episodes"]
     episode_len = task_config["episode_len"]
     camera_names = task_config["camera_names"]
+    val_dataset_dir = task_config.get("val_dataset_dir")
+    num_val_episodes = task_config.get("num_val_episodes")
 
     # fixed parameters
     state_dim = int(os.environ.get("ACT_STATE_DIM", os.environ.get("ACT_ACTION_DIM")))
@@ -95,7 +97,7 @@ def main(args):
     }
 
     train_dataloader, val_dataloader, stats, _ = load_data(dataset_dir, num_episodes, camera_names, batch_size_train,
-                                                           batch_size_val)
+                                                           batch_size_val, val_dataset_dir, num_val_episodes)
 
     # save dataset stats
     if not os.path.isdir(ckpt_dir):
@@ -160,6 +162,9 @@ def train_bc(train_dataloader, val_dataloader, config):
     policy_config = config["policy_config"]
 
     set_seed(seed)
+    
+    wandb.init(project="mhbench-act", name=f"{config['ckpt_setting']}-seed{seed}", config=config)
+
 
     wandb.init(project="mhbench-act", name=f"{config['ckpt_setting']}-seed{seed}", config=config)
 
@@ -220,7 +225,6 @@ def train_bc(train_dataloader, val_dataloader, config):
 
     best_epoch, best_val_loss, _ = best_ckpt_info
     print(f"Training finished:\nSeed {seed}, val loss {best_val_loss:.6f} at epoch {best_epoch}")
-
     wandb.finish()
 
     return best_ckpt_info

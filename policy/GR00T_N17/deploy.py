@@ -1,30 +1,18 @@
-def eval_one_episode(TASK_ENV, model_client):
-    model_client.call(func_name="reset")
+"""Rollout loop for GR00T N1.7.
 
-    while not TASK_ENV.is_episode_end():
-        model_client.call(func_name="update_obs", obs=TASK_ENV.get_obs())
-        actions = model_client.call(func_name="get_action")
+GR00T conditions on the current frame (`delta_indices=[0]` on video and state),
+so `model.py` overwrites the stored observation on every `update_obs` and
+`get_action` reads only the last -- 39 of every 40 the shared loop took were
+rendered and shipped to be discarded. Measured worth of observing once per
+chunk instead: **337 -> 119 ms per control step**, 2.9x.
 
-        for action in actions:
-            TASK_ENV.take_action(action)
-            if TASK_ENV.is_episode_end():
-                break
+This file used to carry its own copy of the loop to get that. The copy is gone;
+`utils/rollout.py` is the same loop with the observation rate as a parameter,
+and Pi_05 (which had forked it for the same reason) now shares it.
+"""
 
+from XPolicyLab.utils.rollout import bind
 
-def eval_one_episode_batch(TASK_ENV, model_client):
-    model_client.call(func_name="reset")
+OBS_STRIDE = None
 
-    while not TASK_ENV.is_episode_end():
-        env_idx_list = TASK_ENV.get_running_env_idx_list()
-        model_client.call(func_name="update_obs_batch", obs=TASK_ENV.get_obs_batch(env_idx_list))
-        actions = model_client.call(func_name="get_action_batch", obs=env_idx_list)
-
-        for action_idx in range(len(actions[0])):
-            TASK_ENV.take_action_batch([env_actions[action_idx] for env_actions in actions], env_idx_list)
-            if TASK_ENV.is_episode_end():
-                break
-            running = set(TASK_ENV.get_running_env_idx_list())
-            keep = [i for i, env_idx in enumerate(env_idx_list) if env_idx in running]
-            if len(keep) != len(env_idx_list):
-                actions = [actions[i] for i in keep]
-                env_idx_list = [env_idx_list[i] for i in keep]
+eval_one_episode, eval_one_episode_batch = bind(OBS_STRIDE)

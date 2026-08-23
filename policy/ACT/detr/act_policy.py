@@ -175,7 +175,13 @@ class ACT:
     def update_obs(self, obs):
         self.obs_cache = obs
 
-    def get_action(self):
+    def _prepare_inputs(self):
+        """One query's tensors, from the stored observation.
+
+        Shared by :meth:`get_action` and :meth:`get_action_chunk` so the two
+        cannot drift on normalization or camera order -- they issue the same
+        query and differ only in how much of its result they hand back.
+        """
         obs = self.obs_cache
 
         # Convert observations to tensors and normalize qpos - matching imitate_episodes.py
@@ -190,6 +196,53 @@ class ACT:
             curr_images.append(obs[cam_name])
         curr_image = np.stack(curr_images, axis=0)
         curr_image = torch.from_numpy(curr_image).float().to(self.device).unsqueeze(0)
+        return qpos_numpy, qpos_normalized, qpos, curr_image
+
+    def get_action_chunk(self):
+        """The rest of the current action chunk, in one call.
+
+        Exactly the sequence :meth:`get_action` would return if it were called
+        once per step until the next query: the network runs only at
+        ``t % query_frequency == 0`` and every step in between reads another
+        column of the same ``all_actions``, so returning the remaining columns
+        and advancing ``t`` by that many is the same actions with one round
+        trip instead of N. That is what lets the rollout loop stop shipping a
+        camera observation per step (`utils/rollout.py`).
+
+        Temporal aggregation is not expressible this way: the ensemble for
+        step t mixes chunks predicted at *later* steps, which have not been
+        queried yet. Callers fall back to :meth:`get_action` there -- and
+        `model.py` does, so the chunk is length 1 and the loop keeps observing
+        every step, which is what that mode needs anyway.
+
+        ``t`` advances by the number of actions *issued*, not executed. A
+        caller that stops part way through a chunk and then asks for another
+        would resume at the wrong phase -- which cannot happen in
+        `utils/rollout.py`, where the only early break is the end of the
+        episode and `Model.reset()` puts ``t`` back to 0 before the next one.
+
+        Returns:
+            ``(n, action_dim)`` denormalized actions, ``n >= 1``.
+        """
+        if self.temporal_agg:
+            raise RuntimeError(
+                "get_action_chunk() is undefined under temporal aggregation -- the ensemble for "
+                "each step mixes chunks queried at later steps. Call get_action() once per step."
+            )
+
+        _, _, qpos, curr_image = self._prepare_inputs()
+        with torch.no_grad():
+            if self.t % self.query_frequency == 0:
+                self.all_actions = self.policy(qpos, curr_image)
+            phase = self.t % self.query_frequency
+            raw_actions = self.all_actions[:, phase : self.query_frequency]
+
+        actions = self.post_process(raw_actions.cpu().numpy())[0]
+        self.t += actions.shape[0]
+        return actions
+
+    def get_action(self):
+        qpos_numpy, qpos_normalized, qpos, curr_image = self._prepare_inputs()
 
         import os
         if os.environ.get("MHBENCH_ACT_DEBUG") and self.t % 10 == 0:

@@ -3,22 +3,15 @@ name: task_config
 image_shape: &image_shape [3, 240, 320]
 shape_meta: &shape_meta
   # acceptable types: rgb, low_dim
+  # Camera keys (head_cam for 1-camera robots, left_cam+right_cam for
+  # 2-camera ones) are appended by train.sh via `+`, chosen from this robot's
+  # num_cameras in utils/robot/_robot_info.json -- RobotImageDataset maps the
+  # zarr's own camera_map onto the same names, so this stays in sync with
+  # what training actually produces regardless of camera count.
   obs:
-    head_cam:
-      shape: *image_shape
-      type: rgb
-    # front_cam:
-    #   shape: *image_shape
-    #   type: rgb
-    # left_cam:
-    #   shape: *image_shape
-    #   type: rgb
-    # right_cam:
-    #   shape: *image_shape
-    #   type: rgb
-    # agent_pos:
-    #   shape: null
-    #   type: low_dim
+    agent_pos:
+      shape: null
+      type: low_dim
   action:
     shape: null
 
@@ -41,6 +34,7 @@ env_runner:
 dataset:
   _target_: diffusion_policy.dataset.robot_image_dataset.RobotImageDataset
   zarr_path: null
+  val_zarr_path: null
   batch_size: ${dataloader.batch_size}
   horizon: ${horizon}
   pad_before: ${eval:'${n_obs_steps}-1'}

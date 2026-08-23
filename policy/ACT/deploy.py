@@ -1,44 +1,20 @@
-def eval_one_episode(TASK_ENV, model_client):
+"""Rollout loop for ACT.
 
-    model_client.call(func_name="reset")
+ACT reads a single `start_ts` frame -- `EpisodicDataset` never stacks a window
+-- so the observations the shared loop takes inside an action chunk are stored
+in `ACT.obs_cache` and overwritten unread. The network itself already runs only
+every `query_frequency` steps (`= chunk_size` with temporal aggregation off);
+what cost a full round trip per step was the loop around it, plus this
+adapter's `encode_obs`, which upscales both 320x240 camera frames to 640x480.
 
-    while not TASK_ENV.is_episode_end(): # Check whether the episode ends
-        obs = TASK_ENV.get_obs() # Get Observation
-        model_client.call(func_name="update_obs", obs=obs)  # Update Observation, `update_obs` here can be modified
-        actions = model_client.call(func_name="get_action") # Get Action according to observation chunk
+With `temporal_agg` on, `query_frequency` is 1 and the ensemble is defined per
+step: `model.py` then returns one action per call, the chunk is length 1, and
+this loop observes every step regardless of the stride below. The return value
+carries that decision, so there is nothing to keep in sync here.
+"""
 
-        for action_idx, action in enumerate(actions):
-            TASK_ENV.take_action(action)
-            
-            if TASK_ENV.is_episode_end() or action_idx + 1 == len(actions):
-                break
-            
-            obs = TASK_ENV.get_obs() # Get Observation
-            model_client.call(func_name="update_obs", obs=obs)
+from XPolicyLab.utils.rollout import bind
 
-def eval_one_episode_batch(TASK_ENV, model_client):
+OBS_STRIDE = None
 
-    model_client.call(func_name="reset")
-
-    while not TASK_ENV.is_episode_end(): # Check whether the episode ends
-        env_idx_list = TASK_ENV.get_running_env_idx_list()
-        obs_list = TASK_ENV.get_obs_batch(env_idx_list) # Get Observation
-
-        model_client.call(func_name="update_obs_batch", obs=obs_list)  # Update Observation, `update_obs` here can be modified
-        actions = model_client.call(func_name="get_action_batch", obs=env_idx_list) # Get Action according to observation chunk
-
-        chunk_size = len(actions[0])
-        for action_idx in range(chunk_size):
-            current_action_list = [env_actions[action_idx] for env_actions in actions]
-
-            TASK_ENV.take_action_batch(current_action_list, env_idx_list)
-            
-            if TASK_ENV.is_episode_end() or action_idx + 1 == chunk_size:
-                break
-            
-            running = set(TASK_ENV.get_running_env_idx_list())
-            active_batch_idx = [i for i, env_idx in enumerate(env_idx_list) if env_idx in running]
-
-            actions = [actions[i] for i in active_batch_idx]
-            env_idx_list = [env_idx_list[i] for i in active_batch_idx]
-            model_client.call(func_name="update_obs_batch", obs=TASK_ENV.get_obs_batch(env_idx_list))
+eval_one_episode, eval_one_episode_batch = bind(OBS_STRIDE)

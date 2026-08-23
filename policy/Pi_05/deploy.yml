@@ -2,21 +2,44 @@
 policy_name: Pi_05
 protocol: ws
 host: localhost
+port: 6000
 bench_name: null
 task_name: null
+ckpt_name: null
 env_cfg_type: null
 seed: null
+action_type: joint
 eval_batch: true
 
-checkpoint_num: 59999
+# Which checkpoint under the run directory. null / "last" takes the newest step.
+checkpoint_num: null
 result_dir: "./results/pi05/"
 obs_transform_pipeline: "xspark-v1.0"
 
-# Model / action configuration
-action_type: joint
+# OpenPI is uv-managed; there is no policy conda env.
 policy_uv_env_path: openpi
-# Must match the config used by train.sh (default OPENPI_TRAIN_CONFIG_NAME).
+
+# --- RoboDojo (the upstream path) -----------------------------------------
+# Must match the config train.sh ran under.
 train_config_name: pi05_base_aloha_full_sim_arx-x5_seed_0
 repo_id: arx_x5_sim
 
-port: 6000
+# --- MHBench (bench_name=mhbench) -----------------------------------------
+# One server drives both humanoids either way.
+#   centralized    a single policy answering with all 70 action dimensions;
+#                  model_dir overrides its run directory.
+#   decentralized  the two independently trained halves in one process;
+#                  model_dir_robot_a / _robot_b override theirs.
+# `ckpt_name` here is the task (cocarry / handover / framehang / doorpassage),
+# not a run directory -- those are derived per robot. `train_config_name` and
+# `repo_id` above are ignored: the TrainConfig is derived from the task and the
+# target so a checkpoint cannot be served through another target's config, and
+# norm stats are read from the checkpoint's own assets.
+mhbench_mode: decentralized
+model_dir: null
+model_dir_robot_a: null
+model_dir_robot_b: null
+
+# How much of the 50-step chunk (1.0 s at MHBench's 50 Hz) to execute before
+# re-observing. null runs the whole chunk.
+exec_horizon: null

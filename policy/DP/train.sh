@@ -21,17 +21,26 @@ UTILS_DIR="${ROOT_DIR}/XPolicyLab/utils"
 action_dim=$(bash "${UTILS_DIR}/get_action_dim.sh" "${ROOT_DIR}" "${env_cfg_type}"); echo -e "\033[33m[INFO] Action dim: ${action_dim}\033[0m"
 state_dim=$(bash "${UTILS_DIR}/get_state_dim.sh" "${ROOT_DIR}" "${env_cfg_type}"); echo -e "\033[33m[INFO] State dim: ${state_dim}\033[0m"
 num_cameras=$(bash "${UTILS_DIR}/get_num_cameras.sh" "${ROOT_DIR}" "${env_cfg_type}"); echo -e "\033[33m[INFO] Num cameras: ${num_cameras}\033[0m"
-
-EXTRA_CAMERA_ARGS=()
-if [ "${num_cameras}" -ge 2 ]; then
-    EXTRA_CAMERA_ARGS+=("+task.shape_meta.obs.left_cam.shape=[3,240,320]" "+task.shape_meta.obs.left_cam.type=rgb")
-fi
-if [ "${num_cameras}" -ge 3 ]; then
-    EXTRA_CAMERA_ARGS+=("+task.shape_meta.obs.right_cam.shape=[3,240,320]" "+task.shape_meta.obs.right_cam.type=rgb")
-fi
-
-
 alg_name=robot_dp
+
+# default_task.yaml declares no camera by default (struct-locked to just
+# agent_pos/action), so every run appends its own: 1 camera -> head_cam
+# (RobotImageDataset/model.py's single-camera slot), 2 -> left_cam+right_cam
+# (model.py's MHBENCH_CAMERA_SLOT, ego_a/ego_b). Both sides read the same
+# num_cameras/camera_map, so training and eval always agree on key names.
+if [ "${num_cameras}" -ge 2 ]; then
+    EXTRA_CAMERA_ARGS=(
+        "+task.shape_meta.obs.left_cam.shape=[3,240,320]"
+        "+task.shape_meta.obs.left_cam.type=rgb"
+        "+task.shape_meta.obs.right_cam.shape=[3,240,320]"
+        "+task.shape_meta.obs.right_cam.type=rgb"
+    )
+else
+    EXTRA_CAMERA_ARGS=(
+        "+task.shape_meta.obs.head_cam.shape=[3,240,320]"
+        "+task.shape_meta.obs.head_cam.type=rgb"
+    )
+fi
 
 if [ $DEBUG = True ]; then
     wandb_mode=offline
@@ -48,9 +57,16 @@ export CUDA_VISIBLE_DEVICES=${gpu_id}
 
 data_setting="${bench_name}-${ckpt_name}-${env_cfg_type}-${action_type}"
 zarr_path="data/${data_setting}.zarr"
+val_zarr_path="data/${data_setting}_val.zarr"
 
 if [ ! -d "${zarr_path}" ]; then
     bash process_data.sh ${bench_name} ${ckpt_name} ${env_cfg_type} ${action_type}
+fi
+
+val_override=()
+if [ -d "${val_zarr_path}" ]; then
+    echo -e "\033[33m[INFO] Held-out validation set found: ${val_zarr_path}\033[0m"
+    val_override=(task.dataset.val_zarr_path="${val_zarr_path}")
 fi
 
 python train.py --config-name="${alg_name}.yaml" \
@@ -60,6 +76,7 @@ python train.py --config-name="${alg_name}.yaml" \
                 "task.shape_meta.obs.agent_pos.shape=[${state_dim}]" \
                 "${EXTRA_CAMERA_ARGS[@]}" \
                 task.dataset.zarr_path="${zarr_path}" \
+                "${val_override[@]}" \
                 training.debug=$DEBUG \
                 training.seed=${seed} \
                 training.device="cuda:0" \

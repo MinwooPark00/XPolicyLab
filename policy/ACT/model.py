@@ -113,26 +113,52 @@ class Model(ModelTemplate):
     # def update_obs_batch(self, obs_list): # TODO
     #     pass
 
+    @staticmethod
+    def _act_chunk(act) -> np.ndarray:
+        """``(n, action_dim)`` -- the whole action chunk where that is exact.
+
+        ACT queries its network every ``query_frequency`` steps and reads one
+        column of the result per step, so handing the caller the remaining
+        columns at once produces the same actions with one round trip instead
+        of ``query_frequency`` of them -- and the rollout loop then stops
+        rendering and shipping an observation it would only discard
+        (`utils/rollout.py`). Under temporal aggregation the ensemble is
+        defined per step and there is no chunk to return: one action, and the
+        loop keeps observing every step, which that mode requires.
+        """
+        if act.temporal_agg:
+            return np.atleast_2d(np.asarray(act.get_action()))
+        return np.asarray(act.get_action_chunk())
+
     def get_action(self):
         if self._mhbench_decentralized:
             per_robot = {
-                robot: np.asarray(sub_model.get_action())[0]
+                robot: self._act_chunk(sub_model)
                 for robot, sub_model in self._sub_models.items()
             }
-            return [{
-                "mhbench_raw_action": {
-                    robot: self._pack_single_robot_action(action) for robot, action in per_robot.items()
+            # Both robots run the same chunk length; take the shorter one
+            # anyway, so a future per-robot horizon cannot silently pair
+            # step i of one robot with step j of the other.
+            steps = min(chunk.shape[0] for chunk in per_robot.values())
+            return [
+                {
+                    "mhbench_raw_action": {
+                        robot: self._pack_single_robot_action(chunk[t])
+                        for robot, chunk in per_robot.items()
+                    }
                 }
-            }]
-
-        actions = self.model.get_action()
+                for t in range(steps)
+            ]
 
         if getattr(self, "_mhbench_dual_robot", False):
-            raw = np.asarray(actions)
-            if raw.ndim == 1:
-                raw = raw[None, :]
-            return [{"mhbench_raw_action": self._pack_dual_arm_action(a)} for a in raw]
+            return [
+                {"mhbench_raw_action": self._pack_dual_arm_action(a)}
+                for a in self._act_chunk(self.model)
+            ]
 
+        # Non-MHBench benches keep the one-action-per-call contract
+        # `unpack_robot_state` was written against.
+        actions = self.model.get_action()
         return unpack_robot_state(actions, self.action_type, self.robot_action_dim_info, source_type='obs')
 
     @staticmethod

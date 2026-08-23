@@ -331,8 +331,16 @@ MHBENCH_JOINT_TARGET_GROUPS = ("left_arm", "right_arm", "left_hand", "right_hand
 # 1/2 -- the shared sentence at index 0 belongs to the centralized policy).
 MHBENCH_TASK_PROMPTS = {
     "cocarry": {
-        "robot_a": "Hold your end of the board with both hands and side-step to your right, keeping the board level, until it rests on the stands.",
-        "robot_b": "Hold your end of the board with both hands and side-step to your left, keeping the board level, until it rests on the stands.",
+        "robot_a": "Hold your side of the basket with both hands and side-step to your right, keeping it level, until it rests on the green patch.",
+        "robot_b": "Hold your side of the basket with both hands and side-step to your left, keeping it level, until it rests on the green patch.",
+    },
+    "frame_hang": {
+        "robot_a": "Take the carrying handle on the left side of the frame with one hand, lift level with your partner, guide the loop onto the peg, and release once it is seated.",
+        "robot_b": "Take the carrying handle on the right side of the frame with one hand, lift level with your partner, guide the loop onto the peg, and release once it is seated.",
+    },
+    "door_passage": {
+        "robot_a": "Walk to the door, pull it open, and hold it open for your partner.",
+        "robot_b": "Lift the trophy off the plinth by its handles, carry it through the open doorway, and stand it on the green stand.",
     },
     "handover": {
         "robot_a": "Pick up the bottle from the counter with your left hand, transfer it to your right hand, and hand it across to your partner.",
@@ -351,6 +359,9 @@ MHBENCH_EGO_VIEW = {"robot_a": "ego_a", "robot_b": "ego_b"}
 # index 0). Add a task here from its own dataset rather than guessing it -- a
 # policy prompted with a sentence it never saw is a silent failure.
 MHBENCH_DUO_PROMPTS = {
+    "cocarry": "Carry the laundry basket together and set it down level on the green patch on the far shelf.",
+    "door_passage": "Open the door and carry the trophy through the doorway onto the stand in the far room.",
+    "frame_hang": "Lift the framed painting off the floor together, hang the loop on its top rail on the wall peg, and let go once it is hanging square.",
     "handover": "Pass the bottle from one end of the counter to the other with a hand-to-hand handover.",
 }
 

@@ -163,6 +163,56 @@ def parse_args_and_config():
     _require_non_empty("port")
     return cfg
 
+def seed_server(deploy_cfg):
+    """Seed this process's RNGs from `seed`, when asked to.
+
+    Nothing here seeds anything by default, and that is worth stating because
+    the eval CLI's `--seed` looks like it covers the whole run and does not:
+    it seeds the *client* -- the scene randomization and the client's own
+    `random`/`numpy`/`torch` -- while the sampling that turns an observation
+    into an action happens over here. Diffusion Policy draws its initial
+    trajectory from the global generator (`conditional_sample`, generator=None)
+    and the flow-matching baselines draw noise the same way, so two evaluations
+    of one checkpoint on one seed do not produce the same actions.
+
+    Turning this on changes the numbers a policy produces, which is why it is
+    opt-in rather than a fix applied to everyone's results at once:
+
+        XPOLICYLAB_SEED_SERVER=1
+
+    What it buys is an exact A/B. A change to the rollout loop or the render
+    schedule is supposed to leave the executed actions alone, and without a
+    reproducible server the only way to check that is statistical -- which at
+    fifty episodes cannot see a difference smaller than the run-to-run spread.
+    """
+    if not os.environ.get("XPOLICYLAB_SEED_SERVER"):
+        return
+    seed = deploy_cfg.get("seed")
+    if seed is None:
+        print("[server] XPOLICYLAB_SEED_SERVER set but no seed in the config -- not seeding")
+        return
+    seed = int(seed)
+    import random
+
+    random.seed(seed)
+    try:
+        import numpy as np
+
+        np.random.seed(seed)
+    except ImportError:
+        pass
+    try:
+        import torch
+
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
+    except ImportError:
+        pass
+    print(f"[server] RNGs seeded with {seed} (XPOLICYLAB_SEED_SERVER)")
+
+
 if __name__ == "__main__":
     deploy_cfg = parse_args_and_config()
+    seed_server(deploy_cfg)
     main(deploy_cfg)

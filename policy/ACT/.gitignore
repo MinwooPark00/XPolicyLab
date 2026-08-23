@@ -145,5 +145,6 @@ dmypy.json
 act-ckpt/
 processed_data/
 TASK_CONFIGS.json
+*.out
 checkpoinst/*
 eval_results/*

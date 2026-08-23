@@ -37,10 +37,29 @@ class MultiImageObsEncoder(ModuleAttrMixin):
         key_transform_map = nn.ModuleDict()
         key_shape_map = dict()
 
+        def apply_group_norm(model: nn.Module) -> nn.Module:
+            """BatchNorm -> GroupNorm, for whichever rgb model this run builds.
+
+            Both branches below go through this, because `use_group_norm` has to
+            mean the same thing either way: EMAModel.step averages parameters and
+            never buffers, so a BatchNorm left in here would leave the served EMA
+            model running on the running_mean/running_var it was constructed with.
+            """
+            if not use_group_norm:
+                return model
+            return replace_submodules(
+                root_module=model,
+                predicate=lambda x: isinstance(x, nn.BatchNorm2d),
+                func=lambda x: nn.GroupNorm(
+                    num_groups=x.num_features // 16,
+                    num_channels=x.num_features,
+                ),
+            )
+
         # handle sharing vision backbone
         if share_rgb_model:
             assert isinstance(rgb_model, nn.Module)
-            key_model_map["rgb"] = rgb_model
+            key_model_map["rgb"] = apply_group_norm(rgb_model)
 
         obs_shape_meta = shape_meta["obs"]
         for key, attr in obs_shape_meta.items():
@@ -61,16 +80,7 @@ class MultiImageObsEncoder(ModuleAttrMixin):
                         this_model = copy.deepcopy(rgb_model)
 
                 if this_model is not None:
-                    if use_group_norm:
-                        this_model = replace_submodules(
-                            root_module=this_model,
-                            predicate=lambda x: isinstance(x, nn.BatchNorm2d),
-                            func=lambda x: nn.GroupNorm(
-                                num_groups=x.num_features // 16,
-                                num_channels=x.num_features,
-                            ),
-                        )
-                    key_model_map[key] = this_model
+                    key_model_map[key] = apply_group_norm(this_model)
 
                 # configure resize
                 input_shape = shape

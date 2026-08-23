@@ -11,7 +11,12 @@ shape_meta: ${task.shape_meta}
 exp_name: "default"
 
 horizon: 8
-n_obs_steps: 3
+# The current frame only, as ACT (EpisodicDataset reads one start_ts) and GR00T
+# (delta_indices=[0] on video and state) do -- so a score difference between the
+# three is a method difference. It is also what the encoder cost scales with:
+# one optimizer step runs the rgb model over batch x n_obs_steps x cameras
+# images, which is ~78% of the step.
+n_obs_steps: 1
 n_action_steps: 6
 n_latency_steps: 0
 dataset_obs_steps: ${n_obs_steps}
@@ -41,7 +46,7 @@ policy:
       _target_: diffusion_policy.model.vision.model_getter.get_resnet
       name: resnet18
       weights: null
-    resize_shape: null
+    resize_shape: [240, 320]
     crop_shape: null
     # constant center crop
     random_crop: True
@@ -74,15 +79,15 @@ ema:
   max_value: 0.9999
 
 dataloader:
-  batch_size: 128
-  num_workers: 0
+  batch_size: 32
+  num_workers: 8
   shuffle: True
   pin_memory: True
   persistent_workers: False
 
 val_dataloader:
-  batch_size: 128
-  num_workers: 0
+  batch_size: 32
+  num_workers: 8
   shuffle: False
   pin_memory: True
   persistent_workers: False
@@ -111,7 +116,7 @@ training:
   # training loop control
   # in epochs
   rollout_every: 50
-  checkpoint_every: 600
+  checkpoint_every: 50
   val_every: 1
   sample_every: 5
   # steps per epoch

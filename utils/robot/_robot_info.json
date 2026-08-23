@@ -33,12 +33,18 @@
         "arm_dim": [17, 17],
         "ee_dim": [18, 18],
         "state_dim": 86,
-        "num_cameras": 3
+        "num_cameras": 2
     },
     "mhbench_cocarry": {
         "arm_dim": [17, 17],
         "ee_dim": [18, 18],
         "state_dim": 86,
-        "num_cameras": 3
+        "num_cameras": 2
+    },
+    "mhbench_handover": {
+        "arm_dim": [17, 17],
+        "ee_dim": [18, 18],
+        "state_dim": 86,
+        "num_cameras": 2
     }
 }

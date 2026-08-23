@@ -5,6 +5,7 @@ import numpy as np
 import hydra
 import dill
 import sys, os
+from diffusers.schedulers.scheduling_ddim import DDIMScheduler
 
 current_file_path = os.path.abspath(__file__)
 parent_dir = os.path.dirname(current_file_path)
@@ -22,12 +23,6 @@ from XPolicyLab.utils.checkpoint_resolver import resolve_checkpoint_root, build_
 # comes from the env, not the policy.
 MHBENCH_CAMERA_SLOT = {"robot_a": "cam_left_wrist", "robot_b": "cam_right_wrist"}
 
-# encode_obs()'s normalizer key -> the XPolicyLab vision slot it reads from.
-# Which of these a checkpoint actually expects is read back from its own
-# normalizer (Model.get_model), since train.sh's num_cameras gate means not
-# every checkpoint was trained with all three (e.g. a head_cam-less run).
-CENTRALIZED_CAMERA_SLOT = {"head_cam": "cam_head", "left_cam": "cam_left_wrist", "right_cam": "cam_right_wrist"}
-
 
 def _prep_camera(color: np.ndarray) -> np.ndarray:
     """XPolicyLab vision obs (HWC uint8) -> DP's CHW float32 input, 320x240."""
@@ -35,6 +30,71 @@ def _prep_camera(color: np.ndarray) -> np.ndarray:
     return np.transpose(
         cv2.resize(np.transpose(img, (1, 2, 0)), (320, 240), interpolation=cv2.INTER_AREA), (2, 0, 1)
     )
+
+
+DDPM_ONLY_CONFIG_KEYS = ("variance_type",)
+"""DDPM settings that have no DDIM counterpart and must not be forwarded."""
+
+
+def configure_sampler(policy, scheduler_name, num_inference_steps):
+    """Choose the denoiser used at *evaluation*, leaving the weights alone.
+
+    The trained checkpoints sample with `DDPMScheduler` at
+    `num_inference_steps: 100` -- read out of `600.ckpt`'s own cfg, not just
+    `robot_dp.yaml` -- which is 100 U-Net forwards for every `n_action_steps`
+    (6) environment steps, i.e. ~16,700 per 1000-step episode. DDPM cannot be
+    shortened: its reverse process is defined on the same grid it was trained
+    on. DDIM can, by subsampling that grid, and it is what the Diffusion Policy
+    release itself uses for fast inference -- with the identical betas
+    (`squaredcos_cap_v2`, 1e-4..0.02, 100 train steps), `prediction_type` and
+    `clip_sample`, so the model is unchanged and only the solver differs.
+
+    That is still a different sampler, and eta=0 DDIM is deterministic where
+    DDPM's `variance_type: fixed_small` is not -- so this is opt-in and has to
+    be justified by a success-rate A/B on real episodes, not by the speedup.
+
+    `policy.kwargs` is forwarded to `scheduler.step` by
+    `DiffusionUnetImagePolicy.conditional_sample`, and DDIM's `step` takes no
+    `**kwargs` (diffusers 0.11.1) where DDPM's does -- so anything the DDPM
+    path tolerated is filtered here rather than raising inside the rollout.
+    """
+    if scheduler_name is None and num_inference_steps is None:
+        return policy
+
+    name = (scheduler_name or "ddpm").lower()
+    if name not in ("ddpm", "ddim"):
+        raise ValueError(f"inference_scheduler must be 'ddpm' or 'ddim', got {scheduler_name!r}")
+
+    if name == "ddim" and not isinstance(policy.noise_scheduler, DDIMScheduler):
+        import inspect
+
+        trained = dict(policy.noise_scheduler.config)
+        carried = {
+            key: value
+            for key, value in trained.items()
+            if key not in DDPM_ONLY_CONFIG_KEYS and not key.startswith("_")
+        }
+        # The Diffusion Policy release's own DDIM settings; neither exists on
+        # the DDPM config this is derived from.
+        carried.setdefault("set_alpha_to_one", True)
+        carried.setdefault("steps_offset", 0)
+        policy.noise_scheduler = DDIMScheduler(**carried)
+
+        allowed = set(inspect.signature(DDIMScheduler.step).parameters)
+        dropped = {k: v for k, v in policy.kwargs.items() if k not in allowed}
+        if dropped:
+            print(f"[DP][sampler] dropping step kwargs DDIM does not take: {sorted(dropped)}")
+            policy.kwargs = {k: v for k, v in policy.kwargs.items() if k in allowed}
+
+    if num_inference_steps is not None:
+        policy.num_inference_steps = int(num_inference_steps)
+
+    print(
+        f"[DP][sampler] {type(policy.noise_scheduler).__name__} "
+        f"num_inference_steps={policy.num_inference_steps} "
+        f"(trained: {policy.noise_scheduler.config.num_train_timesteps} steps)"
+    )
+    return policy
 
 
 def _pack_single_robot_action(flat_action: np.ndarray) -> dict:
@@ -69,6 +129,10 @@ class Model(ModelTemplate):
         self.n_obs_steps = model_training_config['n_obs_steps']
         self.n_action_steps = model_training_config['n_action_steps']
         self.action_type = model_cfg['action_type']
+        # Evaluation-time sampler. Both default to None = whatever the
+        # checkpoint was trained and saved with (see configure_sampler).
+        self._inference_scheduler = model_cfg.get('inference_scheduler')
+        self._num_inference_steps = model_cfg.get('num_inference_steps')
 
         self._mhbench_decentralized = (
             str(model_cfg.get("bench_name") or "") == "mhbench"
@@ -81,9 +145,6 @@ class Model(ModelTemplate):
         self._mhbench_dual_robot = False  # set per-batch in update_obs_batch
         self.runner = DPRunner(n_obs_steps=self.n_obs_steps, n_action_steps=self.n_action_steps)
         self.model = self.get_model(model_cfg=model_cfg)
-        self.camera_keys = [
-            key for key in CENTRALIZED_CAMERA_SLOT if key in self.model.normalizer.params_dict
-        ]
         try:
             self.robot_action_dim_info = get_robot_action_dim_info(model_cfg['env_cfg_type'])
         except FileNotFoundError:
@@ -149,6 +210,8 @@ class Model(ModelTemplate):
         if cfg.training.use_ema:
             policy = workspace.ema_model
 
+        configure_sampler(policy, self._inference_scheduler, self._num_inference_steps)
+
         device = torch.device("cuda:0")
         policy.to(device)
         policy.eval()
@@ -205,7 +268,7 @@ class Model(ModelTemplate):
 
         self._mhbench_dual_robot = bool(obs_list) and "mhbench_state" in obs_list[0]
         encoded_list = [
-            encode_obs(obs, self.action_type, self.robot_action_dim_info, self.camera_keys, self._mhbench_dual_robot)
+            encode_obs(obs, self.action_type, self.robot_action_dim_info, self._mhbench_dual_robot)
             for obs in obs_list
         ]
         self.runner.update_obs(encoded_list, env_idx_list)
@@ -275,23 +338,25 @@ class Model(ModelTemplate):
         self.runner.reset_obs()
         self._latest_env_idx_list = None
 
-def encode_obs(observation, action_type, robot_action_dim_info, camera_keys, mhbench_dual_robot=False):
-    cams = {
-        key: _prep_camera(observation["vision"][CENTRALIZED_CAMERA_SLOT[key]]["color"])
-        for key in camera_keys
-    }
+def encode_obs(observation, action_type, robot_action_dim_info, mhbench_dual_robot=False):
+    left_cam = _prep_camera(observation["vision"]["cam_left_wrist"]["color"])
+    right_cam = _prep_camera(observation["vision"]["cam_right_wrist"]["color"])
 
     if mhbench_dual_robot:
         # MHBench's two-full-humanoid state doesn't fit XPolicyLab's generic
         # single-bimanual-robot obs['state'] schema (pack_robot_state only
         # knows arm_dim+ee_dim=70, but this robot's qpos is 86) -- same reason
-        # ACT/model.py's encode_obs branches here.
+        # ACT/model.py's encode_obs branches here. Only the two ego cameras
+        # are used (num_cameras=2, no head_cam) -- cam_head is the scene
+        # camera, never in the training zarr or shape_meta for this robot;
+        # see RobotImageDataset's camera_map-derived cam_obs_names.
         mhbench_state = observation["mhbench_state"]
         agent_pos = np.concatenate([
             np.asarray(mhbench_state["robot_a"]["joint_pos"], dtype=np.float32),
             np.asarray(mhbench_state["robot_b"]["joint_pos"], dtype=np.float32),
         ])
-    else:
-        agent_pos = pack_robot_state(observation, action_type, robot_action_dim_info, source_type='obs')
+        return dict(left_cam=left_cam, right_cam=right_cam, agent_pos=agent_pos)
 
-    return dict(**cams, agent_pos=agent_pos)
+    head_img = _prep_camera(observation["vision"]["cam_head"]["color"])
+    agent_pos = pack_robot_state(observation, action_type, robot_action_dim_info, source_type='obs')
+    return dict(head_cam=head_img, left_cam=left_cam, right_cam=right_cam, agent_pos=agent_pos)
