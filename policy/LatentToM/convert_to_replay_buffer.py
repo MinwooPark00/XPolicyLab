@@ -9,8 +9,9 @@ exactly ``mhbench_keys.action_keys(robot)``'s key list; proprio is the plain
 43D joint block (``mhbench_keys.JOINT_GROUPS``)
 
     state  43 = 7 URDF joint groups: legs(12) + waist(3) + arms(14) + hands(14)
-    action 35 = 28 joint targets (arm+hand groups, no legs)
-                + base_height(1) + navigate_command(3)
+    action 35 = 31 joint targets (ACTION_JOINT_GROUPS: left_arm 7, right_arm 7,
+                left_hand 7, right_hand 7, waist 3 -- no legs, the locomotion
+                policy owns those) + base_height(1) + navigate_command(3)
 """
 
 from __future__ import annotations
@@ -77,6 +78,20 @@ class LerobotDataset:
         return self.root / self.info["video_path"].format(
             episode_chunk=chunk, video_key=video_key, episode_index=episode_index
         )
+
+
+def val_episode_indices(dataset: LerobotDataset) -> set[int]:
+    """Episode indices the export declares as validation.
+
+    ``meta/info.json``'s ``splits`` are half-open index ranges --
+    ``{"train": "0:50", "val": "50:65"}``. Empty when the export declares none.
+    """
+    splits = dataset.info.get("splits") or {}
+    spec = splits.get("val") or splits.get("validation")
+    if not spec:
+        return set()
+    start, _, end = str(spec).partition(":")
+    return set(range(int(start), int(end or dataset.info["total_episodes"])))
 
 
 def list_episodes(dataset: LerobotDataset, include_failed: bool, max_demos) -> list[int]:
@@ -211,6 +226,18 @@ def convert(source_path: str, out_dir: pathlib.Path, include_failed: bool, max_d
             }
         )
         print(f"[LatentToM] {ep_idx + 1}/{len(episode_indices)} episode_{episode_index}: {episode_length} steps")
+
+    # Indexed the way the buffer is (converted order), not the way the export
+    # is -- a dropped episode shifts every index after it.
+    val_indices = val_episode_indices(dataset)
+    if val_indices:
+        val_mask = np.array([i in val_indices for i in episode_indices], dtype=bool)
+        buffer.update_meta({"val_mask": val_mask})
+        print(f"[LatentToM] val split from meta/info.json: "
+              f"{int(val_mask.sum())} val / {int((~val_mask).sum())} train episodes")
+    else:
+        print("[LatentToM] no val split declared in meta/info.json -- "
+              "training will fall back to task.dataset.val_ratio")
 
     print(f"[LatentToM] wrote {out_dir} ({len(episode_indices)} episodes, fps={fps})")
 

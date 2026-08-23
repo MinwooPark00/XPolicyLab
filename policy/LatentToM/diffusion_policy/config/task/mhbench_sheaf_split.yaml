@@ -1,4 +1,11 @@
-name: mhbench_cocarry_sheaf_split
+# Every MHBench two-G1 task presents the same thing to this policy: three
+# cameras at 240x320, 43D proprio per robot, 35D action per robot. Nothing in
+# here was ever cocarry-specific except the word in the filename, which made
+# `task=mhbench_cocarry_sheaf_split` a hardcoded line in train.sh and the other
+# three tasks unreachable. Which scene a run is on is carried by
+# `task.dataset_path` and the run directory, both of which train.sh derives from
+# `env_cfg_type`.
+name: mhbench_sheaf_split
 
 image_shape: [3, 240, 320]
 # process_data.sh's convert_to_replay_buffer.py output directory (holding
@@ -26,7 +33,9 @@ shape_meta:
       shape: [43]
       type: low_dim
   arm1_action:
-    shape: [35]  # GR00T's own action contract: joint targets(28) + base_height(1) + navigate_command(3)
+    shape: [35]  # GR00T's own action contract (mhbench_keys.py):
+                 # joint targets(31: left_arm 7, right_arm 7, left_hand 7,
+                 # right_hand 7, waist 3) + base_height(1) + navigate_command(3)
   arm2_action:
     shape: [35]
 

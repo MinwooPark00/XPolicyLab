@@ -20,11 +20,13 @@ this layout. Eval against a real env needs `scripts/mhbench_xpolicylab_env.py`'s
 `mhbench_state.<robot>.joint_pos` and applies joint actions via
 `mhbench.g1.actions.joint_target_action_cfg` (Pink IK bypassed).
 
-Status: structurally complete and internally consistent, but not yet run
-against a real MHBench checkpoint or a registered `env_cfg_type` -- see
-policy/LatentToM/README.md's "What's still open" section before treating this
-as verified. Built ahead of the XPolicyLab-format port into the main MHBench
-repo, per the architecture decision recorded there.
+Status: wired end to end -- `env_cfg_type` is a registered scene name
+(`baselines/env_cfg/<scene>.yml`), `baselines/scripts/serve/LatentToM.sh` serves
+it through the shared eval runner, and `train.sbatch` writes the run directory
+that hook resolves. Not yet run against a trained checkpoint: nothing here is
+confirmed by a rollout, only by construction against
+`convert_to_replay_buffer.py` (the training-side source of truth) and
+`configs/gr00t/mhbench_keys.py` (the benchmark's).
 """
 
 import sys
