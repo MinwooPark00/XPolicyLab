@@ -1,6 +1,9 @@
 #!/bin/bash
 set -euo pipefail
-export XLA_PYTHON_CLIENT_MEM_FRACTION=0.3
+# Shares the GPU with the env client's renderer. A default, not an override:
+# eval_pi05.sbatch raises it, because pi0.5 is ~6.6 GB in bf16 before
+# activations and 0.3 of a 24 GB card is 7.2.
+export XLA_PYTHON_CLIENT_MEM_FRACTION=${XLA_PYTHON_CLIENT_MEM_FRACTION:-0.3}
 
 bench_name=$1
 task_name=$2
@@ -25,14 +28,10 @@ action_dim=$(bash "${UTILS_DIR}/get_action_dim.sh" "${BENCH_ROOT}" "${env_cfg_ty
 
 echo "[SERVER] policy=${policy_name}, task=${task_name}, port=${policy_server_port}, action_dim=${action_dim}"
 
-CONDA_BASE="$(conda info --base)"
-source "${CONDA_BASE}/etc/profile.d/conda.sh"
-YAML_PYTHON="${CONDA_BASE}/bin/python"
-
 resolve_uv_env() {
     local raw_path=$1
     if [[ "${raw_path}" == "uv" ]]; then
-        "${YAML_PYTHON}" - <<PYENV
+        python - <<PYENV
 import yaml
 from pathlib import Path
 script_dir = Path("${SCRIPT_DIR}")
@@ -43,7 +42,7 @@ if not path.is_absolute():
 print(path)
 PYENV
     else
-        "${YAML_PYTHON}" - <<PYENV
+        python - <<PYENV
 from pathlib import Path
 script_dir = Path("${SCRIPT_DIR}")
 path = Path("${raw_path}").expanduser()

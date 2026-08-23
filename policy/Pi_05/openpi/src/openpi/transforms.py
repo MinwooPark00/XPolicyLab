@@ -253,7 +253,15 @@ class TokenizePrompt(DataTransformFn):
         if (prompt := data.pop("prompt", None)) is None:
             raise ValueError("Prompt is required")
 
-        is_batched_prompt = isinstance(prompt, (list, np.ndarray, jax.Array)) and not isinstance(prompt, str)
+        # `InjectDefaultPrompt` stores the prompt as `np.asarray(str)`, i.e. a
+        # 0-d array -- which is an ndarray but holds one prompt, not a batch.
+        # Without the ndim check `list(prompt)` below raises "iteration over a
+        # 0-d array" for every config that sets a default prompt.
+        is_batched_prompt = (
+            isinstance(prompt, (list, np.ndarray, jax.Array))
+            and not isinstance(prompt, str)
+            and getattr(prompt, "ndim", 1) >= 1
+        )
 
         if self.discrete_state_input:
             if (state := data.get("state", None)) is None:
