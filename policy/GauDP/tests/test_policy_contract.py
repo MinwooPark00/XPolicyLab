@@ -1,4 +1,5 @@
 import pytest
+import numpy as np
 
 torch = pytest.importorskip("torch")
 pytest.importorskip("diffusers")
@@ -6,6 +7,7 @@ pytest.importorskip("diffusers")
 from torch import nn
 
 from XPolicyLab.policy.GauDP.gaudp.policy import GauDPPolicy
+from XPolicyLab.policy.GauDP.model import _require_finite
 
 
 class TinyGaussian(nn.Module):
@@ -60,3 +62,8 @@ def test_one_step_freezes_gaussian_and_returns_six_by_44():
     output = policy.predict_action(batch["images"][:, :3], batch["state"][:, :3])
     assert policy.gaussian_encoder.calls == 1
     assert output.shape == (1, 6, 44)
+
+
+def test_eval_rejects_non_finite_values():
+    with pytest.raises(ValueError, match="predicted action contains 1"):
+        _require_finite("predicted action", np.asarray([0.0, np.inf], dtype=np.float32))

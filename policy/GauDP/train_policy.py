@@ -193,6 +193,8 @@ def main() -> None:
     )
     states, actions = train_data.normalization_arrays()
     policy.normalizer.fit(states, actions)
+    val_states, val_actions = val_data.normalization_arrays()
+    normalization_metrics = policy.normalizer.range_diagnostics(val_states, val_actions)
     policy.to(device)
 
     trainable = [parameter for parameter in policy.parameters() if parameter.requires_grad]
@@ -212,7 +214,9 @@ def main() -> None:
         f"batch_size={args.batch_size} workers={args.num_workers} epochs={1 if args.debug else args.epochs} "
         f"trainable={trainable_count / 1e6:.1f}M / total={total_count / 1e6:.1f}M "
         f"gaussian_checkpoint={requested_checkpoint} gaussian_features={args.gaussian_features} "
-        f"log_every={args.log_every}",
+        f"split={train_data.split_source} log_every={args.log_every} "
+        f"val_state_oor={normalization_metrics['normalization/val_state_out_of_range_fraction']:.6f} "
+        f"val_action_oor={normalization_metrics['normalization/val_action_out_of_range_fraction']:.6f}",
         flush=True,
     )
 
@@ -299,6 +303,7 @@ def main() -> None:
                 "epoch": epoch,
                 "lr": scheduler.get_last_lr()[0],
                 "performance/epoch_seconds": time.monotonic() - epoch_started,
+                **normalization_metrics,
                 "train/loss": train_sums.get("diffusion/noise_mse", 0.0) / max(1, train_count),
                 "val/loss": val_sums.get("diffusion/noise_mse", 0.0) / max(1, val_count),
                 **{f"train/{key}": value / max(1, train_count) for key, value in train_sums.items()},

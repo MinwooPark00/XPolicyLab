@@ -294,6 +294,43 @@ def _episode_index(path: Path) -> int:
     return int(match.group(1))
 
 
+def _split_range(spec: str, total_episodes: int) -> set[int]:
+    """Expand a LeRobot half-open episode range such as ``"0:50"``."""
+    start_text, separator, end_text = str(spec).partition(":")
+    if not separator:
+        raise ValueError(f"invalid LeRobot split range {spec!r}; expected 'start:end'")
+    start = int(start_text or 0)
+    end = int(end_text or total_episodes)
+    if not 0 <= start <= end <= total_episodes:
+        raise ValueError(
+            f"LeRobot split range {spec!r} is outside 0:{total_episodes}"
+        )
+    return set(range(start, end))
+
+
+def _official_split_masks(info: dict, episode_ids: list[int]) -> tuple[np.ndarray, np.ndarray] | None:
+    """Return train/val masks aligned to converted episodes, if both survive."""
+    splits = info.get("splits") or {}
+    train_spec = splits.get("train")
+    val_spec = splits.get("val") or splits.get("validation")
+    if not train_spec or not val_spec:
+        return None
+    total = int(info.get("total_episodes", max(episode_ids, default=-1) + 1))
+    train_ids = _split_range(train_spec, total)
+    val_ids = _split_range(val_spec, total)
+    overlap = train_ids & val_ids
+    if overlap:
+        raise ValueError(f"LeRobot train/val splits overlap at episodes {sorted(overlap)[:10]}")
+    train_mask = np.asarray([episode in train_ids for episode in episode_ids], dtype=bool)
+    val_mask = np.asarray([episode in val_ids for episode in episode_ids], dtype=bool)
+    if not train_mask.any() or not val_mask.any():
+        return None
+    if np.any(~(train_mask | val_mask)):
+        missing = [episode for episode, known in zip(episode_ids, train_mask | val_mask) if not known]
+        raise ValueError(f"converted episodes are outside the declared train/val splits: {missing[:10]}")
+    return train_mask, val_mask
+
+
 def _convert_lerobot(
     source: Path,
     target: h5py.File,
@@ -319,6 +356,25 @@ def _convert_lerobot(
         files = files[:max_demos]
     if not files:
         raise SystemExit(f"no LeRobot episode parquet files found below {source / 'data'}")
+
+    episode_ids = [_episode_index(path) for path in files]
+    official_masks = _official_split_masks(info, episode_ids)
+    target.create_dataset("episode_ids", data=np.asarray(episode_ids, dtype=np.int64))
+    if official_masks is not None:
+        train_mask, val_mask = official_masks
+        target.create_dataset("train_mask", data=train_mask)
+        target.create_dataset("val_mask", data=val_mask)
+        target.attrs["split_source"] = "meta/info.json"
+        print(
+            f"[GauDP] split from meta/info.json: {int(train_mask.sum())} train / "
+            f"{int(val_mask.sum())} val episodes"
+        )
+    elif info.get("splits"):
+        target.attrs["split_source"] = "95:5-fallback"
+        print(
+            "[GauDP] declared split is incomplete after episode selection; "
+            "falling back to a 95:5 episode split",
+        )
 
     total = 0
     episode_ends = []

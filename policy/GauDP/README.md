@@ -1,17 +1,40 @@
-# GauDP for MHBench (standalone XPolicyLab policy)
+# GauDP for MHBench
 
-This directory contains the complete GauDP runtime. It does **not** import,
-install, symlink, or add any external Policy-Lightning checkout to the module
-search path. The needed diffusion/vision utilities are copied under
-`gaudp/core/`, and the official NoPoSplat encoder/renderer/geometry code is
-vendored under `gaudp/third_party/noposplat/`. See [NOTICE.md](NOTICE.md) for
-source commits and licenses.
+This directory contains the standalone GauDP training and evaluation code for
+MHBench. GauDP supports only `action_type=ee`.
 
-## Install
+## 1. Download a dataset
 
-Like LatentToM, GauDP installs into the currently active policy environment.
-The default versions follow official NoPoSplat: Python 3.10/3.11, PyTorch
-2.1.2, torchvision 0.16.2, and the CUDA 11.8 wheel.
+Run from the MHBench repository root. Demonstrations are hosted on Hugging
+Face, one repository per task:
+
+```bash
+python -m pip install -U huggingface_hub
+
+# Example: CoCarry
+hf download meat000124/cocarry \
+  --repo-type dataset \
+  --local-dir datasets/cocarry
+
+export MHBENCH_DATASET_PATH="$(pwd)/datasets/cocarry"
+test -f "$MHBENCH_DATASET_PATH/meta/info.json"
+```
+
+Task names are:
+
+| Dataset name | `env_cfg` argument |
+|---|---|
+| `cocarry` | `cocarry` |
+| `handover` | `handover` |
+| `framehang` | `frame_hang` |
+| `doorpassage` | `door_passage` |
+
+`MHBENCH_DATASET_PATH` must point to the directory containing `meta/`, `data/`,
+and `videos/`, not its `data/` child. A locally exported dataset at
+`datasets/<task>/lerobot` is detected automatically when the variable is not
+set.
+
+## 2. Install
 
 ```bash
 conda create -n gaudp python=3.10 -y
@@ -20,160 +43,47 @@ cd baselines/XPolicyLab/policy/GauDP
 bash install.sh
 ```
 
-W&B logging is online by default for both training stages. Authenticate once
-in the GauDP environment before launching training; `wandb login` prompts for
-an API key from your W&B account and stores it for later runs:
+The first Gaussian command downloads the official NoPoSplat checkpoint unless
+`GAUDP_NOPOSPLAT_CKPT` points to an existing checkpoint. CUDA training requires
+`nvcc`; `install.sh` installs the required Python packages and CUDA extensions.
+
+W&B is enabled by default:
 
 ```bash
 wandb login
 ```
 
-GauDP pins `wandb==0.22.3` because current W&B accounts issue API keys longer
-than the legacy 40-character format rejected by older SDKs. If an existing
-environment reports an API-key length error, rerun
-`install.sh` or upgrade it with `python -m pip install --upgrade wandb==0.22.3`
-before logging in again.
+Pass `--wandb-mode disabled` to either training command if W&B is not needed.
 
-`install.sh` installs pinned Python dependencies from `requirements.txt`
-(including W&B),
-XPolicyLab itself in editable mode, the vendored cuRoPE extension, and
-NoPoSplat's CUDA Gaussian rasterizer. It verifies the resulting imports at the
-end and never installs a local Policy-Lightning project. A system CUDA toolkit
-with `nvcc` matching the PyTorch CUDA **major** version is required for the two
-extensions; a driver alone is insufficient. When run in an active conda
-environment and no usable `nvcc` is found, the installer automatically installs
-the CUDA toolkit matching `torch.version.cuda` from its version-specific NVIDIA
-conda channel into that environment. Set `GAUDP_AUTO_INSTALL_CUDA_TOOLKIT=0` to
-disable this behavior, or set `GAUDP_CUDA_TOOLKIT_CHANNEL` to override the conda
-channel label.
+## 3. Convert the dataset
 
-For a CUDA 12 host, override the wheel set with matching versions/index, for
-example:
+Run from `baselines/XPolicyLab/policy/GauDP`:
 
 ```bash
-GAUDP_TORCH_VERSION=2.4.1 \
-GAUDP_TORCHVISION_VERSION=0.19.1 \
-GAUDP_TORCHAUDIO_VERSION=2.4.1 \
-GAUDP_TORCH_INDEX_URL=https://download.pytorch.org/whl/cu121 \
-bash install.sh
+bash process_data.sh <bench> <ckpt> <env_cfg> ee [max_demos]
 ```
 
-Set `GAUDP_SKIP_TORCH_INSTALL=1` to retain an already compatible PyTorch.
-`GAUDP_SKIP_CUDA_EXTENSIONS=1 bash install.sh` is available only for
-data/schema tooling; Gaussian training and normal policy execution still need
-the extensions. If multiple CUDA toolkits are installed, select one with
-`CUDA_HOME=/path/to/cuda` or `GAUDP_NVCC=/path/to/nvcc`. Limit build
-parallelism with `MAX_JOBS` (default `4`). Re-run `python verify_install.py`
-at any time to audit the environment.
-
-`train_gaussian.sh` automatically downloads the official public NoPoSplat
-checkpoint from `botaoye/NoPoSplat` on Hugging Face when it is first needed.
-It selects `re10k.ckpt` for the default two-view dataset and
-`re10k_3views.ckpt` for a dataset converted with `GAUDP_USE_SCENE=1`, stores it
-under `weights/`, and reuses it on later runs. These checkpoints are about
-2.45 GB each, so the first Gaussian training launch requires network access and
-enough free disk space.
-
-To use an existing or custom checkpoint and skip the download, export its path:
+CoCarry example using every downloaded episode:
 
 ```bash
-export GAUDP_NOPOSPLAT_CKPT=/absolute/path/to/noposplat.ckpt
+bash process_data.sh mhbench cocarry cocarry ee
 ```
 
-The automatic source and destination can also be overridden with
-`GAUDP_NOPOSPLAT_REPO`, `GAUDP_NOPOSPLAT_FILENAME`, and
-`GAUDP_NOPOSPLAT_DIR`. Interrupted Hugging Face downloads are resumed by the
-Hub client when the command is run again.
+This creates:
 
-Official checkpoint payloads with `state_dict` keys prefixed by `encoder.` and
-GauDP's own `encoder_state` checkpoints are both accepted.
-
-## 1. Convert MHBench demonstrations
-
-`process_data.sh` now accepts both MHBench formats:
-
-- the current LeRobot v2.1 dataset root, containing `meta/info.json`,
-  `data/chunk-*/episode_*.parquet`, and
-  `videos/chunk-*/observation.images.<camera>/episode_*.mp4`;
-- a legacy raw `.hdf5`, HDF5 shard directory, or HDF5 dataset root understood
-  by `scripts/_dataset.py`.
-
-The default source is `datasets/<scene>/lerobot`, where `<scene>` is the
-`env_cfg` argument without its underscore — `door_passage` reads
-`datasets/doorpassage/lerobot`, the two spellings the rest of the bench
-accepts. The pre-reorg layouts (`datasets/<bench>_test`, then `datasets/data`)
-are still tried in that order, so a copy from before the reorg still resolves.
-
-**The conversion prints which export it picked**, with its date, commit,
-episode count and the task's own first sentence. Read it: a machine with more
-than one worktree of this repo has more than one `datasets/`, and cocarry went
-from a board on two stands to a laundry basket in a kitchen on 2026-08-21 under
-the same directory name. Override with `MHBENCH_DATASET_PATH` when the export
-you want is elsewhere:
-
-```bash
-export MHBENCH_DATASET_PATH=/lustre/meat124/mhbench_ws/MHBench/datasets/cocarry/lerobot
-bash process_data.sh mhbench cocarry cocarry ee 100
+```text
+data/mhbench-cocarry-cocarry-ee.hdf5
 ```
 
-Do not point `MHBENCH_DATASET_PATH` at its `data/` child: GauDP also needs the
-sibling `meta/` and `videos/` directories. The optional fifth argument limits
-episode count.
+The optional fifth argument limits the number of converted episodes. GauDP uses
+the train/validation episode ranges declared in `meta/info.json`. It falls back
+to a deterministic 95:5 episode split only when the source has no usable split.
 
-This writes `data/mhbench-cocarry-cocarry-ee.hdf5` with the stable GauDP
-42D state, 44D action, RGB, Gaussian reconstruction supervision, and episode
-boundaries. LeRobot columns are mapped by their dimension names in
-`meta/info.json`, not by fragile numeric offsets:
+## 4. Prepare Gaussian features
 
-- state: `observation.robots_state` + `observation.eef_state`;
-- EEF action: `action.eef`;
-- four compressed hand controls: the named `index_0`/`middle_0` joints in
-  `action`;
-- locomotion: `teleop.navigate_command` and
-  `teleop.base_height_command`;
-- images: `observation.images.ego_a`, `observation.images.ego_b`, and optional
-  `observation.images.scene` MP4 streams.
-- Gaussian geometry: `observation.depth.ego_a/ego_b`,
-  `observation.camera_pose`, and the per-camera `camera.intrinsics` metadata.
+### Option A: fine-tune the Gaussian encoder
 
-Depth MP4s use the dataset-declared lossless `uint16_hi_lo_rgb` encoding and
-are converted from millimetres to metres. Camera poses are converted from the
-Isaac camera frame (+X forward, +Y left, +Z up) to the OpenCV convention used
-by NoPoSplat. The release has ego-camera depth but no scene depth; with
-`GAUDP_USE_SCENE=1`, the scene still receives RGB reconstruction loss while its
-NaN depth is excluded from depth L1.
-
-The recommended end-to-end path for this export is therefore:
-
-```bash
-bash process_data.sh mhbench cocarry cocarry ee 100
-bash train_gaussian.sh mhbench cocarry cocarry ee 0 0 --finetune-mode heads
-bash extract_gaussian_features.sh mhbench cocarry cocarry ee 0 0
-bash train.sh mhbench cocarry cocarry ee 0 0
-```
-
-## 2. Fine-tune Gaussian reconstruction
-
-This optional stage requires RGB, depth, camera intrinsics, and camera poses.
-The current LeRobot v2.1 release contains all required supervision for the two
-ego views, so both `train_gaussian.sh` and `eval_gaussian.sh` are supported.
-
-The six positional arguments are `<bench> <ckpt> <env_cfg> <action_type>
-<seed> <gpu>`. Any remaining arguments are forwarded to
-`train_gaussian.py`.
-
-```bash
-# Use GPU 0, seed 0, and the default Gaussian hyperparameters. The official
-# NoPoSplat checkpoint is downloaded automatically on the first run. Full
-# fine-tuning is the default and updates the complete ViT-L encoder.
-bash train_gaussian.sh mhbench cocarry cocarry ee 0 0 \
-  --finetune-mode full
-```
-
-Full fine-tuning has about 625M trainable parameters and normally requires a
-GPU with substantially more than 12 GB of VRAM. For local workstation runs,
-freeze the pretrained ViT-L backbone and fine-tune only the depth and Gaussian
-parameter heads (about 94M trainable parameters):
+Head-only fine-tuning is the recommended starting point:
 
 ```bash
 bash train_gaussian.sh mhbench cocarry cocarry ee 0 0 \
@@ -182,309 +92,115 @@ bash train_gaussian.sh mhbench cocarry cocarry ee 0 0 \
   --num-workers 2
 ```
 
-Both modes save the complete encoder state, so their resulting
-`gaussian/{best,last}.ckpt` files are consumed identically by policy training
-and evaluation. The checkpoint records `finetune_mode` for reproducibility.
-Both training scripts print the first batch, every 50 batches, and the final
-batch by default. Each progress record includes loss, percentage, throughput,
-ETA, and allocated/reserved/peak GPU memory, and Gaussian training additionally
-reports RGB loss, depth loss, and PSNR to W&B. Change the cadence with
-`--log-every N` (`--log-every 0` disables batch progress records).
-
-This optimizes the locally vendored NoPoSplat encoder using RGB MSE plus masked
-valid-depth L1. Depth, intrinsics, and camera poses are consumed only in this
-stage. The defaults are 30 epochs, batch size 1, learning rate `1e-5`, depth
-weight `0.1`, and four data workers. A complete override example is:
+The last two positional arguments are `<seed> <gpu>`. Full encoder fine-tuning
+uses considerably more VRAM:
 
 ```bash
 bash train_gaussian.sh mhbench cocarry cocarry ee 0 0 \
-  --finetune-mode full \
-  --epochs 50 \
-  --batch-size 1 \
-  --num-workers 8 \
-  --lr 1e-5 \
-  --depth-weight 0.1 \
-  --wandb-run-name cocarry-gaussian-seed0 \
-  --wandb-tags gaussian,cocarry,seed-0
+  --finetune-mode full
 ```
 
-Run a single train and validation batch before a full experiment to validate
-the data, checkpoint, CUDA rasterizer, and logger setup. The head-only smoke
-test is suitable for a 12 GB workstation GPU; use `--finetune-mode full` here
-only on a GPU with enough memory for full fine-tuning:
-
-```bash
-bash train_gaussian.sh mhbench cocarry cocarry ee 0 0 \
-  --finetune-mode heads \
-  --batch-size 1 \
-  --num-workers 2 \
-  --debug
-```
-
-Outputs are:
+Checkpoints are written to:
 
 ```text
 checkpoints/mhbench-cocarry-cocarry-ee-0/gaussian/best.ckpt
 checkpoints/mhbench-cocarry-cocarry-ee-0/gaussian/last.ckpt
-checkpoints/mhbench-cocarry-cocarry-ee-0/gaussian/metrics.jsonl
-checkpoints/mhbench-cocarry-cocarry-ee-0/gaussian/wandb/
 ```
 
-`best.ckpt` minimizes `val/loss`. Each JSONL/W&B record contains `lr`,
-`train/loss`, `train/rgb_loss`, `train/depth_loss`, `train/psnr`, and the
-corresponding `val/*` metrics. PSNR should increase while the other validation
-metrics decrease; compare them against the unfine-tuned checkpoint on a fixed
-validation split rather than relying on training loss alone.
-
-### Evaluate a Gaussian checkpoint without training
-
-Evaluate the official pretrained NoPoSplat checkpoint on the same held-out
-validation episodes without creating an optimizer or computing gradients. With
-no seventh positional argument, the launcher selects (and downloads if needed)
-`re10k.ckpt` for two views or `re10k_3views.ckpt` for more than two views:
+To evaluate reconstruction on the GauDP validation split:
 
 ```bash
+# Official pretrained NoPoSplat checkpoint
 bash eval_gaussian.sh mhbench cocarry cocarry ee 0 0
-```
 
-To evaluate a fine-tuned GauDP checkpoint, pass its path as the optional seventh
-positional argument:
-
-```bash
+# Fine-tuned checkpoint
 bash eval_gaussian.sh mhbench cocarry cocarry ee 0 0 \
   checkpoints/mhbench-cocarry-cocarry-ee-0/gaussian/best.ckpt
 ```
 
-Additional options are forwarded to `eval_gaussian.py`. For example, this runs
-one validation batch as a smoke test without W&B and uses two data workers:
+### Option B: use the official encoder without fine-tuning
 
-```bash
-bash eval_gaussian.sh mhbench cocarry cocarry ee 0 0 \
-  --debug --wandb-mode disabled --num-workers 2
-```
+Skip `train_gaussian.sh`. Feature extraction automatically uses the official
+NoPoSplat checkpoint when no run-local `gaussian/best.ckpt` exists.
 
-Evaluation defaults to online W&B logging and reports validation RGB MSE,
-masked depth L1, total loss, PSNR, throughput, ETA, and GPU memory. Results are
-written under `checkpoints/<run>/gaussian_eval/noposplat/` for the official
-checkpoint or `gaussian_eval/<checkpoint-stem>/` for an explicitly supplied
-checkpoint. This is same-view reconstruction evaluation: the camera images
-used to construct the Gaussians are also the rendering targets, so these
-numbers do not measure held-out novel-view synthesis.
-
-## 3. Extract Gaussian features offline
-
-Policy training uses Policy-Lightning's offline feature workflow: run the
-selected frozen NoPoSplat encoder once over every converted RGB frame, then
-read its pixel-aligned 13-channel features from HDF5 during every policy epoch.
-The launcher uses the matching `checkpoints/<run>/gaussian/best.ckpt` when it
-exists. Otherwise, when Gaussian fine-tuning is intentionally skipped, it
-automatically downloads and uses the official NoPoSplat checkpoint:
-
-```bash
-bash extract_gaussian_features.sh mhbench cocarry cocarry ee 0 0
-```
-
-Pass a Gaussian encoder checkpoint as the optional seventh positional
-argument to select it explicitly. For example:
+### Extract offline features
 
 ```bash
 bash extract_gaussian_features.sh mhbench cocarry cocarry ee 0 0 \
-  checkpoints/mhbench-cocarry-cocarry-ee-0/gaussian/best.ckpt \
   --batch-size 4 \
   --num-workers 8
 ```
 
-Alternatively, configure both the encoder and feature-cache paths with
-environment variables:
+To select a Gaussian checkpoint explicitly, place it after the GPU argument:
 
 ```bash
-export GAUDP_GAUSSIAN_CKPT=/absolute/path/to/gaussian/best.ckpt
-export GAUDP_GAUSSIAN_FEATURES=/fast/local/nvme/cocarry-gaussian-features.hdf5
+bash extract_gaussian_features.sh mhbench cocarry cocarry ee 0 0 \
+  /absolute/path/to/gaussian/best.ckpt \
+  --batch-size 4
+```
+
+The default cache is:
+
+```text
+checkpoints/mhbench-cocarry-cocarry-ee-0/gaussian/features.hdf5
+```
+
+Use another disk when necessary:
+
+```bash
+export GAUDP_GAUSSIAN_FEATURES=/fast/local/nvme/cocarry-features.hdf5
 bash extract_gaussian_features.sh mhbench cocarry cocarry ee 0 0
 ```
 
-The default output is `checkpoints/<run>/gaussian/features.hdf5`. Extraction
-uses FP16 storage by default, supports interruption/resume, and refuses to use
-an incomplete cache for policy training. `--dtype float32` preserves features
-at full precision; `--compression lzf` or `--compression gzip` trades extraction
-and loading speed for disk space. For the current 23,651-frame, two-camera
-dataset, the uncompressed cache is approximately 88 GiB in FP16 or 176 GiB in
-FP32. Put `GAUDP_GAUSSIAN_FEATURES` on server-local NVMe when possible.
+Use `--overwrite` to replace an existing cache or `--debug` to extract one
+batch as a smoke test.
 
-The cache records the absolute Gaussian checkpoint path. Policy training
-checks that it matches the requested checkpoint, preventing accidental use of
-features produced by a different encoder. To intentionally replace an existing
-cache, pass `--overwrite`. A one-batch extraction test can be run with
-`--debug`; rerunning without `--debug` resumes and completes that cache.
-
-## 4. Train the policy
-
-```bash
-# Uses the Gaussian checkpoint recorded by the offline cache, GPU 0, and seed 0.
-bash train.sh mhbench cocarry cocarry ee 0 0
-```
-
-The completed `features.hdf5` and the exact Gaussian checkpoint recorded in
-that cache are mandatory. `train.sh` uses a matching run-local `best.ckpt` when
-available and otherwise reads the external checkpoint path from the cache.
-NoPoSplat is not constructed or executed during policy training;
-only the Gaussian-image fusion CNN, shared ResNet observation encoder, and
-centralized DDPM are trained. Defaults are horizon 8, 3 observation steps, 6
-returned execution steps, and 100 diffusion steps. Outputs are under the
-sibling `policy/{best,last}.ckpt`. The policy defaults are 300 epochs, batch
-size 8, learning rate `1e-4`, horizon 8, three observation steps, six action
-steps, and 100 DDPM inference steps. For example:
+## 5. Train the policy
 
 ```bash
 bash train.sh mhbench cocarry cocarry ee 0 0 \
-  --epochs 300 \
+  --epochs 30 \
   --batch-size 16 \
   --num-workers 8 \
-  --lr 1e-4 \
-  --horizon 8 \
-  --obs-steps 3 \
-  --action-steps 6 \
-  --inference-steps 100 \
-  --wandb-run-name cocarry-policy-seed0 \
-  --wandb-tags policy,cocarry,seed-0
+  --lr 1e-4
 ```
 
-Use `--debug` for a one-batch smoke test. Override both matching artifacts when
-running a policy ablation or using files stored on server-local NVMe:
+The last two positional arguments are `<seed> <gpu>`. `train.sh` requires the
+completed feature cache from the previous step. Outputs are:
+
+```text
+checkpoints/mhbench-cocarry-cocarry-ee-0/policy/best.ckpt
+checkpoints/mhbench-cocarry-cocarry-ee-0/policy/last.ckpt
+checkpoints/mhbench-cocarry-cocarry-ee-0/policy/metrics.jsonl
+```
+
+Use `best.ckpt`, which minimizes `val/loss`, for evaluation. The program default
+is 300 epochs, but validation can worsen substantially before that; 30 epochs is
+a practical first run. Use `--debug` for a one-batch smoke test.
+
+When the Gaussian checkpoint or feature cache is stored elsewhere:
 
 ```bash
 GAUDP_GAUSSIAN_CKPT=/absolute/path/to/gaussian/best.ckpt \
-GAUDP_GAUSSIAN_FEATURES=/fast/local/nvme/cocarry-gaussian-features.hdf5 \
-bash train.sh mhbench cocarry cocarry ee 0 0 --debug
+GAUDP_GAUSSIAN_FEATURES=/fast/local/nvme/cocarry-features.hdf5 \
+bash train.sh mhbench cocarry cocarry ee 0 0 --epochs 30
 ```
 
-Offline features are a training optimization only. During MHBench evaluation,
-`model.py` still loads the selected Gaussian encoder checkpoint and extracts
-features online from each new RGB observation; the deployment/inference path
-does not read `features.hdf5`. Policy checkpoints record the absolute encoder
-path. If the run is moved to another machine, set `GAUDP_GAUSSIAN_CKPT` or the
-`gaussian_checkpoint` key in `deploy.yml` to the same encoder file; the adapter
-also checks `weights/<recorded-filename>` as a portable fallback.
+## 6. Evaluate in MHBench
 
-The policy stage writes `policy/{best.ckpt,last.ckpt,metrics.jsonl}` and a
-`policy/wandb/` directory. `best.ckpt` minimizes `val/loss`, which is the DDPM
-noise-prediction MSE used to train GauDP. Policy batch and epoch records also
-include:
-
-- `diffusion/noise_cosine`, predicted/target noise RMS, sampled timestep, and
-  SNR to diagnose the denoising objective;
-- clipped clean-action (`x0`) MSE/MAE in normalized action space;
-- separate normalized MSE for robot A, robot B, EEF poses, hands, base
-  velocity, and height, matching GauDP's centralized multi-agent action;
-- pre-clipping gradient norm, gradient-clipping fraction, learning rate,
-  throughput, ETA, epoch time, and GPU memory.
-
-The GauDP paper uses environment rollout success rate as its primary policy
-metric and evaluates 100 episodes; offline action errors are diagnostics rather
-than substitutes for success rate. Consequently, training does not label any
-dataset-only proxy as success. Use the benchmark evaluation launcher to measure
-task success after checkpoints are produced. The paper also reports training
-time and inference FPS; this implementation records training throughput and
-duration continuously, while inference FPS belongs to the separate evaluation
-run.
-
-## Logging: JSONL and Weights & Biases
-
-Both training stages append periodic `record_type=batch` progress records and
-one `record_type=epoch` summary per epoch to `<stage-output>/metrics.jsonl`.
-The same records are sent to W&B. W&B is enabled in `online` mode by default,
-so log in once with `wandb login` before training; no explicit
-`--wandb-mode online` argument is needed.
-
-Inspect the latest local metric without W&B:
-
-```bash
-rg '"record_type": "epoch"' \
-  checkpoints/mhbench-cocarry-cocarry-ee-0/gaussian/metrics.jsonl | tail -n 1 \
-  | python -m json.tool
-rg '"record_type": "epoch"' \
-  checkpoints/mhbench-cocarry-cocarry-ee-0/policy/metrics.jsonl | tail -n 1 \
-  | python -m json.tool
-```
-
-All logger arguments after the GPU are forwarded unchanged. The following
-commands use the default online mode:
-
-```bash
-wandb login
-
-bash train_gaussian.sh mhbench cocarry cocarry ee 0 0 \
-  --wandb-project MHBench-GauDP \
-  --wandb-entity YOUR_ENTITY \
-  --wandb-group cocarry-seed0
-
-bash train.sh mhbench cocarry cocarry ee 0 0 \
-  --wandb-project MHBench-GauDP \
-  --wandb-entity YOUR_ENTITY \
-  --wandb-group cocarry-seed0
-```
-
-For a machine without network access, select offline mode explicitly. Such a
-run can be uploaded later with the path printed by W&B, for example:
-
-```bash
-bash train_gaussian.sh mhbench cocarry cocarry ee 0 0 --wandb-mode offline
-wandb sync checkpoints/mhbench-cocarry-cocarry-ee-0/gaussian/wandb/offline-run-*
-wandb sync checkpoints/mhbench-cocarry-cocarry-ee-0/policy/wandb/offline-run-*
-```
-
-For JSONL-only logging, disable W&B explicitly:
-
-```bash
-bash train_gaussian.sh mhbench cocarry cocarry ee 0 0 --wandb-mode disabled
-bash train.sh mhbench cocarry cocarry ee 0 0 --wandb-mode disabled
-```
-
-The following environment variables provide convenient defaults for both
-stages; explicit command-line arguments take precedence:
-
-```bash
-export GAUDP_WANDB_MODE=online        # default; offline or disabled are opt-in
-export WANDB_PROJECT=MHBench-GauDP
-export WANDB_ENTITY=YOUR_ENTITY       # optional; useful for a team account
-```
-
-Available W&B arguments are `--wandb-mode`, `--wandb-project`,
-`--wandb-entity`, `--wandb-run-name`, `--wandb-group`, and the comma-separated
-`--wandb-tags`. Reusing an output directory appends to its `metrics.jsonl`;
-use a different checkpoint name or seed for a clean experiment history.
-
-The GauDP shell launchers set `PYTHONNOUSERSITE=1` automatically. This prevents
-packages under `~/.local/lib/python*/site-packages` from shadowing the pinned
-packages in the active GauDP environment. In particular, `diffusers==0.27.2`
-expects the environment's `huggingface-hub==0.25.2`; a newer user-site
-`huggingface_hub` can otherwise fail with `cannot import name
-'cached_download'`. When invoking a Python entry point directly, use:
-
-```bash
-PYTHONNOUSERSITE=1 python train_policy.py --help
-```
-
-## Evaluation
-
-**On MHBench, use the shared runner.** It owns the step limit, one policy
-server for the whole job, one client process per episode, sharding and the
-result accounting -- which is what makes two baselines' numbers comparable:
+Run the shared evaluator from the MHBench repository root:
 
 ```bash
 sbatch --partition=suma_rtx4090 --qos=base_qos --exclude=cs-gpu-01 \
   --export=ALL,MHBENCH_WT=$PWD,MHBENCH_SIF=<sif>,ISAAC_ASSETS=<mirror> \
-  -J gaudp-eval-cocarry baselines/scripts/eval_policy.sbatch GauDP cocarry 50 0
+  -J gaudp-eval-cocarry \
+  baselines/scripts/eval_policy.sbatch GauDP cocarry 50 0
 ```
 
-`baselines/scripts/serve/GauDP.sh` is this policy's part of it, and the one
-thing it has to say that no other baseline does is `ACTION_TYPE=ee`: GauDP
-predicts wrist poses, so the environment keeps the task's own Pink IK term
-(`--upper_body_mode pink`) instead of swapping in the joint-space bypass every
-other policy is evaluated under. See [docs/eval.md](../../../../docs/eval.md).
+The final arguments are `<policy> <task> <episodes> <seed>`. Replace the Slurm
+partition, container, and asset paths for the target cluster.
 
-The upstream ten-argument launcher still works and runs one episode against a
-fresh Isaac Sim, which is useful for a wiring check:
+For a single-episode wiring check, run from the GauDP directory:
 
 ```bash
 bash eval.sh \
@@ -492,79 +208,28 @@ bash eval.sh \
   gaudp_env mhbench_env
 ```
 
-The resolver searches
-`checkpoints/<bench>-<ckpt>-<env_cfg>-<action_type>-<seed>/`. `deploy.yml` can
-instead provide a path in `ckpt_name` or one of XPolicyLab's explicit path
-keys. Only `action_type=ee` is supported. Both single and batched observations,
-per-environment history padding, six-action chunks, and `reset()` are handled.
-
-`deploy.py` binds the shared rollout loop at `OBS_STRIDE = 1`
-(`utils/rollout.py`): the policy stacks an `n_obs_steps=3` window, so the
-observations the loop takes inside a chunk are that window and must not be
-skipped.
-
-## Data contract
-
-Images remain RGB throughout. LeRobot MP4 decoding performs the required
-OpenCV BGR-to-RGB conversion immediately after `VideoCapture.read`; no later
-channel swap is applied. The default views are `ego_a` and `ego_b`. Set
-`GAUDP_USE_SCENE=1` consistently for conversion, feature extraction, policy
-training, and evaluation to add `scene` as a third view.
-
-The centralized state is real proprioception, never a copy of action:
+The ten arguments are:
 
 ```text
-robot_a 21 = pelvis xyz+quat_xyzw (7) + left EEF (7) + right EEF (7)
-robot_b 21 = pelvis xyz+quat_xyzw (7) + left EEF (7) + right EEF (7)
-state       = robot_a + robot_b = 42D
+<bench> <task_name> <ckpt> <env_cfg> <action_type> <seed>
+<policy_gpu> <env_gpu> <policy_conda_env> <eval_conda_env>
 ```
 
-Legacy HDF5 stores a raw 32D action per robot. LeRobot v2.1 stores the same
-control components in separate named columns: wrist targets in `action.eef`,
-hand joints in `action`, base velocity in `teleop.navigate_command`, and height
-in `teleop.base_height_command`. In both formats, the hand joints are reduced
-to `[left index_0, left middle_0, right index_0, right middle_0]`, giving:
+## Optional settings
 
-```text
-robot 22 = left EEF pose (7) + right EEF pose (7) + hands (4)
-           + base velocity (3) + height (1)
-action   = robot_a + robot_b = 44D
-```
-
-State and action min/max statistics are fitted and stored independently. At
-evaluation, `mhbench_state` arrives in XPolicyLab's `wxyz` order and is
-explicitly converted to training's `xyzw`. The 44D output is split into two
-22D dictionaries under `mhbench_raw_action`; the MHBench environment expands
-the four hand signals back to its 64D simulator action. Standard XPolicyLab EE
-keys are also populated from robot_a for protocol compatibility.
-
-## Direct entry points and diagnostics
-
-Every Python path is based on `__file__`, so these work from another directory:
+Use the scene camera only when the same setting is applied to every stage:
 
 ```bash
-cd /tmp
-python /path/to/GauDP/process_data.py --help
-python /path/to/GauDP/train_gaussian.py --help
-python /path/to/GauDP/train_policy.py --help
+export GAUDP_USE_SCENE=1
 ```
 
-Common failures:
+Also set `use_scene: true` in `deploy.yml` before evaluation.
 
-- `CUDA rasterizer is unavailable`: rerun `install.sh` in the same environment
-  and ensure its CUDA toolkit matches PyTorch.
-- `No module named 'pkg_resources'` while building a CUDA extension: rerun the
-  updated `install.sh`, which keeps `setuptools<81` for PyTorch 2.1 compatibility.
-- cuRoPE import/build error: verify `nvcc` is available and rebuild the vendored
-  `gaudp/third_party/noposplat/model/encoder/backbone/croco/curope` package.
-- view-count mismatch: use `GAUDP_USE_SCENE=1` (or omit it) consistently across
-  all three phases and set `use_scene` equivalently in `deploy.yml`.
-- `LeRobot parquet conversion requires pyarrow`: rerun `install.sh`; GauDP now
-  installs the pinned parquet reader used by `process_data.py`.
-- `no Gaussian reconstruction supervision`: the converted source is an older
-  RGB-only export. Use the current release, or skip Gaussian fine-tuning and
-  run `extract_gaussian_features.sh` with the official/existing checkpoint.
-- missing `mhbench_state`: use `scripts/mhbench_xpolicylab_env.py`; GauDP
-  intentionally refuses the lossy generic-state/action fallback.
-- missing policy checkpoint: run the Gaussian stage first, then policy training;
-  both stages must share the five-part run name and seed.
+Useful path overrides are:
+
+```bash
+export MHBENCH_DATASET_PATH=/absolute/path/to/lerobot-root
+export GAUDP_NOPOSPLAT_CKPT=/absolute/path/to/noposplat.ckpt
+export GAUDP_GAUSSIAN_CKPT=/absolute/path/to/gaussian/best.ckpt
+export GAUDP_GAUSSIAN_FEATURES=/absolute/path/to/features.hdf5
+```

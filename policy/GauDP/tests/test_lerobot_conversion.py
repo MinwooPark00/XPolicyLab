@@ -6,9 +6,14 @@ import pytest
 
 from XPolicyLab.policy.GauDP.gaudp.dataset import (
     GaussianFrameDataset,
+    _LazyH5Dataset,
     _OPENCV_TO_ISAAC_CAMERA,
 )
-from XPolicyLab.policy.GauDP.process_data import _camera_intrinsics, _lerobot_state_action
+from XPolicyLab.policy.GauDP.process_data import (
+    _camera_intrinsics,
+    _lerobot_state_action,
+    _official_split_masks,
+)
 
 
 def _pose_names(robot, prefix):
@@ -118,3 +123,27 @@ def test_current_lerobot_camera_metadata_and_axis_contract():
     np.testing.assert_array_equal(right, [0.0, -1.0, 0.0])
     np.testing.assert_array_equal(down, [0.0, 0.0, -1.0])
     np.testing.assert_array_equal(forward, [1.0, 0.0, 0.0])
+
+
+def test_official_split_masks_follow_episode_ids_after_selection():
+    info = {"total_episodes": 60, "splits": {"train": "0:50", "val": "50:60"}}
+    train, val = _official_split_masks(info, [0, 10, 49, 50, 59])
+    np.testing.assert_array_equal(train, [True, True, True, False, False])
+    np.testing.assert_array_equal(val, [False, False, False, True, True])
+    assert _official_split_masks(info, list(range(10))) is None
+
+
+def test_converted_split_masks_override_legacy_95_5(tmp_path):
+    path = tmp_path / "split.hdf5"
+    with h5py.File(path, "w") as target:
+        target.create_dataset("episode_ends", data=np.asarray([1, 2, 3, 4], dtype=np.int64))
+        target.create_dataset("train_mask", data=np.asarray([True, True, False, False]))
+        target.create_dataset("val_mask", data=np.asarray([False, False, True, True]))
+        target.attrs["split_source"] = "meta/info.json"
+        target.attrs["camera_order"] = json.dumps(["ego_a", "ego_b"])
+        target.attrs["state_dim"] = 42
+        target.attrs["action_dim"] = 44
+    dataset = _LazyH5Dataset(path)
+    assert dataset.split_ids(train=True) == [0, 1]
+    assert dataset.split_ids(train=False) == [2, 3]
+    assert dataset.split_source == "meta/info.json"

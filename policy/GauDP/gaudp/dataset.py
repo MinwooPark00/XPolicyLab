@@ -61,8 +61,31 @@ class _LazyH5Dataset(Dataset):
             self.source_format = str(source.attrs.get("source_format", "mhbench-hdf5"))
             self.gaussian_supervision = bool(source.attrs.get("gaussian_supervision", True))
             self.camera_pose_convention = str(source.attrs.get("camera_pose_convention", "opengl"))
+            count = len(self.episode_ends)
+            if "train_mask" in source and "val_mask" in source:
+                self.train_mask = np.asarray(source["train_mask"], dtype=bool)
+                self.val_mask = np.asarray(source["val_mask"], dtype=bool)
+                if self.train_mask.shape != (count,) or self.val_mask.shape != (count,):
+                    raise ValueError("train_mask/val_mask must contain one value per episode")
+                if np.any(self.train_mask & self.val_mask):
+                    raise ValueError("train_mask and val_mask overlap")
+                if not self.train_mask.any() or not self.val_mask.any():
+                    raise ValueError("train_mask and val_mask must both contain at least one episode")
+                self.split_source = str(source.attrs.get("split_source", "dataset"))
+            else:
+                train_ids = split_episode_ids(count, train=True)
+                val_ids = split_episode_ids(count, train=False)
+                self.train_mask = np.zeros(count, dtype=bool)
+                self.train_mask[train_ids] = True
+                self.val_mask = np.zeros(count, dtype=bool)
+                self.val_mask[val_ids] = True
+                self.split_source = "95:5-fallback"
             if int(source.attrs["state_dim"]) != PROPRIO_DIM or int(source.attrs["action_dim"]) != ACTION_DIM:
                 raise ValueError("dataset does not follow GauDP's 42D state / 44D action contract")
+
+    def split_ids(self, train: bool) -> list[int]:
+        mask = self.train_mask if train else self.val_mask
+        return np.flatnonzero(mask).tolist()
 
     @property
     def file(self) -> h5py.File:
@@ -121,7 +144,7 @@ class GauDPSequenceDataset(_LazyH5Dataset):
                 raise ValueError(f"Gaussian feature extraction is incomplete: {self.gaussian_features_path}")
             self.gaussian_checkpoint = str(features.attrs.get("gaussian_checkpoint", ""))
         ranges = _episode_ranges(self.episode_ends)
-        self.ranges = [ranges[i] for i in split_episode_ids(len(ranges), train)]
+        self.ranges = [ranges[i] for i in self.split_ids(train)]
         self.samples = [(episode, t) for episode, (start, end) in enumerate(self.ranges) for t in range(start, end)]
 
     @property
@@ -198,7 +221,7 @@ class GaussianFrameDataset(_LazyH5Dataset):
                 "extract_gaussian_features.sh instead."
             )
         ranges = _episode_ranges(self.episode_ends)
-        chosen = [ranges[i] for i in split_episode_ids(len(ranges), train)]
+        chosen = [ranges[i] for i in self.split_ids(train)]
         self.indices = [index for start, end in chosen for index in range(start, end)]
 
     def __len__(self) -> int:

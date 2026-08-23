@@ -33,8 +33,16 @@ from XPolicyLab.utils.process_data import get_batch_size, get_robot_action_dim_i
 IMAGE_SIZE = (240, 320)
 
 
+def _require_finite(name: str, value: np.ndarray) -> np.ndarray:
+    value = np.asarray(value)
+    if not np.isfinite(value).all():
+        bad = int(value.size - np.isfinite(value).sum())
+        raise ValueError(f"{name} contains {bad} NaN/Inf value(s)")
+    return value
+
+
 def _to_chw_float(image: np.ndarray) -> np.ndarray:
-    image = np.asarray(image)
+    image = _require_finite("camera color", image)
     if image.ndim != 3 or image.shape[-1] != 3:
         raise ValueError(f"camera color must be HWC RGB, got {image.shape}")
     tensor = torch.as_tensor(image).permute(2, 0, 1).unsqueeze(0).float().div_(255.0)
@@ -49,7 +57,10 @@ def encode_observation(observation: dict, use_scene: bool) -> tuple[np.ndarray, 
         camera_keys.append("cam_head")
     images = np.stack([_to_chw_float(vision[key]["color"]) for key in camera_keys])
     state = np.concatenate([proprio_from_observation(observation, robot) for robot in ROBOT_NAMES])
-    return images.astype(np.float32), state.astype(np.float32)
+    return (
+        _require_finite("encoded observation images", images).astype(np.float32),
+        _require_finite("encoded proprioception", state).astype(np.float32),
+    )
 
 
 def _checkpoint_file(root: Path, stage: str, preference: str) -> Path:
@@ -162,6 +173,7 @@ class Model(ModelTemplate):
             raise RuntimeError("get_action_batch() called before update_obs_batch()")
         images, state = self.runner.batch(indices, self.device)
         action = self.model.predict_action(images, state).cpu().numpy()
+        _require_finite("predicted action", action)
         return [
             [pack_xpolicy_action(action[batch, step], self.ee_dim) for step in range(action.shape[1])]
             for batch in range(action.shape[0])
