@@ -98,19 +98,29 @@ GauDP's own `encoder_state` checkpoints are both accepted.
 - a legacy raw `.hdf5`, HDF5 shard directory, or HDF5 dataset root understood
   by `scripts/_dataset.py`.
 
-For `bench=cocarry`, the default source is `datasets/cocarry_test`. Override it
-with `MHBENCH_DATASET_PATH` when the dataset is elsewhere:
+The default source is `datasets/<scene>/lerobot`, where `<scene>` is the
+`env_cfg` argument without its underscore — `door_passage` reads
+`datasets/doorpassage/lerobot`, the two spellings the rest of the bench
+accepts. The pre-reorg layouts (`datasets/<bench>_test`, then `datasets/data`)
+are still tried in that order, so a copy from before the reorg still resolves.
+
+**The conversion prints which export it picked**, with its date, commit,
+episode count and the task's own first sentence. Read it: a machine with more
+than one worktree of this repo has more than one `datasets/`, and cocarry went
+from a board on two stands to a laundry basket in a kitchen on 2026-08-21 under
+the same directory name. Override with `MHBENCH_DATASET_PATH` when the export
+you want is elsewhere:
 
 ```bash
-export MHBENCH_DATASET_PATH=/lustre/meat124/mhbench_ws/MHBench/datasets/cocarry_test
-bash process_data.sh cocarry experiment cocarry ee 100
+export MHBENCH_DATASET_PATH=/lustre/meat124/mhbench_ws/MHBench/datasets/cocarry/lerobot
+bash process_data.sh mhbench cocarry cocarry ee 100
 ```
 
 Do not point `MHBENCH_DATASET_PATH` at its `data/` child: GauDP also needs the
 sibling `meta/` and `videos/` directories. The optional fifth argument limits
 episode count.
 
-This writes `data/cocarry-experiment-cocarry-ee.hdf5` with the stable GauDP
+This writes `data/mhbench-cocarry-cocarry-ee.hdf5` with the stable GauDP
 42D state, 44D action, RGB, Gaussian reconstruction supervision, and episode
 boundaries. LeRobot columns are mapped by their dimension names in
 `meta/info.json`, not by fragile numeric offsets:
@@ -136,10 +146,10 @@ NaN depth is excluded from depth L1.
 The recommended end-to-end path for this export is therefore:
 
 ```bash
-bash process_data.sh cocarry experiment cocarry ee 100
-bash train_gaussian.sh cocarry experiment cocarry ee 0 0 --finetune-mode heads
-bash extract_gaussian_features.sh cocarry experiment cocarry ee 0 0
-bash train.sh cocarry experiment cocarry ee 0 0
+bash process_data.sh mhbench cocarry cocarry ee 100
+bash train_gaussian.sh mhbench cocarry cocarry ee 0 0 --finetune-mode heads
+bash extract_gaussian_features.sh mhbench cocarry cocarry ee 0 0
+bash train.sh mhbench cocarry cocarry ee 0 0
 ```
 
 ## 2. Fine-tune Gaussian reconstruction
@@ -156,7 +166,7 @@ The six positional arguments are `<bench> <ckpt> <env_cfg> <action_type>
 # Use GPU 0, seed 0, and the default Gaussian hyperparameters. The official
 # NoPoSplat checkpoint is downloaded automatically on the first run. Full
 # fine-tuning is the default and updates the complete ViT-L encoder.
-bash train_gaussian.sh cocarry experiment cocarry ee 0 0 \
+bash train_gaussian.sh mhbench cocarry cocarry ee 0 0 \
   --finetune-mode full
 ```
 
@@ -166,7 +176,7 @@ freeze the pretrained ViT-L backbone and fine-tune only the depth and Gaussian
 parameter heads (about 94M trainable parameters):
 
 ```bash
-bash train_gaussian.sh cocarry experiment cocarry ee 0 0 \
+bash train_gaussian.sh mhbench cocarry cocarry ee 0 0 \
   --finetune-mode heads \
   --batch-size 1 \
   --num-workers 2
@@ -187,7 +197,7 @@ stage. The defaults are 30 epochs, batch size 1, learning rate `1e-5`, depth
 weight `0.1`, and four data workers. A complete override example is:
 
 ```bash
-bash train_gaussian.sh cocarry experiment cocarry ee 0 0 \
+bash train_gaussian.sh mhbench cocarry cocarry ee 0 0 \
   --finetune-mode full \
   --epochs 50 \
   --batch-size 1 \
@@ -204,7 +214,7 @@ test is suitable for a 12 GB workstation GPU; use `--finetune-mode full` here
 only on a GPU with enough memory for full fine-tuning:
 
 ```bash
-bash train_gaussian.sh cocarry experiment cocarry ee 0 0 \
+bash train_gaussian.sh mhbench cocarry cocarry ee 0 0 \
   --finetune-mode heads \
   --batch-size 1 \
   --num-workers 2 \
@@ -214,10 +224,10 @@ bash train_gaussian.sh cocarry experiment cocarry ee 0 0 \
 Outputs are:
 
 ```text
-checkpoints/cocarry-experiment-cocarry-ee-0/gaussian/best.ckpt
-checkpoints/cocarry-experiment-cocarry-ee-0/gaussian/last.ckpt
-checkpoints/cocarry-experiment-cocarry-ee-0/gaussian/metrics.jsonl
-checkpoints/cocarry-experiment-cocarry-ee-0/gaussian/wandb/
+checkpoints/mhbench-cocarry-cocarry-ee-0/gaussian/best.ckpt
+checkpoints/mhbench-cocarry-cocarry-ee-0/gaussian/last.ckpt
+checkpoints/mhbench-cocarry-cocarry-ee-0/gaussian/metrics.jsonl
+checkpoints/mhbench-cocarry-cocarry-ee-0/gaussian/wandb/
 ```
 
 `best.ckpt` minimizes `val/loss`. Each JSONL/W&B record contains `lr`,
@@ -234,22 +244,22 @@ no seventh positional argument, the launcher selects (and downloads if needed)
 `re10k.ckpt` for two views or `re10k_3views.ckpt` for more than two views:
 
 ```bash
-bash eval_gaussian.sh cocarry experiment cocarry ee 0 0
+bash eval_gaussian.sh mhbench cocarry cocarry ee 0 0
 ```
 
 To evaluate a fine-tuned GauDP checkpoint, pass its path as the optional seventh
 positional argument:
 
 ```bash
-bash eval_gaussian.sh cocarry experiment cocarry ee 0 0 \
-  checkpoints/cocarry-experiment-cocarry-ee-0/gaussian/best.ckpt
+bash eval_gaussian.sh mhbench cocarry cocarry ee 0 0 \
+  checkpoints/mhbench-cocarry-cocarry-ee-0/gaussian/best.ckpt
 ```
 
 Additional options are forwarded to `eval_gaussian.py`. For example, this runs
 one validation batch as a smoke test without W&B and uses two data workers:
 
 ```bash
-bash eval_gaussian.sh cocarry experiment cocarry ee 0 0 \
+bash eval_gaussian.sh mhbench cocarry cocarry ee 0 0 \
   --debug --wandb-mode disabled --num-workers 2
 ```
 
@@ -271,15 +281,15 @@ exists. Otherwise, when Gaussian fine-tuning is intentionally skipped, it
 automatically downloads and uses the official NoPoSplat checkpoint:
 
 ```bash
-bash extract_gaussian_features.sh cocarry experiment cocarry ee 0 0
+bash extract_gaussian_features.sh mhbench cocarry cocarry ee 0 0
 ```
 
 Pass a Gaussian encoder checkpoint as the optional seventh positional
 argument to select it explicitly. For example:
 
 ```bash
-bash extract_gaussian_features.sh cocarry experiment cocarry ee 0 0 \
-  checkpoints/cocarry-experiment-cocarry-ee-0/gaussian/best.ckpt \
+bash extract_gaussian_features.sh mhbench cocarry cocarry ee 0 0 \
+  checkpoints/mhbench-cocarry-cocarry-ee-0/gaussian/best.ckpt \
   --batch-size 4 \
   --num-workers 8
 ```
@@ -290,7 +300,7 @@ environment variables:
 ```bash
 export GAUDP_GAUSSIAN_CKPT=/absolute/path/to/gaussian/best.ckpt
 export GAUDP_GAUSSIAN_FEATURES=/fast/local/nvme/cocarry-gaussian-features.hdf5
-bash extract_gaussian_features.sh cocarry experiment cocarry ee 0 0
+bash extract_gaussian_features.sh mhbench cocarry cocarry ee 0 0
 ```
 
 The default output is `checkpoints/<run>/gaussian/features.hdf5`. Extraction
@@ -311,7 +321,7 @@ cache, pass `--overwrite`. A one-batch extraction test can be run with
 
 ```bash
 # Uses the Gaussian checkpoint recorded by the offline cache, GPU 0, and seed 0.
-bash train.sh cocarry experiment cocarry ee 0 0
+bash train.sh mhbench cocarry cocarry ee 0 0
 ```
 
 The completed `features.hdf5` and the exact Gaussian checkpoint recorded in
@@ -326,7 +336,7 @@ size 8, learning rate `1e-4`, horizon 8, three observation steps, six action
 steps, and 100 DDPM inference steps. For example:
 
 ```bash
-bash train.sh cocarry experiment cocarry ee 0 0 \
+bash train.sh mhbench cocarry cocarry ee 0 0 \
   --epochs 300 \
   --batch-size 16 \
   --num-workers 8 \
@@ -345,7 +355,7 @@ running a policy ablation or using files stored on server-local NVMe:
 ```bash
 GAUDP_GAUSSIAN_CKPT=/absolute/path/to/gaussian/best.ckpt \
 GAUDP_GAUSSIAN_FEATURES=/fast/local/nvme/cocarry-gaussian-features.hdf5 \
-bash train.sh cocarry experiment cocarry ee 0 0 --debug
+bash train.sh mhbench cocarry cocarry ee 0 0 --debug
 ```
 
 Offline features are a training optimization only. During MHBench evaluation,
@@ -390,10 +400,10 @@ Inspect the latest local metric without W&B:
 
 ```bash
 rg '"record_type": "epoch"' \
-  checkpoints/cocarry-experiment-cocarry-ee-0/gaussian/metrics.jsonl | tail -n 1 \
+  checkpoints/mhbench-cocarry-cocarry-ee-0/gaussian/metrics.jsonl | tail -n 1 \
   | python -m json.tool
 rg '"record_type": "epoch"' \
-  checkpoints/cocarry-experiment-cocarry-ee-0/policy/metrics.jsonl | tail -n 1 \
+  checkpoints/mhbench-cocarry-cocarry-ee-0/policy/metrics.jsonl | tail -n 1 \
   | python -m json.tool
 ```
 
@@ -403,12 +413,12 @@ commands use the default online mode:
 ```bash
 wandb login
 
-bash train_gaussian.sh cocarry experiment cocarry ee 0 0 \
+bash train_gaussian.sh mhbench cocarry cocarry ee 0 0 \
   --wandb-project MHBench-GauDP \
   --wandb-entity YOUR_ENTITY \
   --wandb-group cocarry-seed0
 
-bash train.sh cocarry experiment cocarry ee 0 0 \
+bash train.sh mhbench cocarry cocarry ee 0 0 \
   --wandb-project MHBench-GauDP \
   --wandb-entity YOUR_ENTITY \
   --wandb-group cocarry-seed0
@@ -418,16 +428,16 @@ For a machine without network access, select offline mode explicitly. Such a
 run can be uploaded later with the path printed by W&B, for example:
 
 ```bash
-bash train_gaussian.sh cocarry experiment cocarry ee 0 0 --wandb-mode offline
-wandb sync checkpoints/cocarry-experiment-cocarry-ee-0/gaussian/wandb/offline-run-*
-wandb sync checkpoints/cocarry-experiment-cocarry-ee-0/policy/wandb/offline-run-*
+bash train_gaussian.sh mhbench cocarry cocarry ee 0 0 --wandb-mode offline
+wandb sync checkpoints/mhbench-cocarry-cocarry-ee-0/gaussian/wandb/offline-run-*
+wandb sync checkpoints/mhbench-cocarry-cocarry-ee-0/policy/wandb/offline-run-*
 ```
 
 For JSONL-only logging, disable W&B explicitly:
 
 ```bash
-bash train_gaussian.sh cocarry experiment cocarry ee 0 0 --wandb-mode disabled
-bash train.sh cocarry experiment cocarry ee 0 0 --wandb-mode disabled
+bash train_gaussian.sh mhbench cocarry cocarry ee 0 0 --wandb-mode disabled
+bash train.sh mhbench cocarry cocarry ee 0 0 --wandb-mode disabled
 ```
 
 The following environment variables provide convenient defaults for both
@@ -457,11 +467,28 @@ PYTHONNOUSERSITE=1 python train_policy.py --help
 
 ## Evaluation
 
-Use the same ten-argument XPolicyLab launcher convention as other policies:
+**On MHBench, use the shared runner.** It owns the step limit, one policy
+server for the whole job, one client process per episode, sharding and the
+result accounting -- which is what makes two baselines' numbers comparable:
+
+```bash
+sbatch --partition=suma_rtx4090 --qos=base_qos --exclude=cs-gpu-01 \
+  --export=ALL,MHBENCH_WT=$PWD,MHBENCH_SIF=<sif>,ISAAC_ASSETS=<mirror> \
+  -J gaudp-eval-cocarry baselines/scripts/eval_policy.sbatch GauDP cocarry 50 0
+```
+
+`baselines/scripts/serve/GauDP.sh` is this policy's part of it, and the one
+thing it has to say that no other baseline does is `ACTION_TYPE=ee`: GauDP
+predicts wrist poses, so the environment keeps the task's own Pink IK term
+(`--upper_body_mode pink`) instead of swapping in the joint-space bypass every
+other policy is evaluated under. See [docs/eval.md](../../../../docs/eval.md).
+
+The upstream ten-argument launcher still works and runs one episode against a
+fresh Isaac Sim, which is useful for a wiring check:
 
 ```bash
 bash eval.sh \
-  cocarry Isaac-CoCarry-G1x2-v0 experiment cocarry ee 0 0 0 \
+  mhbench Isaac-CoCarry-G1x2-v0 cocarry cocarry ee 0 0 0 \
   gaudp_env mhbench_env
 ```
 
@@ -470,6 +497,11 @@ The resolver searches
 instead provide a path in `ckpt_name` or one of XPolicyLab's explicit path
 keys. Only `action_type=ee` is supported. Both single and batched observations,
 per-environment history padding, six-action chunks, and `reset()` are handled.
+
+`deploy.py` binds the shared rollout loop at `OBS_STRIDE = 1`
+(`utils/rollout.py`): the policy stacks an `n_obs_steps=3` window, so the
+observations the loop takes inside a chunk are that window and must not be
+skipped.
 
 ## Data contract
 
