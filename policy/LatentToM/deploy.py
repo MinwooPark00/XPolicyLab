@@ -1,42 +1,19 @@
-def eval_one_episode(TASK_ENV, model_client):
+"""Rollout loop for LatentToM.
 
-    model_client.call(func_name="reset") # reset policy
+`OBS_STRIDE = 1` is the shared loop unchanged -- observe after every executed
+step -- and this policy needs it. Both arms condition on a window:
+`sheaf_xarm_split_diffusion_workspace.yaml` sets `n_obs_steps: 2`, `SheafRunner`
+holds that many frames per arm per environment, and `_stack_last_n` feeds the
+whole window to each arm's `SheafObsEncoder`. The observations the loop collects
+inside a chunk are that window, so skipping them would hand both arms the same
+frame twice -- no motion between them -- for the twenty steps of a chunk.
 
-    while not TASK_ENV.is_episode_end(): # Check whether the episode ends
-        obs = TASK_ENV.get_obs() # Get Observation
-        model_client.call(func_name="update_obs", obs=obs)  # Update Observation
-        actions = model_client.call(func_name="get_action") # Get Action according to observation chunk
+`scripts/eval_policy_xpolicylab.py` reads this value to decide whether
+`MHBenchTaskEnv.get_obs` may re-serve a cached render; 1 renders every step.
+"""
 
-        for action_idx, action in enumerate(actions):
-            TASK_ENV.take_action(action)
+from XPolicyLab.utils.rollout import bind
 
-            if TASK_ENV.is_episode_end() or action_idx + 1 == len(actions):
-                break
+OBS_STRIDE = 1
 
-            obs = TASK_ENV.get_obs()
-            model_client.call(func_name="update_obs", obs=obs)
-
-def eval_one_episode_batch(TASK_ENV, model_client):
-
-    model_client.call(func_name="reset")
-
-    while not TASK_ENV.is_episode_end(): # Check whether the episode ends
-        env_idx_list = TASK_ENV.get_running_env_idx_list() # Get Running Environment Index List
-        obs_list = TASK_ENV.get_obs_batch(env_idx_list) # Get Observation
-        model_client.call(func_name="update_obs_batch", obs=obs_list)
-        actions = model_client.call(func_name="get_action_batch", obs=env_idx_list)  # Get Action according to observation chunk
-
-        chunk_size = len(actions[0]) # Get the chunk size
-        for action_idx in range(chunk_size): # Iterate over the action chunk
-            current_action_list = [env_actions[action_idx] for env_actions in actions] # Get the current action list
-            TASK_ENV.take_action_batch(current_action_list, env_idx_list) # Take the action
-
-            if TASK_ENV.is_episode_end() or action_idx + 1 == chunk_size: # Check whether the episode ends
-                break
-
-            running = set(TASK_ENV.get_running_env_idx_list()) # Get the running environment index list
-            active_batch_idx = [i for i, env_idx in enumerate(env_idx_list) if env_idx in running] # Get the active batch index
-
-            actions = [actions[i] for i in active_batch_idx] # Get the active action list
-            env_idx_list = [env_idx_list[i] for i in active_batch_idx] # Get the active environment index list
-            model_client.call(func_name="update_obs_batch", obs=TASK_ENV.get_obs_batch(env_idx_list)) # Update the observation
+eval_one_episode, eval_one_episode_batch = bind(OBS_STRIDE)

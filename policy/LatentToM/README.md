@@ -33,8 +33,9 @@ Diffusion Policy and GR00T all train on — and writes upstream LatentToM's own 
 `data/<bench_name>-<ckpt_name>-<env_cfg_type>-<action_type>/{replay_buffer.zarr,
 videos/<episode>/<camera>.mp4}`.
 
-The source defaults to `datasets/<env_cfg_type>` — the exported copy of the task directory
-of the same name. Set `MHBENCH_DATASET_PATH` for anything else (an export kept outside the repo).
+The source defaults to `datasets/<task>/lerobot`, where `<task>` is `env_cfg_type` without its
+underscore — `door_passage` reads `datasets/doorpassage/lerobot`, the two spellings the rest of the
+bench already accepts. Set `MHBENCH_DATASET_PATH` for an export kept anywhere else.
 
 ## Training
 
@@ -54,8 +55,13 @@ bash eval.sh <bench_name> <task_name> <ckpt_name> <env_cfg_type> <action_type> <
   <policy_gpu_id> <env_gpu_id> <policy_conda_env> <eval_env_conda_env>
 ```
 
-`deploy.py`/`eval.sh`/`setup_eval_*.sh` are unmodified copies of `policy/demo_policy`'s — only
-`model.py` differs.
+`eval.sh`/`setup_eval_*.sh` are `policy/demo_policy`'s. `deploy.py` binds the shared rollout loop
+at `OBS_STRIDE = 1` (`utils/rollout.py`): both arms condition on an `n_obs_steps: 2` window, so the
+per-step observations inside a chunk are that window and must not be skipped.
+
+On MHBench, `baselines/scripts/eval_policy.sbatch LatentToM <task>` is the shared runner — one
+server, per-episode client processes, sharding and result accounting — and
+`baselines/scripts/serve/LatentToM.sh` is where this policy's part of it lives.
 
 ## Quick end-to-end check
 
@@ -72,20 +78,21 @@ bash install.sh
 # 1) Convert data. Reads datasets/cocarry/lerobot -- env_cfg_type names the task directory too.
 #    Set MHBENCH_DATASET_PATH to read from anywhere else. Run scripts/export_lerobot.py
 #    in the main repo first if that directory doesn't exist yet.
-bash process_data.sh mhbench verify cocarry joint
+bash process_data.sh mhbench cocarry cocarry joint
 # -> data/mhbench-verify-cocarry-joint/{replay_buffer.zarr,videos/}
 
 # 2) Train. training.debug=true is a fast plumbing check.
-bash train.sh mhbench verify cocarry joint 0 0 training.debug=true
-# -> checkpoints/mhbench-verify-cocarry-joint-0/checkpoints/{arm1,arm2}_latest.ckpt
+bash train.sh mhbench cocarry cocarry joint 0 0 training.debug=true
+# -> checkpoints/mhbench-cocarry-cocarry-joint-0/checkpoints/{arm1,arm2}_latest.ckpt
+#    which is the name baselines/scripts/serve/LatentToM.sh serves from.
 
 # 3) Evaluate, no simulator (fastest wiring check)
 export EVAL_ENV_TYPE=debug
-bash eval.sh mhbench verify verify cocarry joint 0 0 0 <policy_env> <policy_env>
+bash eval.sh mhbench cocarry cocarry cocarry joint 0 0 0 <policy_env> <policy_env>
 
-# 4) Evaluate against the real Isaac Sim env
-export EVAL_ENV_TYPE=sim   # or: unset EVAL_ENV_TYPE
-bash eval.sh mhbench verify verify cocarry joint 0 0 0 <policy_env> <policy_env>
+# 4) Evaluate against the real Isaac Sim env. On MHBench prefer the shared runner,
+#    which owns the step limit, per-episode processes, sharding and scoring:
+#      sbatch ... baselines/scripts/eval_policy.sbatch LatentToM cocarry 50 0
 ```
 
 ## Model contract details
@@ -93,13 +100,14 @@ bash eval.sh mhbench verify verify cocarry joint 0 0 0 <policy_env> <policy_env>
 - **Proprio** (`arm{1,2}_proprio`, 43D each): joint angles, 7 URDF groups (legs, waist, arms,
   hands) — `mhbench_keys.JOINT_GROUPS`'s exact key order, read via each dataset's own
   `meta/modality.json` (never hardcoded offsets).
-- **Action** (`arm{1,2}_action`, 35D each): 28 joint targets (arm+hand groups) + base_height(1) +
+- **Action** (`arm{1,2}_action`, 35D each): 31 joint targets (arm+hand+waist groups) + base_height(1) +
   navigate_command(3) — `mhbench_keys.action_keys(robot)`'s exact key order. Joint-space
   throughout; no rotation representation to pick.
 - Camera mapping (`_encode_arm_obs` in `model.py`): `cam_left_wrist`→`camera_1` (arm1/robot_a
   private), `cam_head`→`camera_3` (shared), `cam_right_wrist`→`camera_4` (arm2/robot_b private).
-- `EVAL_ENV_TYPE=sim`: `model.py` decodes/encodes joint-space now, and `MHBenchTaskEnv` drives the
-  env through `mhbench.g1.actions.joint_target_action_cfg` (Pink IK bypassed) and reports proprio
-  via `get_obs()`'s `mhbench_state.<robot>.joint_pos`. Structurally wired and consistent with
-  `convert_to_replay_buffer.py`'s training-side layout, but not yet run against a real checkpoint --
-  verify before trusting it end to end.
+- `EVAL_ENV_TYPE=sim`: joint-space end to end. `MHBenchTaskEnv` runs with
+  `upper_body_mode="joint"` — `mhbench.g1.actions.joint_target_action_cfg`, Pink IK bypassed — and
+  reports proprio via `get_obs()`'s `mhbench_state.<robot>.joint_pos`. `serve/LatentToM.sh` sets
+  `ACTION_TYPE=joint`, which is what selects that mode. Consistent with
+  `convert_to_replay_buffer.py`'s training-side layout by construction, but not yet run against a
+  trained checkpoint — the first run is the one that confirms it.

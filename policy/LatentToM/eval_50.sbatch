@@ -8,6 +8,15 @@
 # because a second episode in the same process reliably crashes Kit after a
 # grasp force-limit break and no reset reachable from Python clears it.
 #
+# **Inside the MHBench repo, use `baselines/scripts/eval_policy.sbatch LatentToM
+# <task>` instead.** This file was written before that runner existed and holds
+# its own copy of the episode protocol, the step limit and the result
+# accounting -- which are the things that have to be identical across policies
+# for two numbers to be comparable, so a second copy of them is a liability
+# rather than a convenience. It is kept because it assumes nothing about the
+# cluster or the surrounding repo, which the shared runner does; use it where
+# that matters, and expect the shared runner's numbers to be the published ones.
+#
 #   MHBENCH_ROOT=/path/to/MHBench \
 #     sbatch -J latenttom-eval eval_50.sbatch <ckpt_name> [env_cfg] [episodes] [seed]
 #

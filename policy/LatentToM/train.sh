@@ -71,9 +71,13 @@ export NUMEXPR_NUM_THREADS="${NUMEXPR_NUM_THREADS:-1}"
 PY="${CONDA_PREFIX:-}/bin/python"
 [ -x "$PY" ] || PY=python
 
+# One task config for every MHBench two-G1 scene -- they present identical
+# shapes to this policy, and the scene is named by `dataset_path` and the run
+# directory below. LATENTTOM_TASK_CONFIG points at a different one (upstream's
+# `sheaf_split_coffee_bean_pouring`, say, or a per-task override).
 "$PY" "${POLICY_DIR}/train.py" \
     --config-name=sheaf_xarm_split_diffusion_workspace \
-    task=mhbench_cocarry_sheaf_split \
+    task="${LATENTTOM_TASK_CONFIG:-mhbench_sheaf_split}" \
     task.dataset_path="${dataset_path}" \
     task_name="${ckpt_name}" \
     training.seed="${seed}" \

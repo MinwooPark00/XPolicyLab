@@ -9,8 +9,9 @@ exactly ``mhbench_keys.action_keys(robot)``'s key list; proprio is the plain
 43D joint block (``mhbench_keys.JOINT_GROUPS``)
 
     state  43 = 7 URDF joint groups: legs(12) + waist(3) + arms(14) + hands(14)
-    action 35 = 28 joint targets (arm+hand groups, no legs)
-                + base_height(1) + navigate_command(3)
+    action 35 = 31 joint targets (ACTION_JOINT_GROUPS: left_arm 7, right_arm 7,
+                left_hand 7, right_hand 7, waist 3 -- no legs, the locomotion
+                policy owns those) + base_height(1) + navigate_command(3)
 """
 
 from __future__ import annotations
