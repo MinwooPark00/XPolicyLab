@@ -23,6 +23,26 @@ checkpoint_num: latest
 inference_scheduler: null      # ddpm | ddim
 num_inference_steps: null      # e.g. 10 with ddim
 
+# --- keep the commanded action inside the range it was trained on ----------
+# `fitted` clamps every dimension to the [min, max] the checkpoint's own
+# normalizer was fitted on. It matters because `mode: limits` maps a
+# dimension that never moves in the data -- `base_height_command` is a
+# constant 0.72 m in every MHBench demonstration, and one hand per robot
+# never moves -- to scale 1 / offset -min, leaving `clip_sample`'s [-1, 1]
+# box as the only bound on the *raw* command: 1.72 m of hip height.
+# Off by default: it changes what is commanded, so it belongs behind an A/B.
+action_clip: null              # fitted | null
+
+# --- keep the OBSERVATION inside the range it was trained on ----------------
+# The load-bearing half. `clip_sample` bounds what leaves the sampler; nothing
+# bounds what enters the encoder. `mode: limits` gives a joint the operator
+# never moved a normalization gain set by the range it happened to show --
+# 2852 per radian for one of framehang's idle finger joints, whose whole
+# recorded range is 0.0007 rad. A rollout hands that encoder values in the
+# hundreds where it was trained on [-1, 1]. `fitted` clamps agent_pos to the
+# checkpoint's own fitted range.
+obs_clip: null                 # fitted | null
+
 # --- MHBench (bench_name=mhbench, env_cfg_type=unitree_g1x2_decentralized): ---
 # one server drives both robots from two single-robot DP checkpoints. ckpt_name
 # is the task (cocarry/handover); per-robot dirs resolve to

@@ -120,19 +120,93 @@ def _pack_dual_arm_action(flat_action: np.ndarray) -> dict:
     }
 
 
+def fitted_obs_bounds(policy):
+    """The per-dimension [min, max] `agent_pos` the checkpoint's normalizer was
+    fitted on.
+
+    `clip_sample` bounds what comes *out* of the sampler; nothing bounds what
+    goes *in*, and `mode: limits` divides each observation dimension by the
+    range the demonstrations happened to show it over. A joint the operator
+    never moved has almost no range -- in MHBench's framehang set, `robot_a`'s
+    right hand and `robot_b`'s left hand are idle, and one of their finger
+    joints spans 0.0007 rad across all 28,549 recorded steps. That is above
+    `range_eps` (1e-4), so it is not treated as constant; it is given a gain of
+    2852 normalized units per radian, and a 0.2 rad move hands the encoder 570
+    where it was trained on [-1, 1].
+
+    That is the return half of a loop, not its start. Measured on framehang's
+    centralized rollout, the commanded action leaves its own range first and
+    the observation follows: normalized `agent_pos` reaches 1.7 by step 6 and
+    9.7 by step 30 -- the step the action explodes -- then 2463 by step 42,
+    once a 1.72 m hip-height command has actually moved the robot. Clamping
+    the action instead keeps the observation inside the fitted range for a
+    whole 1000-step episode (max 1.01). So either clamp cuts the loop, and
+    both were measured to: 7 falls in 10 episodes become 0 with `action_clip`
+    alone, and 0 with `obs_clip` alone.
+    """
+    stats = policy.normalizer.params_dict["agent_pos"]["input_stats"]
+    return (
+        stats["min"].detach().cpu().numpy().astype(np.float32),
+        stats["max"].detach().cpu().numpy().astype(np.float32),
+    )
+
+
+def fitted_action_bounds(policy):
+    """The per-dimension [min, max] the checkpoint's own normalizer was fitted
+    on, as numpy.
+
+    Why an evaluation would want them: `LinearNormalizer` in `limits` mode
+    gives a dimension whose training range is zero (`base_height_command` is a
+    constant 0.72 m in every MHBench demonstration, and one hand per robot
+    never moves) `scale = 1`, `offset = -min` -- an identity. The sampler's
+    `clip_sample` then bounds that dimension's *raw* command to `value +/- 1.0`,
+    so an out-of-distribution sample commands 1.72 m of hip height, or a
+    full-scale base velocity, in units the robot takes literally. Those are
+    the dimensions the balance controller reads.
+    """
+    stats = policy.normalizer.params_dict["action"]["input_stats"]
+    return (
+        stats["min"].detach().cpu().numpy().astype(np.float32),
+        stats["max"].detach().cpu().numpy().astype(np.float32),
+    )
+
+
 class Model(ModelTemplate):
 
     def __init__(self, model_cfg):
+        # Fallback only. The authority on how many frames a policy conditions
+        # on, and how many it emits, is the served checkpoint -- `_load_policy`
+        # overwrites both from `policy.n_obs_steps` / `policy.n_action_steps`.
+        # Reading `robot_dp.yaml` alone would serve every previously trained
+        # checkpoint with whatever window the *current* config happens to say,
+        # which is a silent train/eval mismatch the moment the file is edited
+        # (it was: n_obs_steps went 3 -> 1 in 0db9c1c).
         load_config_path = os.path.join(parent_dir, 'diffusion_policy/config/robot_dp.yaml')
         with open(load_config_path, "r", encoding="utf-8") as f:
             model_training_config = yaml.safe_load(f)
         self.n_obs_steps = model_training_config['n_obs_steps']
         self.n_action_steps = model_training_config['n_action_steps']
         self.action_type = model_cfg['action_type']
+        self._dump_calls = 0
+        self._dump_episode = -1
+        self._dump_last_obs = None
         # Evaluation-time sampler. Both default to None = whatever the
         # checkpoint was trained and saved with (see configure_sampler).
         self._inference_scheduler = model_cfg.get('inference_scheduler')
         self._num_inference_steps = model_cfg.get('num_inference_steps')
+        # 'fitted' clamps every commanded dimension to the range the
+        # checkpoint's normalizer was fitted on (see
+        # fitted_action_bounds). Default None = today's behaviour.
+        self._action_clip = model_cfg.get('action_clip')
+        # 'fitted' clamps agent_pos to the range the checkpoint's normalizer
+        # was fitted on, before the policy sees it (see fitted_obs_bounds).
+        self._obs_clip = model_cfg.get('obs_clip')
+        self._obs_bounds_of = {}
+        # Keyed by policy, not stored once: the two decentralized checkpoints
+        # fit their own 35D ranges and they are NOT the same -- robot_a's idle
+        # hand is the right one, robot_b's the left -- so one robot's bounds
+        # would clamp the wrong seven columns of the other's action.
+        self._bounds_of = {}
 
         self._mhbench_decentralized = (
             str(model_cfg.get("bench_name") or "") == "mhbench"
@@ -143,8 +217,8 @@ class Model(ModelTemplate):
             return
 
         self._mhbench_dual_robot = False  # set per-batch in update_obs_batch
-        self.runner = DPRunner(n_obs_steps=self.n_obs_steps, n_action_steps=self.n_action_steps)
         self.model = self.get_model(model_cfg=model_cfg)
+        self.runner = DPRunner(n_obs_steps=self.n_obs_steps, n_action_steps=self.n_action_steps)
         try:
             self.robot_action_dim_info = get_robot_action_dim_info(model_cfg['env_cfg_type'])
         except FileNotFoundError:
@@ -191,6 +265,7 @@ class Model(ModelTemplate):
                 raise FileNotFoundError(f"{robot} checkpoint not found: {ckpt_dir}")
 
             self._sub_policies[robot] = self._load_policy(ckpt_dir, model_cfg.get('checkpoint_num', 'latest'))
+            # After _load_policy, so the runner is sized by the checkpoint.
             self._sub_runners[robot] = DPRunner(n_obs_steps=self.n_obs_steps, n_action_steps=self.n_action_steps)
             print(f"[DP][mhbench] {robot}: {ckpt_dir} (camera={camera_name})")
 
@@ -212,9 +287,43 @@ class Model(ModelTemplate):
 
         configure_sampler(policy, self._inference_scheduler, self._num_inference_steps)
 
+        # The checkpoint decides the observation window and the chunk length.
+        # `DPRunner` stacks exactly `n_obs_steps` frames, so a mismatch here
+        # feeds the policy a window it was never trained on -- and at
+        # n_obs_steps > 1 it also means the rollout loop must observe every
+        # step (deploy.py's OBS_STRIDE, or --obs_stride 1), or the stack is
+        # padded with copies of one frame instead of a real history.
+        served_obs = int(getattr(policy, "n_obs_steps", self.n_obs_steps))
+        served_action = int(getattr(policy, "n_action_steps", self.n_action_steps))
+        if (served_obs, served_action) != (self.n_obs_steps, self.n_action_steps):
+            print(f"[DP] checkpoint was trained with n_obs_steps={served_obs} "
+                  f"n_action_steps={served_action}; robot_dp.yaml says "
+                  f"{self.n_obs_steps}/{self.n_action_steps} -- serving the checkpoint's")
+        self.n_obs_steps, self.n_action_steps = served_obs, served_action
+        if served_obs > 1:
+            print(f"[DP] n_obs_steps={served_obs}: the rollout loop must observe every step "
+                  f"(EVAL_OBS_STRIDE=1), or the observation window is padded, not real")
+
         device = torch.device("cuda:0")
         policy.to(device)
         policy.eval()
+
+        if self._action_clip is not None:
+            if str(self._action_clip).lower() not in ("fitted", "true", "1"):
+                raise ValueError(f"action_clip must be 'fitted' or null, got {self._action_clip!r}")
+            low, high = fitted_action_bounds(policy)
+            print(f"[DP][action_clip] clamping to the fitted action range, "
+                  f"{int(((high - low) < 1e-4).sum())} of {low.size} dims have zero range")
+            self._bounds_of[id(policy)] = (low, high)
+
+        if self._obs_clip is not None:
+            if str(self._obs_clip).lower() not in ("fitted", "true", "1"):
+                raise ValueError(f"obs_clip must be 'fitted' or null, got {self._obs_clip!r}")
+            low, high = fitted_obs_bounds(policy)
+            gain = 2.0 / np.maximum(high - low, 1e-9)
+            print(f"[DP][obs_clip] clamping agent_pos to the fitted range; "
+                  f"largest normalization gain {gain.max():.0f} per unit on dim {int(gain.argmax())}")
+            self._obs_bounds_of[id(policy)] = (low, high)
 
         return policy
 
@@ -260,9 +369,15 @@ class Model(ModelTemplate):
         env_idx_list = [obs["env_idx"] for obs in obs_list]
 
         if self._mhbench_decentralized:
+            merged = {}
             for robot, runner in self._sub_runners.items():
                 encoded = [self._encode_mhbench_robot_obs(obs, robot) for obs in obs_list]
+                for item in encoded:
+                    item["agent_pos"] = self._clip_obs(item["agent_pos"], self._sub_policies[robot])
+                if encoded:
+                    merged.update({f"{robot}_{k}": v for k, v in encoded[0].items()})
                 runner.update_obs(encoded, env_idx_list)
+            self._dump_last_obs = merged or None
             self._latest_env_idx_list = env_idx_list
             return
 
@@ -271,6 +386,9 @@ class Model(ModelTemplate):
             encode_obs(obs, self.action_type, self.robot_action_dim_info, self._mhbench_dual_robot)
             for obs in obs_list
         ]
+        for encoded in encoded_list:
+            encoded["agent_pos"] = self._clip_obs(encoded["agent_pos"], self.model)
+        self._dump_last_obs = encoded_list[0] if encoded_list else None
         self.runner.update_obs(encoded_list, env_idx_list)
         self._latest_env_idx_list = env_idx_list
 
@@ -291,6 +409,73 @@ class Model(ModelTemplate):
 
         return action_list[0]
 
+    def _clip_obs(self, agent_pos, policy):
+        """Clamp agent_pos to the range `policy`'s normalizer was fitted on.
+
+        The return half of the loop `_clip_action` cuts on the way out; see
+        `fitted_obs_bounds`. Either one alone stops the rollout diverging, so
+        turning both on is belt and braces rather than two fixes.
+        """
+        bounds = self._obs_bounds_of.get(id(policy))
+        if bounds is None:
+            return agent_pos
+        low, high = bounds
+        if low.size != agent_pos.shape[-1]:
+            raise ValueError(
+                f"obs_clip bounds are {low.size}D but agent_pos is {agent_pos.shape[-1]}D"
+            )
+        return np.clip(agent_pos, low, high)
+
+    def _clip_action(self, actions, policy):
+        """Clamp a (..., D) action to the range `policy`'s own normalizer was
+        fitted on, when `action_clip` asks for it."""
+        bounds = self._bounds_of.get(id(policy))
+        if bounds is None:
+            return actions
+        low, high = bounds
+        if low.size != actions.shape[-1]:
+            raise ValueError(
+                f"action_clip bounds are {low.size}D but the action is {actions.shape[-1]}D"
+            )
+        return np.clip(actions, low, high)
+
+    # ------------------------------------------------------------------
+    # Diagnostics. MHBENCH_DP_DUMP=<dir> makes the server write, per
+    # get_action call, exactly what it was handed and exactly what it
+    # answered -- the numbers a rollout failure has to be explained by and
+    # that no log holds today. Off unless the variable is set; nothing on
+    # the normal path reads it. MHBENCH_DP_DUMP_LIMIT caps the files per
+    # episode (default 400 calls = 2400 control steps).
+    # ------------------------------------------------------------------
+    def _dump_dir(self):
+        root = os.environ.get("MHBENCH_DP_DUMP")
+        if not root:
+            return None
+        os.makedirs(root, exist_ok=True)
+        return root
+
+    def _dump(self, obs_encoded, actions, action_pred=None):
+        root = self._dump_dir()
+        if root is None:
+            return
+        limit = int(os.environ.get("MHBENCH_DP_DUMP_LIMIT", "400"))
+        if self._dump_calls >= limit:
+            return
+        payload = {"call": np.int64(self._dump_calls), "episode": np.int64(self._dump_episode)}
+        for key, value in obs_encoded.items():
+            arr = np.asarray(value)
+            if arr.ndim == 3 and arr.shape[0] == 3:           # CHW float image
+                arr = (np.clip(arr, 0, 1) * 255).astype(np.uint8)
+            payload[f"obs_{key}"] = arr
+        payload["action"] = np.asarray(actions, dtype=np.float32)
+        if action_pred is not None:
+            payload["action_pred"] = np.asarray(action_pred, dtype=np.float32)
+        np.savez_compressed(
+            os.path.join(root, f"ep{self._dump_episode:03d}_call{self._dump_calls:04d}.npz"),
+            **payload,
+        )
+        self._dump_calls += 1
+
     def get_action_batch(self, env_idx_list=None):
         if env_idx_list is None:
             env_idx_list = self._latest_env_idx_list
@@ -299,9 +484,17 @@ class Model(ModelTemplate):
 
         if self._mhbench_decentralized:
             per_robot = {
-                robot: runner.get_action(self._sub_policies[robot], env_idx_list)
+                robot: self._clip_action(
+                    runner.get_action(self._sub_policies[robot], env_idx_list),
+                    self._sub_policies[robot],
+                )
                 for robot, runner in self._sub_runners.items()
             }  # each: (len(env_idx_list), n_action_steps, 35)
+            if self._dump_last_obs is not None:
+                self._dump(
+                    self._dump_last_obs,
+                    np.concatenate([per_robot["robot_a"][0], per_robot["robot_b"][0]], axis=-1),
+                )
             steps = min(arr.shape[1] for arr in per_robot.values())
             return [
                 [
@@ -317,6 +510,9 @@ class Model(ModelTemplate):
             ]
 
         actions = self.runner.get_action(self.model, env_idx_list)  # (len(env_idx_list), n_action_steps, action_dim)
+        actions = self._clip_action(actions, self.model)
+        if self._dump_last_obs is not None:
+            self._dump(self._dump_last_obs, actions[0])
 
         if self._mhbench_dual_robot:
             return [
@@ -330,6 +526,8 @@ class Model(ModelTemplate):
         ]
 
     def reset(self):
+        self._dump_episode += 1
+        self._dump_calls = 0
         if self._mhbench_decentralized:
             for runner in self._sub_runners.values():
                 runner.reset_obs()
