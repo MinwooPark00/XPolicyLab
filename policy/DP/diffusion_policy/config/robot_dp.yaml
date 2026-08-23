@@ -113,6 +113,9 @@ training:
   # replace BatchNorm with GroupNorm.
   use_ema: True
   freeze_encoder: False
+  # Gaussian noise on agent_pos during training, in radians (see
+  # robotworkspace.py). 0.0 = off, which is what every run before this used.
+  obs_noise: 0.0
   # training loop control
   # in epochs
   rollout_every: 50
@@ -135,6 +138,10 @@ logging:
   group: null
 
 checkpoint:
+  # Suffixes the checkpoint run directory (checkpoints/<run>-<seed>-<run_tag>),
+  # matching eval_policy.sbatch's CKPT_TAG. Null = the plain name; set it for
+  # any run that must not overwrite an existing one.
+  run_tag: null
   topk:
     monitor_key: test_mean_score
     mode: max

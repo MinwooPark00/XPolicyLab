@@ -69,6 +69,35 @@ if [ -d "${val_zarr_path}" ]; then
     val_override=(task.dataset.val_zarr_path="${val_zarr_path}")
 fi
 
+# Optional overrides, empty = robot_dp.yaml's own value. The temporal ones
+# exist because that file's defaults were chosen for 10 Hz data: at MHBench's
+# 50 Hz an 8-step horizon is 0.16 s, over which the demonstrated action moves
+# 1.5% of each dimension's range -- close enough to "repeat agent_pos" that a
+# network can score a near-zero training loss without learning the task.
+# DP_RUN_TAG keeps a run's checkpoints out of an existing run's directory.
+OVERRIDES=()
+[ -n "${DP_HORIZON:-}" ]        && OVERRIDES+=("horizon=${DP_HORIZON}")
+[ -n "${DP_N_OBS_STEPS:-}" ]    && OVERRIDES+=("n_obs_steps=${DP_N_OBS_STEPS}")
+[ -n "${DP_N_ACTION_STEPS:-}" ] && OVERRIDES+=("n_action_steps=${DP_N_ACTION_STEPS}")
+[ -n "${DP_NUM_EPOCHS:-}" ]     && OVERRIDES+=("training.num_epochs=${DP_NUM_EPOCHS}")
+[ -n "${DP_CKPT_EVERY:-}" ]     && OVERRIDES+=("training.checkpoint_every=${DP_CKPT_EVERY}")
+# task.dataset.batch_size interpolates dataloader.batch_size, so it follows.
+[ -n "${DP_BATCH_SIZE:-}" ]     && OVERRIDES+=("dataloader.batch_size=${DP_BATCH_SIZE}" "val_dataloader.batch_size=${DP_BATCH_SIZE}")
+[ -n "${DP_RUN_TAG:-}" ]        && OVERRIDES+=("checkpoint.run_tag=${DP_RUN_TAG}")
+[ -n "${DP_WANDB_MODE:-}" ]     && OVERRIDES+=("logging.mode=${DP_WANDB_MODE}")
+[ -n "${DP_LR:-}" ]             && OVERRIDES+=("optimizer.lr=${DP_LR}")
+[ -n "${DP_NUM_WORKERS:-}" ]    && OVERRIDES+=("dataloader.num_workers=${DP_NUM_WORKERS}" "val_dataloader.num_workers=${DP_NUM_WORKERS}")
+[ -n "${DP_OBS_NOISE:-}" ]      && OVERRIDES+=("training.obs_noise=${DP_OBS_NOISE}")
+# `random_crop: True` in robot_dp.yaml is a silent no-op while crop_shape is
+# null -- MultiImageObsEncoder only builds a CropRandomizer when a crop shape
+# is given, so the vision encoder trains with no augmentation at all. Written
+# HxW (e.g. 216x288) rather than as a list, because sbatch --export splits its
+# own argument on commas and `[216,288]` would not survive the trip.
+if [ -n "${DP_CROP_SHAPE:-}" ]; then
+    OVERRIDES+=("policy.obs_encoder.crop_shape=[${DP_CROP_SHAPE%x*},${DP_CROP_SHAPE#*x}]")
+fi
+[ ${#OVERRIDES[@]} -gt 0 ] && echo -e "\033[33m[INFO] overrides: ${OVERRIDES[*]}\033[0m"
+
 python train.py --config-name="${alg_name}.yaml" \
                 bench_name="${bench_name}" \
                 task.name="${ckpt_name}" \
@@ -82,4 +111,5 @@ python train.py --config-name="${alg_name}.yaml" \
                 training.device="cuda:0" \
                 exp_name=${exp_name} \
                 logging.mode=${wandb_mode} \
-                setting=${env_cfg_type}
+                setting=${env_cfg_type} \
+                ${OVERRIDES[@]+"${OVERRIDES[@]}"}

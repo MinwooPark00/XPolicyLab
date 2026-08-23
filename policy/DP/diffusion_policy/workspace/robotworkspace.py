@@ -164,6 +164,29 @@ class RobotWorkspace(BaseWorkspace):
                         batch = dataset.postprocess(batch, device)
                         if train_sampling_batch is None:
                             train_sampling_batch = batch
+                        # Proprioceptive noise, in the raw units the state is
+                        # recorded in (radians / metres), applied before the
+                        # policy's own normalizer sees it.
+                        #
+                        # The rollout is what asks for this. A policy trained
+                        # without it is only ever shown joint configurations
+                        # that lie exactly on a demonstration: measured on
+                        # framehang's centralized checkpoint, 0.02 rad of noise
+                        # on agent_pos -- one degree, less than the drift the
+                        # rollout accumulates in its first 30 steps -- moves the
+                        # predicted action's error by 12x and pushes 15% of the
+                        # commanded dimensions onto clip_sample's box. The
+                        # conditioning is valid on the demo manifold and
+                        # nowhere else, so the first step off it is the last
+                        # useful one. 0.0 (the default) is the behaviour that
+                        # produced that measurement.
+                        obs_noise = float(getattr(cfg.training, "obs_noise", 0.0) or 0.0)
+                        if obs_noise > 0:
+                            pos = batch["obs"]["agent_pos"]
+                            batch["obs"] = {
+                                **batch["obs"],
+                                "agent_pos": pos + torch.randn_like(pos) * obs_noise,
+                            }
                         # compute loss
                         raw_loss = self.model.compute_loss(batch)
                         loss = raw_loss / cfg.training.gradient_accumulate_every
@@ -266,11 +289,22 @@ class RobotWorkspace(BaseWorkspace):
                     # checkpoints/<bench>-<ckpt>-<env_cfg>-<action>-<seed>/ regardless of cwd.
                     save_name = pathlib.Path(self.cfg.task.dataset.zarr_path).stem
                     policy_dir = pathlib.Path(__file__).resolve().parents[2]
-                    self.save_checkpoint(str(policy_dir / "checkpoints" / f"{save_name}-{seed}" / f"{self.epoch + 1}.ckpt"))
+                    # `checkpoint.run_tag` suffixes the run directory, the same
+                    # way eval_policy.sbatch's CKPT_TAG suffixes what it looks
+                    # for. Without it a second run of the same task and seed
+                    # silently overwrites the first one's checkpoints, which is
+                    # how a baseline gets lost to its own A/B.
+                    run_tag = self.cfg.checkpoint.get("run_tag", None)
+                    run_dir = f"{save_name}-{seed}" + (f"-{run_tag}" if run_tag else "")
+                    self.save_checkpoint(str(policy_dir / "checkpoints" / run_dir / f"{self.epoch + 1}.ckpt"))
 
                 # ========= eval end for this epoch ==========
                 policy.train()
 
+                # What the batch size actually cost, so the next run's is a
+                # measurement rather than a guess.
+                if torch.cuda.is_available():
+                    step_log["gpu_peak_gb"] = torch.cuda.max_memory_allocated() / 2**30
                 # end of epoch
                 # log of last step is combined with validation and rollout
                 wandb_run.log(step_log, step=self.global_step)
