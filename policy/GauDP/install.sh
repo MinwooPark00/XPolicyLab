@@ -146,6 +146,24 @@ if toolkit.split(".")[0] != runtime.split(".")[0]:
 print(f"[GauDP] CUDA toolchain: {nvcc}={toolkit}, PyTorch={runtime}")
 PY
 
+    # Which GPUs the extensions are built for. Without this, PyTorch targets
+    # whatever card the build host happens to expose, and an extension whose
+    # setup.py declares no architecture list of its own gets exactly that one.
+    # That is not a build error and not an import error: the module loads, and
+    # the process SEGFAULTS the first time a kernel with no matching cubin is
+    # launched. It cost a Gaussian-training run -- the rasterizer had been built
+    # on an Ada card (sm_89 only) and the job landed on an RTX 3090 (sm_86),
+    # which segfaulted one batch in with nothing else on stderr. The policy's
+    # own inference never renders, so evaluation kept working on every card and
+    # only training was affected.
+    #
+    # The default covers the Ampere and Ada classes: A100 (8.0), RTX 3090 /
+    # A6000 / A5000 (8.6), RTX 4090 / RTX 6000 Ada (8.9), H100 (9.0). Add to it
+    # for a newer card, and note that PyTorch has to support the architecture
+    # too -- the CUDA 11.8 wheel this installs by default tops out at 9.0.
+    export TORCH_CUDA_ARCH_LIST="${GAUDP_CUDA_ARCH_LIST:-8.0;8.6;8.9;9.0}"
+    echo "[GauDP] building for TORCH_CUDA_ARCH_LIST=${TORCH_CUDA_ARCH_LIST}"
+
     echo "[GauDP] building vendored cuRoPE (MAX_JOBS=${MAX_JOBS:-4})"
     MAX_JOBS="${MAX_JOBS:-4}" python -m pip install \
         --no-build-isolation --no-cache-dir --force-reinstall --no-deps "${CUROPE_DIR}"
