@@ -923,16 +923,16 @@ _CONFIGS = [
 ]
 
 # -- MHBench ----------------------------------------------------------------
-# Four tasks x three targets. The pair is one policy driving both robots; the
+# Five tasks x three targets. The pair is one policy driving both robots; the
 # other two are the decentralized halves, trained independently and served side
-# by side. Generated rather than written out twelve times, because they differ
+# by side. Generated rather than written out fifteen times, because they differ
 # only in the task, the robot and the instruction row.
 #
 # LoRA, matching the GR00T_N17 baseline these are compared against -- same
 # batch, same step count. `action_dim` is the real action width -- pi0.5 has no
 # `state_proj`, so the state reaches the model as prompt text and its width is
 # independent of this number.
-MHBENCH_TASKS = ("cocarry", "handover", "framehang", "doorpassage")
+MHBENCH_TASKS = ("cocarry", "handover", "handover_easy", "framehang", "doorpassage")
 
 # (suffix, robot, tasks.parquet row). Row order is mhbench_keys.LANGUAGE_KEYS:
 # the pair's shared instruction, then robot_a's, then robot_b's.
@@ -944,7 +944,7 @@ MHBENCH_TARGETS = (
 
 # Measured, not guessed: pi0.5 spells the state out as digits in the prompt, and
 # PaligemmaTokenizer truncates past this with only a logging.warning. Worst case
-# over all four tasks with every value three digits wide is 384 tokens for the
+# over all five tasks with every value three digits wide is 384 tokens for the
 # 86-dim pair and 217 for a single robot's 43. The pi0.5 default of 200 would
 # cut both. `mhbench_policy_test.py` re-measures and asserts the headroom.
 MHBENCH_MAX_TOKEN_LEN = {None: 400, "robot_a": 256, "robot_b": 256}
@@ -1001,7 +1001,7 @@ _CONFIGS.extend(
         val_interval=1000,
         val_batches=16,
         # Keep only the latest checkpoint. pi0.5 params are ~12 GB each, and the
-        # default (every 5000 steps kept forever) would put twelve runs near a
+        # default (every 5000 steps kept forever) would put fifteen runs over a
         # terabyte.
         keep_period=None,
     )

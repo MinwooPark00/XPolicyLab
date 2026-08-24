@@ -346,6 +346,10 @@ MHBENCH_TASK_PROMPTS = {
         "robot_a": "Pick up the bottle from the counter with your left hand, transfer it to your right hand, and hand it across to your partner.",
         "robot_b": "Receive the bottle with your right hand, transfer it to your left hand, and set it down at the far end of the counter.",
     },
+    "handover_easy": {
+        "robot_a": "Pick up the bottle directly in front of you with your right hand and hand it to your partner's right hand.",
+        "robot_b": "Receive the bottle with your right hand, place it on the target directly in front of you, and release it.",
+    },
 }
 
 # Which env camera slot carries each dataset camera: MHBenchTaskEnv.get_obs
@@ -363,6 +367,7 @@ MHBENCH_DUO_PROMPTS = {
     "door_passage": "Open the door and carry the trophy through the doorway onto the stand in the far room.",
     "frame_hang": "Lift the framed painting off the floor together, hang the loop on its top rail on the wall peg, and let go once it is hanging square.",
     "handover": "Pass the bottle from one end of the counter to the other with a hand-to-hand handover.",
+    "handover_easy": "Pass the bottle directly from Robot A's right hand to Robot B's right hand, then place it on the target.",
 }
 
 # The training run token per mode: checkpoints were trained as

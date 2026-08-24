@@ -24,7 +24,11 @@ MHBENCH_ROOT="$(cd "${POLICY_DIR}/../../../.." && pwd)"
 # converted copy from before the datasets/ reorg still resolves:
 #   datasets/<bench>_test   the pre-reorg per-task directory
 #   datasets/data           the original raw-HDF5 root
-task_dir="${env_cfg//_/}"
+case "${env_cfg}" in
+  door_passage) task_dir=doorpassage ;;
+  frame_hang)   task_dir=framehang ;;
+  *)            task_dir="${env_cfg}" ;;
+esac
 for candidate in \
     "${MHBENCH_ROOT}/datasets/${task_dir}/lerobot" \
     "${MHBENCH_ROOT}/datasets/${bench}_test" \

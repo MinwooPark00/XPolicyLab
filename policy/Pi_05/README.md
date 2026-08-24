@@ -18,7 +18,7 @@ per task:
 | centralized | `unitree_g1x2_centralized` | 86 (both robots' joints) | 70 | `ego_a`, `ego_b` | the pair's |
 | robot_a / robot_b | `unitree_g1x2_decentralized` | 43 | 35 | that robot's ego view | that robot's |
 
-Four tasks x three targets = twelve runs. The column layout is derived from
+Five tasks x three targets = fifteen runs. The column layout is derived from
 MHBench's own `configs/gr00t/mhbench_keys.py`, so ACT, DP, GR00T and pi0.5 all
 consume the same numbers in the same order and a difference in score is a
 difference between methods.
@@ -44,7 +44,7 @@ decodes *every* video key on every sample, and the export also holds a room
 camera and two depth streams that no pi0.5 target reads.
 
 `process_data.sh` also computes normalization statistics, which training
-requires. `baselines/scripts/norm_stats_pi05.sbatch` does all twelve on CPU.
+requires. `baselines/scripts/norm_stats_pi05.sbatch` does all fifteen on CPU.
 
 ### Training
 

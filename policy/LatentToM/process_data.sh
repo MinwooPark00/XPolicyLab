@@ -22,7 +22,7 @@ MHBENCH_ROOT="$(cd "${POLICY_DIR}/../../../.." && pwd)"
 # The LeRobot export to convert (has meta/ and data/ inside).
 #
 # `env_cfg_type` names baselines/env_cfg/<name>.yml -- cocarry, handover,
-# door_passage, frame_hang -- and scripts/export_lerobot.py writes that task
+# handover_easy, door_passage, frame_hang -- and scripts/export_lerobot.py writes that task
 # under datasets/<task>/lerobot/. Two things stand between the two names: the
 # task directories are spelled without the underscore (datasets/doorpassage,
 # datasets/framehang), which is the same pair of spellings
@@ -33,7 +33,11 @@ MHBENCH_ROOT="$(cd "${POLICY_DIR}/../../../.." && pwd)"
 #
 # Override for an export kept anywhere else:
 #   MHBENCH_DATASET_PATH=/data/cocarry_v2/lerobot bash process_data.sh ...
-task_dir="${env_cfg_type//_/}"
+case "${env_cfg_type}" in
+  door_passage) task_dir=doorpassage ;;
+  frame_hang)   task_dir=framehang ;;
+  *)            task_dir="${env_cfg_type}" ;;
+esac
 MHBENCH_DATASET_PATH="${MHBENCH_DATASET_PATH:-${MHBENCH_ROOT}/datasets/${task_dir}/lerobot}"
 if [[ ! -d "${MHBENCH_DATASET_PATH}/meta" ]]; then
   echo "[LatentToM] no LeRobot export at ${MHBENCH_DATASET_PATH} (needs meta/ beside data/)." >&2
