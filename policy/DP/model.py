@@ -349,6 +349,10 @@ class Model(ModelTemplate):
         if not os.path.isdir(ckpt_dir):
             raise FileNotFoundError(f"DP checkpoint directory not found: {ckpt_dir}")
 
+        # `latest` here is the highest-numbered checkpoint, which is not the
+        # trainer's `latest.ckpt` -- that one is written every
+        # training.resume_every epochs for the run to continue from, and is
+        # skipped by the isdigit() test below along with `latest.ckpt.tmp`.
         candidates = []
         for name in os.listdir(ckpt_dir):
             if not name.endswith(".ckpt"):

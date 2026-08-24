@@ -129,6 +129,11 @@ training:
   # in epochs
   rollout_every: 50
   checkpoint_every: 50
+  # How often `latest.ckpt` is rewritten, which is how much work a preemption,
+  # a node failure or a TIMEOUT costs -- `resume: True` above picks it up from
+  # the run's checkpoint directory on the next launch. 0 disables it and puts
+  # the run back to starting over. Cheap next to an epoch: one 1.4 GB write.
+  resume_every: 10
   val_every: 1
   sample_every: 5
   # steps per epoch

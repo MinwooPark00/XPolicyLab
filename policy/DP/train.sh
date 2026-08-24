@@ -81,6 +81,8 @@ OVERRIDES=()
 [ -n "${DP_N_ACTION_STEPS:-}" ] && OVERRIDES+=("n_action_steps=${DP_N_ACTION_STEPS}")
 [ -n "${DP_NUM_EPOCHS:-}" ]     && OVERRIDES+=("training.num_epochs=${DP_NUM_EPOCHS}")
 [ -n "${DP_CKPT_EVERY:-}" ]     && OVERRIDES+=("training.checkpoint_every=${DP_CKPT_EVERY}")
+[ -n "${DP_RESUME_EVERY:-}" ]   && OVERRIDES+=("training.resume_every=${DP_RESUME_EVERY}")
+[ -n "${DP_RESUME:-}" ]         && OVERRIDES+=("training.resume=${DP_RESUME}")
 # task.dataset.batch_size interpolates dataloader.batch_size, so it follows.
 [ -n "${DP_BATCH_SIZE:-}" ]     && OVERRIDES+=("dataloader.batch_size=${DP_BATCH_SIZE}" "val_dataloader.batch_size=${DP_BATCH_SIZE}")
 [ -n "${DP_RUN_TAG:-}" ]        && OVERRIDES+=("checkpoint.run_tag=${DP_RUN_TAG}")

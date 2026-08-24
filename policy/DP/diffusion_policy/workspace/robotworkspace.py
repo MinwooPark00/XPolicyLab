@@ -56,16 +56,75 @@ class RobotWorkspace(BaseWorkspace):
         self.global_step = 0
         self.epoch = 0
 
+    # Anything that changes a saved tensor's shape. Resuming across a change to
+    # one of these fails inside load_state_dict with a shape error that names a
+    # layer, not the setting that moved -- so say it here instead.
+    resume_critical_keys = ("horizon", "n_obs_steps", "n_action_steps")
+
+    def run_ckpt_dir(self) -> pathlib.Path:
+        """Where this run's checkpoints live -- stable across jobs.
+
+        `output_dir` is hydra's timestamped directory, which is new on every
+        submission, so a `latest.ckpt` written under it can never be found
+        again. That is why `training.resume` had nothing to resume from and a
+        preempted run started over from epoch 0.
+        """
+        save_name = pathlib.Path(self.cfg.task.dataset.zarr_path).stem
+        # `checkpoint.run_tag` suffixes the run directory, the same way
+        # eval_policy.sbatch's CKPT_TAG suffixes what it looks for. Without it a
+        # second run of the same task and seed silently overwrites the first
+        # one's checkpoints, which is how a baseline gets lost to its own A/B.
+        run_tag = self.cfg.checkpoint.get("run_tag", None)
+        run_dir = f"{save_name}-{self.cfg.training.seed}" + (f"-{run_tag}" if run_tag else "")
+        return pathlib.Path(__file__).resolve().parents[2] / "checkpoints" / run_dir
+
+    def get_checkpoint_path(self, tag="latest"):
+        return self.run_ckpt_dir() / f"{tag}.ckpt"
+
+    def save_latest_checkpoint(self):
+        """Write `latest.ckpt` so that dying mid-write cannot cost the last one.
+
+        The copy lands on `latest.ckpt.tmp` and only a rename -- atomic within a
+        directory -- publishes it, so a job killed while saving leaves the
+        previous `latest.ckpt` intact and resumable. The write is awaited rather
+        than threaded for the same reason: the rename must not run ahead of the
+        bytes it publishes.
+        """
+        if self._saving_thread is not None and self._saving_thread.is_alive():
+            self._saving_thread.join()
+        path = self.get_checkpoint_path()
+        tmp = path.parent / (path.name + ".tmp")
+        self.save_checkpoint(path=tmp, use_thread=True)
+        self._saving_thread.join()
+        self._saving_thread = None
+        os.replace(tmp, path)
+        return str(path)
+
+    def check_resume_compatible(self, saved_cfg):
+        moved = {
+            key: (saved_cfg.get(key, None), self.cfg.get(key, None))
+            for key in self.resume_critical_keys
+            if saved_cfg.get(key, None) != self.cfg.get(key, None)
+        }
+        if moved:
+            raise ValueError(
+                "latest.ckpt was written with different settings: " +
+                ", ".join(f"{k} {was} -> {now}" for k, (was, now) in moved.items()) +
+                ". Resuming would load weights of the wrong shape. Give this run its own "
+                "checkpoint.run_tag (DP_RUN_TAG), or delete "
+                f"{self.get_checkpoint_path()} to start it over.")
+
     def run(self):
         cfg = copy.deepcopy(self.cfg)
-        seed = cfg.training.seed
 
         # resume training
         if cfg.training.resume:
             lastest_ckpt_path = self.get_checkpoint_path()
             if lastest_ckpt_path.is_file():
                 print(f"Resuming from checkpoint {lastest_ckpt_path}")
-                self.load_checkpoint(path=lastest_ckpt_path)
+                payload = self.load_checkpoint(path=lastest_ckpt_path)
+                self.check_resume_compatible(payload["cfg"])
+                print(f"Resumed at epoch {self.epoch} / global_step {self.global_step}")
 
         # configure dataset
         dataset: BaseImageDataset
@@ -98,6 +157,13 @@ class RobotWorkspace(BaseWorkspace):
         ema: EMAModel = None
         if cfg.training.use_ema:
             ema = hydra.utils.instantiate(cfg.ema, model=self.ema_model)
+            # EMAModel keeps its warmup counter outside the workspace, so it is
+            # not in the checkpoint. A resumed job would restart it at 0, where
+            # get_decay returns 0.0 and the very first step overwrites the
+            # averaged weights with the live ones -- discarding the average that
+            # is the thing actually served. One ema.step() per optimizer step is
+            # what global_step counts.
+            ema.optimization_step = self.global_step
 
         # configure env
         # env_runner: BaseImageRunner
@@ -146,7 +212,9 @@ class RobotWorkspace(BaseWorkspace):
         log_path = os.path.join(self.output_dir, "logs.json.txt")
 
         with JsonLogger(log_path) as json_logger:
-            for local_epoch_idx in range(cfg.training.num_epochs):
+            # From self.epoch, not 0: a resumed run finishes num_epochs in
+            # total rather than running num_epochs again.
+            for local_epoch_idx in range(self.epoch, cfg.training.num_epochs):
                 step_log = dict()
                 # ========= train for this epoch ==========
                 if cfg.training.freeze_encoder:
@@ -283,20 +351,11 @@ class RobotWorkspace(BaseWorkspace):
                         del mse
 
                 # checkpoint
+                # run_ckpt_dir() is anchored to the policy directory so eval can
+                # resolve checkpoints/<bench>-<ckpt>-<env_cfg>-<action>-<seed>/
+                # regardless of cwd.
                 if ((self.epoch + 1) % cfg.training.checkpoint_every) == 0:
-                    # checkpointing
-                    # Anchor to the policy directory so eval can resolve
-                    # checkpoints/<bench>-<ckpt>-<env_cfg>-<action>-<seed>/ regardless of cwd.
-                    save_name = pathlib.Path(self.cfg.task.dataset.zarr_path).stem
-                    policy_dir = pathlib.Path(__file__).resolve().parents[2]
-                    # `checkpoint.run_tag` suffixes the run directory, the same
-                    # way eval_policy.sbatch's CKPT_TAG suffixes what it looks
-                    # for. Without it a second run of the same task and seed
-                    # silently overwrites the first one's checkpoints, which is
-                    # how a baseline gets lost to its own A/B.
-                    run_tag = self.cfg.checkpoint.get("run_tag", None)
-                    run_dir = f"{save_name}-{seed}" + (f"-{run_tag}" if run_tag else "")
-                    self.save_checkpoint(str(policy_dir / "checkpoints" / run_dir / f"{self.epoch + 1}.ckpt"))
+                    self.save_checkpoint(str(self.run_ckpt_dir() / f"{self.epoch + 1}.ckpt"))
 
                 # ========= eval end for this epoch ==========
                 policy.train()
@@ -311,6 +370,22 @@ class RobotWorkspace(BaseWorkspace):
                 json_logger.log(step_log)
                 self.global_step += 1
                 self.epoch += 1
+
+                # `latest.ckpt` is what training.resume picks up, so this
+                # interval is how much work a preemption, a node failure or a
+                # TIMEOUT costs. It is deliberately shorter than
+                # checkpoint_every: the numbered checkpoints exist to be
+                # evaluated, this one exists to be continued from.
+                #
+                # Written after the counters advance, so self.epoch means
+                # "epochs finished" rather than "epoch in progress". Saving it
+                # one line earlier makes the resumed run redo the epoch it
+                # already has, and leaves a finished run repeating its last
+                # epoch on every relaunch instead of exiting.
+                resume_every = int(getattr(cfg.training, "resume_every", 0) or 0)
+                if (cfg.checkpoint.get("save_last_ckpt", True) and resume_every > 0
+                        and (self.epoch % resume_every) == 0):
+                    self.save_latest_checkpoint()
 
         wandb_run.finish()
 
