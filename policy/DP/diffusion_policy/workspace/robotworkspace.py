@@ -100,6 +100,31 @@ class RobotWorkspace(BaseWorkspace):
         os.replace(tmp, path)
         return str(path)
 
+    def init_wandb(self, cfg):
+        """wandb.init, where a bookkeeping failure must not cost the run.
+
+        The launcher sets cfg.logging.id to the run name so an evaluation can
+        resume the run that trained the policy. wandb refuses an id that was
+        created and deleted before -- "was previously created and deleted; try
+        a new run id" -- and that refusal killed a job that had already loaded
+        its checkpoint and spent twenty minutes reading its dataset, having
+        trained nothing. Take a generated id instead and keep the name: the name
+        is what a reader compares runs by, and dp_eval_report resolves a run by
+        name when its id is not the name.
+        """
+        kwargs = dict(dir=str(self.output_dir),
+                      config=OmegaConf.to_container(cfg, resolve=True),
+                      **cfg.logging)
+        try:
+            return wandb.init(**kwargs)
+        except Exception as error:  # noqa: BLE001 - any init failure, not just a taken id
+            if not kwargs.get("id"):
+                raise
+            print(f"wandb.init(id={kwargs['id']}) failed ({error}); "
+                  f"retrying with a wandb-generated id, keeping the name")
+            kwargs["id"] = None
+            return wandb.init(**kwargs)
+
     def check_resume_compatible(self, saved_cfg):
         moved = {
             key: (saved_cfg.get(key, None), self.cfg.get(key, None))
@@ -174,11 +199,7 @@ class RobotWorkspace(BaseWorkspace):
         env_runner = None
 
         # configure logging
-        wandb_run = wandb.init(
-            dir=str(self.output_dir),
-            config=OmegaConf.to_container(cfg, resolve=True),
-            **cfg.logging
-        )
+        wandb_run = self.init_wandb(cfg)
         wandb.config.update(
             {
                 "output_dir": self.output_dir,
