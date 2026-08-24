@@ -289,6 +289,7 @@ def create_torch_data_loader(
     num_workers: int = 0,
     seed: int = 0,
     framework: str = "jax",
+    sampler=None,
 ) -> DataLoader[tuple[_model.Observation, _model.Actions]]:
     """Create a data loader for training.
 
@@ -313,7 +314,9 @@ def create_torch_data_loader(
     # Use TorchDataLoader for both frameworks
     # For PyTorch DDP, create DistributedSampler and divide batch size by world size
     # For JAX, divide by process count
-    sampler = None
+    # A caller-supplied `sampler` (a fixed index list, for a validation pass that
+    # has to score the same samples every time) is only overridden by DDP, which
+    # has to shard the dataset across ranks.
     if framework == "pytorch":
         if torch.distributed.is_initialized():
             sampler = torch.utils.data.distributed.DistributedSampler(

@@ -105,6 +105,10 @@ class DataConfig:
     # this a dataset with a held-out validation split would be trained on in
     # full.
     episodes: Sequence[int] | None = None
+    # Episodes to score but never train on. Set alongside `episodes` from the
+    # same `meta/info.json`; `None` means the trainer has nothing to validate
+    # against and skips the pass.
+    val_episodes: Sequence[int] | None = None
 
     # Only used for RLDS data loader (ie currently only used for DROID).
     rlds_data_dir: str | None = None
@@ -461,9 +465,11 @@ class LeRobotMHBenchDataConfig(DataConfigFactory):
     # of `mhbench_keys.LANGUAGE_KEYS`.
     prompt_task_index: int = 0
 
-    # Split of `meta/info.json` to train on. MHBench holds out the last ten
-    # episodes; without this the loader would take all sixty.
+    # Splits of `meta/info.json`. MHBench holds out the last episodes; without
+    # `train_split` the loader would take all of them, and `val_split` is what
+    # the trainer scores so the curve is not entirely on data it is fitting.
     train_split: str = "train"
+    val_split: str = "val"
 
     # The chunk is assembled from three columns: joint targets, the base height
     # command and the navigation command. All three need delta_timestamps.
@@ -481,20 +487,23 @@ class LeRobotMHBenchDataConfig(DataConfigFactory):
         root = pathlib.Path(HF_LEROBOT_HOME) / self.repo_id
         return root if (root / "meta" / "info.json").exists() else None
 
-    def _train_episodes(self, root: pathlib.Path | None) -> Sequence[int] | None:
+    def _split_episodes(self, root: pathlib.Path | None, split: str, *, required: bool) -> Sequence[int] | None:
         # No dataset on this host means nothing is going to read it either --
         # `create_trained_policy` builds a DataConfig just to reach the
         # transforms. Only a dataset that is present but does not declare the
-        # split is an error worth raising.
+        # split is an error worth raising, and only for the training split: an
+        # export with no validation episodes is a smaller run, not a wrong one.
         if root is None:
             return None
         splits = json.loads((root / "meta" / "info.json").read_text()).get("splits") or {}
-        if self.train_split not in splits:
+        if split not in splits:
+            if not required:
+                return None
             raise ValueError(
-                f"{root} declares no {self.train_split!r} split (has {sorted(splits) or 'none'}); "
+                f"{root} declares no {split!r} split (has {sorted(splits) or 'none'}); "
                 "re-export it or training will silently include the held-out episodes."
             )
-        start, end = (int(bound) for bound in splits[self.train_split].split(":"))
+        start, end = (int(bound) for bound in splits[split].split(":"))
         return tuple(range(start, end))
 
     def _prompt(self, root: pathlib.Path | None) -> str:
@@ -553,7 +562,8 @@ class LeRobotMHBenchDataConfig(DataConfigFactory):
             data_transforms=data_transforms,
             model_transforms=model_transforms,
             action_sequence_keys=self.action_sequence_keys,
-            episodes=self._train_episodes(root),
+            episodes=self._split_episodes(root, self.train_split, required=True),
+            val_episodes=self._split_episodes(root, self.val_split, required=False),
         )
 
 
@@ -717,6 +727,15 @@ class TrainConfig:
 
     # How often (in steps) to log training metrics.
     log_interval: int = 100
+    # How often (in steps) to score the held-out split. `None` -- the default,
+    # and upstream's only behaviour -- never scores it, so a run's loss curve is
+    # entirely on data it is fitting. Needs `DataConfig.val_episodes`.
+    val_interval: int | None = None
+    # Batches per validation pass. The loader is built unshuffled and finite, so
+    # every pass sees the same samples, and the noise the flow-matching loss
+    # draws is fixed too: without both, consecutive validations differ by more
+    # than the model moved between them.
+    val_batches: int = 16
     # How often (in steps) to save checkpoints.
     save_interval: int = 1000
     # If set, any existing checkpoints matching step % keep_period == 0 will not be deleted.
@@ -976,6 +995,11 @@ _CONFIGS.extend(
         # 16 CPUs per GPU on the partitions these run on (DefCpuPerGPU=16);
         # video decode is the loader's cost and 8 leaves half of them idle.
         num_workers=12,
+        # GR00T_N17 scores its held-out split every 1000 steps over at most 512
+        # samples (train_groot_*.sbatch: EVAL_STEPS, EVAL_MAX_SAMPLES); 16
+        # batches of 32 is the same 512.
+        val_interval=1000,
+        val_batches=16,
         # Keep only the latest checkpoint. pi0.5 params are ~12 GB each, and the
         # default (every 5000 steps kept forever) would put twelve runs near a
         # terabyte.

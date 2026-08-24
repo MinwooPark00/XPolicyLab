@@ -192,6 +192,19 @@ def train_step(
     return new_state, info
 
 
+@at.typecheck
+def val_step(
+    rng: at.KeyArrayLike,
+    state: training_utils.TrainState,
+    batch: tuple[_model.Observation, _model.Actions],
+) -> at.Array:
+    """The training loss, on data the run never fits. No grads, no state."""
+    model = nnx.merge(state.model_def, state.params)
+    model.eval()
+    observation, actions = batch
+    return jnp.mean(model.compute_loss(rng, observation, actions, train=False))
+
+
 def main(config: _config.TrainConfig):
     init_logging()
     logging.info(f"Running on: {platform.node()}")
@@ -228,6 +241,45 @@ def main(config: _config.TrainConfig):
     batch = next(data_iter)
     logging.info(f"Initialized data loader:\n{training_utils.array_tree_to_info(batch)}")
 
+    # Held-out split. Unshuffled and finite, so re-iterating it yields the same
+    # samples every pass -- `TorchDataLoader.__iter__` restarts its counter and
+    # its underlying iterator -- which is what makes two validations of one run
+    # comparable. Fewer workers than training: this shares the job's cores with
+    # a loader that is feeding the GPU.
+    val_loader = None
+    if config.val_interval:
+        val_data_config = config.data.create(config.assets_dirs, config.model)
+        if val_data_config.val_episodes:
+            val_dc = dataclasses.replace(val_data_config, episodes=val_data_config.val_episodes)
+            held_out = len(_data_loader.create_torch_dataset(val_dc, config.model.action_horizon, config.model))
+            # Evenly spaced over the whole held-out split. Unshuffled, the first
+            # `val_batches * batch_size` frames are the opening of its *first*
+            # episode -- 512 frames of one trajectory standing in for ten. A
+            # fixed index list rather than a shuffle because the loader's
+            # generator advances between passes, which would move the number
+            # by more than the model did.
+            wanted = config.val_batches * config.batch_size
+            indices = list(range(0, held_out, max(1, held_out // wanted)))[:wanted]
+            val_batches = min(config.val_batches, len(indices) // config.batch_size)
+            val_loader = _data_loader.create_torch_data_loader(
+                val_dc,
+                model_config=config.model,
+                action_horizon=config.model.action_horizon,
+                batch_size=config.batch_size,
+                sharding=data_sharding,
+                shuffle=False,
+                sampler=indices,
+                num_batches=val_batches,
+                num_workers=min(4, config.num_workers),
+                seed=config.seed,
+            )
+            logging.info(
+                f"Validation: {val_batches} batches ({val_batches * config.batch_size} of {held_out} frames) "
+                f"over {len(val_data_config.val_episodes)} held-out episodes every {config.val_interval} steps"
+            )
+        else:
+            logging.warning("val_interval is set but the data config declares no val_episodes; not validating.")
+
     # Log images from first batch to sanity check.
     images_to_log = [
         wandb.Image(np.concatenate([np.array(img[i]) for img in batch[0].images.values()], axis=1))
@@ -248,6 +300,25 @@ def main(config: _config.TrainConfig):
         out_shardings=(train_state_sharding, replicated_sharding),
         donate_argnums=(1,),
     )
+
+    pval_step = jax.jit(
+        val_step,
+        in_shardings=(replicated_sharding, train_state_sharding, data_sharding),
+        out_shardings=replicated_sharding,
+    )
+
+    def validate(step: int) -> None:
+        # One fixed key, folded with the batch index: the flow-matching loss
+        # draws a timestep and a noise sample per call, so an unfixed key moves
+        # the number by more than the model does between validations.
+        val_rng = jax.random.key(config.seed + 1)
+        losses = [
+            pval_step(jax.random.fold_in(val_rng, i), train_state, val_batch)
+            for i, val_batch in enumerate(val_loader)
+        ]
+        val_loss = float(np.mean(jax.device_get(losses)))
+        pbar.write(f"Step {step}: val_loss={val_loss:.4f}")
+        wandb.log({"val_loss": val_loss}, step=step)
 
     start_step = int(train_state.step)
     pbar = tqdm.tqdm(
@@ -270,6 +341,11 @@ def main(config: _config.TrainConfig):
             wandb.log(reduced_info, step=step)
             infos = []
         batch = next(data_iter)
+
+        if val_loader is not None and (
+            (step % config.val_interval == 0 and step > start_step) or step == config.num_train_steps - 1
+        ):
+            validate(step)
 
         if (step % config.save_interval == 0 and step > start_step) or step == config.num_train_steps - 1:
             _checkpoints.save_state(checkpoint_manager, train_state, data_loader, step)
