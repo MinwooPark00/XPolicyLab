@@ -120,6 +120,31 @@ def _pack_dual_arm_action(flat_action: np.ndarray) -> dict:
     }
 
 
+_CLIP_OFF = ("", "none", "null", "off", "false", "0")
+_CLIP_ON = ("fitted", "true", "1")
+
+
+def clip_enabled(value, name):
+    """Whether `value` asks for clamping to the checkpoint's fitted range.
+
+    Both spellings of "off" have to be understood, because the default is now
+    `fitted` (deploy.yml) and the way an evaluation opts back out is an
+    override string from `eval_policy.sbatch`. Those go through
+    `setup_policy_server.py`'s `ast.literal_eval`, which turns `None` into
+    None but leaves `null` as the string "null" -- and a benchmark run that
+    means "measure this without the clamp" must not die on which of the two
+    was typed.
+    """
+    if value is None:
+        return False
+    token = str(value).strip().lower()
+    if token in _CLIP_OFF:
+        return False
+    if token in _CLIP_ON:
+        return True
+    raise ValueError(f"{name} must be 'fitted' or None, got {value!r}")
+
+
 def fitted_obs_bounds(policy):
     """The per-dimension [min, max] `agent_pos` the checkpoint's normalizer was
     fitted on.
@@ -195,8 +220,10 @@ class Model(ModelTemplate):
         self._inference_scheduler = model_cfg.get('inference_scheduler')
         self._num_inference_steps = model_cfg.get('num_inference_steps')
         # 'fitted' clamps every commanded dimension to the range the
-        # checkpoint's normalizer was fitted on (see
-        # fitted_action_bounds). Default None = today's behaviour.
+        # checkpoint's normalizer was fitted on (see fitted_action_bounds).
+        # deploy.yml defaults both clamps to 'fitted'; None turns one off.
+        # Set before the decentralized branch below, which loads its policies
+        # inside _init_mhbench_decentralized and needs them already read.
         self._action_clip = model_cfg.get('action_clip')
         # 'fitted' clamps agent_pos to the range the checkpoint's normalizer
         # was fitted on, before the policy sees it (see fitted_obs_bounds).
@@ -308,17 +335,13 @@ class Model(ModelTemplate):
         policy.to(device)
         policy.eval()
 
-        if self._action_clip is not None:
-            if str(self._action_clip).lower() not in ("fitted", "true", "1"):
-                raise ValueError(f"action_clip must be 'fitted' or null, got {self._action_clip!r}")
+        if clip_enabled(self._action_clip, "action_clip"):
             low, high = fitted_action_bounds(policy)
             print(f"[DP][action_clip] clamping to the fitted action range, "
                   f"{int(((high - low) < 1e-4).sum())} of {low.size} dims have zero range")
             self._bounds_of[id(policy)] = (low, high)
 
-        if self._obs_clip is not None:
-            if str(self._obs_clip).lower() not in ("fitted", "true", "1"):
-                raise ValueError(f"obs_clip must be 'fitted' or null, got {self._obs_clip!r}")
+        if clip_enabled(self._obs_clip, "obs_clip"):
             low, high = fitted_obs_bounds(policy)
             gain = 2.0 / np.maximum(high - low, 1e-9)
             print(f"[DP][obs_clip] clamping agent_pos to the fitted range; "

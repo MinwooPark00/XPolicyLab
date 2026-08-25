@@ -30,8 +30,10 @@ num_inference_steps: null      # e.g. 10 with ddim
 # constant 0.72 m in every MHBench demonstration, and one hand per robot
 # never moves -- to scale 1 / offset -min, leaving `clip_sample`'s [-1, 1]
 # box as the only bound on the *raw* command: 1.72 m of hip height.
-# Off by default: it changes what is commanded, so it belongs behind an A/B.
-action_clip: null              # fitted | null
+# On by default: the A/B this was held behind has been run. On framehang,
+# 7 falls in 10 episodes become 0 with this alone. Pass `None` to measure a
+# checkpoint without it.
+action_clip: fitted            # fitted | None
 
 # --- keep the OBSERVATION inside the range it was trained on ----------------
 # The load-bearing half. `clip_sample` bounds what leaves the sampler; nothing
@@ -40,8 +42,17 @@ action_clip: null              # fitted | null
 # 2852 per radian for one of framehang's idle finger joints, whose whole
 # recorded range is 0.0007 rad. A rollout hands that encoder values in the
 # hundreds where it was trained on [-1, 1]. `fitted` clamps agent_pos to the
-# checkpoint's own fitted range.
-obs_clip: null                 # fitted | null
+# checkpoint's own fitted range. On by default for the same reason, and it is
+# the half that matters most; `None` turns it off.
+#
+# How much it changes depends on how much of the robot a task's demonstrations
+# actually move, which is why leaving it off looked survivable: fitted on the
+# 1000-epoch checkpoints, cocarry has no observation dimension narrower than
+# 0.52 rad and rolls out fine without clamping, while handover_easy has 11
+# under 0.01 rad -- one of them 9.1e-6, a gain of ~220,000 per radian -- and
+# framehang 6. Those are the two that freeze and shake seconds into an
+# episode.
+obs_clip: fitted               # fitted | None
 
 # --- MHBench (bench_name=mhbench, env_cfg_type=unitree_g1x2_decentralized): ---
 # one server drives both robots from two single-robot DP checkpoints. ckpt_name
