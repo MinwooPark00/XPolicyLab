@@ -1,47 +1,87 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Usage: process_data.sh <bench> <ckpt> <env_cfg> <action_type> [max_demos]
+# Usage: process_data.sh <bench> <ckpt> <env_cfg> <action_type> [task] [max_demos]
 bench=${1:?bench is required}
 ckpt=${2:?ckpt is required}
 env_cfg=${3:?env_cfg is required}
 action_type=${4:?action_type is required}
-max_demos=${5:-}
+task=${5:-${GAUDP_TASK:-${env_cfg}}}
+max_demos=${6:-}
+
+# Backward compatibility with the old five-argument form where argument 5 was
+# max_demos. A task name is never numeric, so the two forms are unambiguous.
+if [[ "${task}" =~ ^[0-9]+$ ]]; then
+    max_demos="${task}"
+    task="${GAUDP_TASK:-${env_cfg}}"
+fi
 if [[ "${action_type}" != "ee" ]]; then
     echo "[GauDP] only action_type=ee is supported" >&2
     exit 2
 fi
 
 POLICY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-MHBENCH_ROOT="$(cd "${POLICY_DIR}/../../../.." && pwd)"
-# The task is `env_cfg`, the word that names baselines/env_cfg/<name>.yml, not
-# `bench` -- under the shared eval runner `bench` is always `mhbench`. The task
-# directories are spelled without the underscore (door_passage -> doorpassage),
-# the same pair of spellings baselines/scripts/eval_policy.sbatch accepts, and
-# the LeRobot export is the `lerobot/` child of that directory.
-#
-# The two older layouts are still tried, in the order they existed, so a
-# converted copy from before the datasets/ reorg still resolves:
-#   datasets/<bench>_test   the pre-reorg per-task directory
-#   datasets/data           the original raw-HDF5 root
-case "${env_cfg}" in
-  door_passage) task_dir=doorpassage ;;
-  frame_hang)   task_dir=framehang ;;
-  *)            task_dir="${env_cfg}" ;;
+XPL_ROOT="$(cd "${POLICY_DIR}/../.." && pwd)"
+DATASETS_ROOT="${XPL_ROOT}/datasets"
+
+is_lerobot_root() {
+    [[ -f "$1/meta/info.json" && -d "$1/data" && -d "$1/videos" ]]
+}
+
+# Accept either the LeRobot root itself or a task directory containing a
+# legacy `lerobot/` child. This also makes MHBENCH_DATASET_PATH forgiving.
+resolve_lerobot_root() {
+    local candidate=$1
+    if is_lerobot_root "${candidate}"; then
+        printf '%s\n' "${candidate}"
+        return 0
+    fi
+    if is_lerobot_root "${candidate}/lerobot"; then
+        printf '%s\n' "${candidate}/lerobot"
+        return 0
+    fi
+    return 1
+}
+
+# Dataset folders use compact spellings while env_cfg names may contain an
+# underscore. An explicit task argument wins and permits variants such as
+# handover_easy and handover_hard that share env_cfg=handover.
+task_names=("${task}")
+case "${task}" in
+  door_passage) task_names+=(doorpassage) ;;
+  frame_hang)   task_names+=(framehang) ;;
 esac
-for candidate in \
-    "${MHBENCH_ROOT}/datasets/${task_dir}/lerobot" \
-    "${MHBENCH_ROOT}/datasets/${bench}_test" \
-    "${MHBENCH_ROOT}/datasets/data"; do
-    if [[ -e "${candidate}" ]]; then default_source="${candidate}"; break; fi
-done
-source_path="${MHBENCH_DATASET_PATH:-${default_source:-${MHBENCH_ROOT}/datasets/${task_dir}/lerobot}}"
-if [[ ! -e "${source_path}" ]]; then
-    echo "[GauDP] no dataset at ${source_path}" >&2
-    echo "[GauDP] Run scripts/export_lerobot.py for '${task_dir}' in the MHBench repo," >&2
-    echo "[GauDP] or point MHBENCH_DATASET_PATH at an export kept elsewhere." >&2
+
+source_path=""
+if [[ -n "${MHBENCH_DATASET_PATH:-}" ]]; then
+    source_path="$(resolve_lerobot_root "${MHBENCH_DATASET_PATH}" || true)"
+    searched=("${MHBENCH_DATASET_PATH}" "${MHBENCH_DATASET_PATH}/lerobot")
+else
+    searched=()
+    for task_name in "${task_names[@]}"; do
+        candidate="${DATASETS_ROOT}/${task_name}"
+        searched+=("${candidate}" "${candidate}/lerobot")
+        source_path="$(resolve_lerobot_root "${candidate}" || true)"
+        if [[ -n "${source_path}" ]]; then
+            break
+        fi
+    done
+fi
+
+if [[ -z "${source_path}" ]]; then
+    echo "[GauDP] no LeRobot dataset found for task '${task}'" >&2
+    echo "[GauDP] searched:" >&2
+    printf '  - %s\n' "${searched[@]}" >&2
+    echo "[GauDP] Expected meta/info.json, data/, and videos/ under the dataset root." >&2
+    echo "[GauDP] Default location: ${DATASETS_ROOT}/<task>" >&2
+    echo "[GauDP] Available task folders:" >&2
+    find "${DATASETS_ROOT}" -mindepth 2 -maxdepth 3 -path '*/meta/info.json' \
+        -printf '  - %h\n' 2>/dev/null | sed 's#/meta$##' >&2 || true
+    echo "[GauDP] Pass the task as argument 5 or set MHBENCH_DATASET_PATH." >&2
     exit 2
 fi
+echo "[GauDP] task     ${task}"
+echo "[GauDP] source   ${source_path}"
 # Say which export this is. There are several copies of `datasets/` on a
 # machine that has more than one worktree of this repo, they are NOT
 # interchangeable, and nothing downstream can tell them apart: a scene gets
@@ -56,7 +96,6 @@ root = pathlib.Path(sys.argv[1])
 prov = json.loads((root / "meta" / "mhbench_provenance.json").read_text())
 info = json.loads((root / "meta" / "info.json").read_text())
 written = prov.get("env_args", {}).get("provenance", {})
-print(f"[GauDP] source   {root}")
 print(f"[GauDP] exported {written.get('written_at', '?')[:19]} @ {str(written.get('commit', '?'))[:7]}"
       f"  {info.get('total_episodes')} episodes / {info.get('total_frames')} frames")
 sentences = prov.get("task", {}).get("sentences") or ["?"]

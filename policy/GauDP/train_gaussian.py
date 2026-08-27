@@ -14,6 +14,9 @@ from pathlib import Path
 import numpy as np
 import torch
 
+_OFFICIAL_FULL_LR_MARKERS = ("gaussian_param_head", "intrinsic_encoder")
+_OFFICIAL_ADAMW_BETAS = (0.9, 0.95)
+
 _XPL_ROOT = Path(__file__).resolve().parents[2]
 if str(_XPL_ROOT) not in sys.path:
     sys.path.insert(0, str(_XPL_ROOT))
@@ -172,6 +175,98 @@ def _configure_finetuning(encoder, mode: str):
     return parameters
 
 
+def _build_optimizer(
+    encoder,
+    mode: str,
+    *,
+    lr: float,
+    backbone_lr_multiplier: float,
+    weight_decay: float,
+):
+    """Build the AdamW parameter groups used by official NoPoSplat training."""
+    trainable = [(name, parameter) for name, parameter in encoder.named_parameters() if parameter.requires_grad]
+    if mode == "full":
+        full_lr = [
+            parameter
+            for name, parameter in trainable
+            if any(marker in name for marker in _OFFICIAL_FULL_LR_MARKERS)
+        ]
+        pretrained = [
+            parameter
+            for name, parameter in trainable
+            if not any(marker in name for marker in _OFFICIAL_FULL_LR_MARKERS)
+        ]
+        if not full_lr or not pretrained:
+            raise RuntimeError(
+                "official NoPoSplat full fine-tuning requires both Gaussian/intrinsic "
+                "and pretrained parameter groups"
+            )
+        parameter_groups = [
+            {"params": full_lr, "lr": lr, "group_name": "head"},
+            {
+                "params": pretrained,
+                "lr": lr * backbone_lr_multiplier,
+                "group_name": "pretrained",
+            },
+        ]
+    else:
+        parameter_groups = [
+            {
+                "params": [parameter for _, parameter in trainable],
+                "lr": lr,
+                "group_name": "head",
+            }
+        ]
+
+    return torch.optim.AdamW(
+        parameter_groups,
+        lr=lr,
+        weight_decay=weight_decay,
+        betas=_OFFICIAL_ADAMW_BETAS if mode == "full" else (0.9, 0.999),
+        # The foreach implementation creates sizeable temporary tensor lists
+        # on the first step. The scalar loop is slower but has a lower peak,
+        # which matters for workstation GPUs.
+        foreach=False,
+    )
+
+
+def _build_lr_scheduler(
+    optimizer,
+    *,
+    warm_up_steps: int,
+    max_steps: int,
+    base_lr: float,
+    min_lr_ratio: float,
+):
+    """Match NoPoSplat's linear warm-up followed by step-wise cosine decay."""
+    cosine = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer,
+        T_max=max(1, max_steps),
+        eta_min=base_lr * min_lr_ratio,
+    )
+    if warm_up_steps == 0:
+        return cosine
+    warm_up = torch.optim.lr_scheduler.LinearLR(
+        optimizer,
+        start_factor=1 / warm_up_steps,
+        end_factor=1,
+        total_iters=warm_up_steps,
+    )
+    return torch.optim.lr_scheduler.SequentialLR(
+        optimizer,
+        schedulers=[warm_up, cosine],
+        milestones=[warm_up_steps],
+    )
+
+
+def _learning_rate_metrics(optimizer) -> dict[str, float]:
+    metrics = {"lr": optimizer.param_groups[0]["lr"]}
+    for index, group in enumerate(optimizer.param_groups):
+        name = group.get("group_name", str(index))
+        metrics[f"lr/{name}"] = group["lr"]
+    return metrics
+
+
 def _set_train_mode(encoder, mode: str) -> None:
     encoder.train()
     if mode == "heads":
@@ -184,6 +279,7 @@ def _save(
     path: Path,
     encoder,
     optimizer,
+    scheduler,
     epoch: int,
     step: int,
     num_views: int,
@@ -196,6 +292,7 @@ def _save(
             **gaussian_checkpoint_metadata(num_views),
             "encoder_state": encoder.state_dict(),
             "optimizer_state": optimizer.state_dict(),
+            "scheduler_state": scheduler.state_dict(),
             "epoch": epoch,
             "global_step": step,
             "finetune_mode": finetune_mode,
@@ -214,7 +311,48 @@ def main() -> None:
     parser.add_argument("--epochs", type=int, default=30)
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--num-workers", type=int, default=4)
-    parser.add_argument("--lr", type=float, default=1e-5)
+    parser.add_argument(
+        "--lr",
+        type=float,
+        default=None,
+        help="Gaussian/intrinsic head LR; defaults to 1e-4 for full and 1e-5 for heads",
+    )
+    parser.add_argument(
+        "--backbone-lr-multiplier",
+        type=float,
+        default=0.1,
+        help="full-mode LR multiplier for pretrained NoPoSplat parameters",
+    )
+    parser.add_argument(
+        "--weight-decay",
+        type=float,
+        default=None,
+        help="defaults to 0.05 for full and the legacy 1e-6 for heads",
+    )
+    parser.add_argument(
+        "--warm-up-steps",
+        type=int,
+        default=None,
+        help="full-mode linear LR warm-up steps; defaults to official 1x8 value 2000",
+    )
+    parser.add_argument(
+        "--min-lr-ratio",
+        type=float,
+        default=0.1,
+        help="cosine eta_min as a fraction of the Gaussian/intrinsic head LR",
+    )
+    parser.add_argument(
+        "--gradient-clip",
+        type=float,
+        default=None,
+        help="defaults to official 0.5 for full and the legacy 1.0 for heads",
+    )
+    parser.add_argument(
+        "--gradient-accumulation-steps",
+        type=int,
+        default=1,
+        help="accumulate micro-batches before each optimizer/scheduler step",
+    )
     parser.add_argument("--depth-weight", type=float, default=0.1)
     parser.add_argument(
         "--log-every",
@@ -241,8 +379,30 @@ def main() -> None:
     parser.add_argument("--wandb-tags", default="", help="comma-separated W&B tags")
     parser.add_argument("--debug", action="store_true", help="run one train and validation batch")
     args = parser.parse_args()
+    if args.lr is None:
+        args.lr = 1e-4 if args.finetune_mode == "full" else 1e-5
+    if args.weight_decay is None:
+        args.weight_decay = 0.05 if args.finetune_mode == "full" else 1e-6
+    if args.warm_up_steps is None:
+        args.warm_up_steps = 2000 if args.finetune_mode == "full" else 0
+    if args.gradient_clip is None:
+        args.gradient_clip = 0.5 if args.finetune_mode == "full" else 1.0
     if args.log_every < 0:
         parser.error("--log-every must be non-negative")
+    if args.lr <= 0:
+        parser.error("--lr must be positive")
+    if args.backbone_lr_multiplier < 0:
+        parser.error("--backbone-lr-multiplier must be non-negative")
+    if args.weight_decay < 0:
+        parser.error("--weight-decay must be non-negative")
+    if args.warm_up_steps < 0:
+        parser.error("--warm-up-steps must be non-negative")
+    if not 0 <= args.min_lr_ratio <= 1:
+        parser.error("--min-lr-ratio must be between 0 and 1")
+    if args.gradient_clip <= 0:
+        parser.error("--gradient-clip must be positive")
+    if args.gradient_accumulation_steps <= 0:
+        parser.error("--gradient-accumulation-steps must be positive")
 
     global DataLoader
     global GaussianFrameDataset, build_gaussian_encoder, encode_gaussians
@@ -275,32 +435,50 @@ def main() -> None:
         f"[GauDP] fine-tuning mode={args.finetune_mode}: "
         f"trainable={trainable_count / 1e6:.1f}M / total={total_count / 1e6:.1f}M parameters"
     )
-    optimizer = torch.optim.AdamW(
-        trainable_parameters,
+    optimizer = _build_optimizer(
+        encoder,
+        args.finetune_mode,
         lr=args.lr,
-        weight_decay=1e-6,
-        # The foreach implementation creates sizeable temporary tensor lists
-        # on the first step. The scalar loop is slower but has a lower peak,
-        # which matters for both modes on workstation GPUs.
-        foreach=False,
+        backbone_lr_multiplier=args.backbone_lr_multiplier,
+        weight_decay=args.weight_decay,
     )
     train_loader = DataLoader(train_data, args.batch_size, shuffle=True, num_workers=args.num_workers, pin_memory=True)
     val_loader = DataLoader(val_data, args.batch_size, shuffle=False, num_workers=args.num_workers, pin_memory=True)
     train_batches = min(1, len(train_loader)) if args.debug else len(train_loader)
     val_batches = min(1, len(val_loader)) if args.debug else len(val_loader)
+    epochs = 1 if args.debug else args.epochs
+    optimizer_steps_per_epoch = math.ceil(train_batches / args.gradient_accumulation_steps)
+    max_optimizer_steps = max(1, epochs * optimizer_steps_per_epoch)
+    if args.finetune_mode == "full":
+        scheduler = _build_lr_scheduler(
+            optimizer,
+            warm_up_steps=args.warm_up_steps,
+            max_steps=max_optimizer_steps,
+            base_lr=args.lr,
+            min_lr_ratio=args.min_lr_ratio,
+        )
+    else:
+        scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda _: 1.0)
 
     print(
         f"[GauDP][gaussian] device={device} cameras={train_data.camera_order} "
         f"train_samples={len(train_data)} val_samples={len(val_data)} "
         f"train_batches={train_batches} val_batches={val_batches} "
-        f"batch_size={args.batch_size} workers={args.num_workers} epochs={1 if args.debug else args.epochs} "
-        f"log_every={args.log_every}",
+        f"batch_size={args.batch_size} accumulation={args.gradient_accumulation_steps} "
+        f"effective_batch_size={args.batch_size * args.gradient_accumulation_steps} "
+        f"workers={args.num_workers} epochs={epochs} optimizer_steps={max_optimizer_steps} "
+        f"warm_up_steps={args.warm_up_steps} log_every={args.log_every}",
         flush=True,
     )
+    for group in optimizer.param_groups:
+        print(
+            f"[GauDP] optimizer group={group['group_name']} "
+            f"initial_lr={group['initial_lr']:.2e} parameters={sum(p.numel() for p in group['params']) / 1e6:.1f}M",
+            flush=True,
+        )
 
     best = math.inf
     global_step = 0
-    epochs = 1 if args.debug else args.epochs
     run_name = args.wandb_run_name or f"{args.output.parent.name}-gaussian"
     with ExperimentLogger(
         args.output,
@@ -323,19 +501,39 @@ def main() -> None:
             train_started = time.monotonic()
             for batch_index, batch in enumerate(train_loader):
                 batch = _to_device(batch, device)
-                optimizer.zero_grad(set_to_none=True)
+                accumulation_index = batch_index % args.gradient_accumulation_steps
+                if accumulation_index == 0:
+                    optimizer.zero_grad(set_to_none=True)
+                accumulation_size = min(
+                    args.gradient_accumulation_steps,
+                    train_batches - batch_index + accumulation_index,
+                )
                 loss, batch_metrics = reconstruction_loss(
                     encoder, batch, global_step=global_step, depth_weight=args.depth_weight
                 )
-                loss.backward()
-                torch.nn.utils.clip_grad_norm_(encoder.parameters(), 1.0)
-                optimizer.step()
+                if not torch.isfinite(loss):
+                    raise FloatingPointError(
+                        f"non-finite reconstruction loss at epoch={epoch + 1}, batch={batch_index + 1}"
+                    )
+                (loss / accumulation_size).backward()
+                should_step = (
+                    accumulation_index + 1 == args.gradient_accumulation_steps
+                    or batch_index + 1 == train_batches
+                )
+                if should_step:
+                    torch.nn.utils.clip_grad_norm_(
+                        trainable_parameters,
+                        args.gradient_clip,
+                        error_if_nonfinite=True,
+                    )
+                    optimizer.step()
+                    scheduler.step()
+                    global_step += 1
                 train_sums["loss"] += float(loss.detach())
                 train_sums["rgb_loss"] += batch_metrics["rgb"]
                 train_sums["depth_loss"] += batch_metrics["depth"]
                 train_sums["psnr"] += batch_metrics["psnr"]
                 train_count += 1
-                global_step += 1
                 completed = batch_index + 1
                 if _should_log_batch(completed, train_batches, args.log_every):
                     progress = {
@@ -346,6 +544,7 @@ def main() -> None:
                         "train/batch_rgb_loss": batch_metrics["rgb"],
                         "train/batch_depth_loss": batch_metrics["depth"],
                         "train/batch_psnr": batch_metrics["psnr"],
+                        **_learning_rate_metrics(optimizer),
                         **_progress_metrics(completed, train_batches, train_started, "train"),
                     }
                     logger.log(progress, step=global_step)
@@ -386,7 +585,7 @@ def main() -> None:
             metrics = {
                 "record_type": "epoch",
                 "epoch": epoch,
-                "lr": optimizer.param_groups[0]["lr"],
+                **_learning_rate_metrics(optimizer),
                 "performance/epoch_seconds": time.monotonic() - epoch_started,
                 **{f"train/{key}": value / max(1, train_count) for key, value in train_sums.items()},
                 **{f"val/{key}": value / max(1, val_count) for key, value in val_sums.items()},
@@ -397,6 +596,7 @@ def main() -> None:
                 args.output / "last.ckpt",
                 encoder,
                 optimizer,
+                scheduler,
                 epoch,
                 global_step,
                 num_views,
@@ -416,6 +616,7 @@ def main() -> None:
                     args.output / "best.ckpt",
                     encoder,
                     optimizer,
+                    scheduler,
                     epoch,
                     global_step,
                     num_views,

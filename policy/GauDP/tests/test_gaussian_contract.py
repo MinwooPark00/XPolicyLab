@@ -22,6 +22,14 @@ class TinyReconstructionEncoder(nn.Module):
         return context["image"].mul(self.gain)
 
 
+class TinyNoPoSplatEncoder(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.backbone = nn.Linear(2, 2)
+        self.gaussian_param_head = nn.Linear(2, 2)
+        self.intrinsic_encoder = nn.Linear(2, 2)
+
+
 def test_rgb_and_masked_depth_reconstruction_one_step(monkeypatch):
     encoder = TinyReconstructionEncoder()
 
@@ -44,3 +52,70 @@ def test_rgb_and_masked_depth_reconstruction_one_step(monkeypatch):
     loss.backward()
     assert encoder.gain.grad is not None
     assert metrics["rgb"] >= 0 and metrics["depth"] >= 0
+
+
+def test_full_finetuning_matches_official_noposplat_optimizer_groups():
+    encoder = TinyNoPoSplatEncoder()
+    module._configure_finetuning(encoder, "full")
+    optimizer = module._build_optimizer(
+        encoder,
+        "full",
+        lr=1e-4,
+        backbone_lr_multiplier=0.1,
+        weight_decay=0.05,
+    )
+
+    assert [group["group_name"] for group in optimizer.param_groups] == ["head", "pretrained"]
+    assert [group["lr"] for group in optimizer.param_groups] == pytest.approx([1e-4, 1e-5])
+    assert optimizer.defaults["betas"] == (0.9, 0.95)
+    assert optimizer.defaults["weight_decay"] == 0.05
+    head_ids = {id(parameter) for parameter in optimizer.param_groups[0]["params"]}
+    assert id(encoder.gaussian_param_head.weight) in head_ids
+    assert id(encoder.intrinsic_encoder.weight) in head_ids
+    assert id(encoder.backbone.weight) not in head_ids
+
+
+def test_official_scheduler_warms_up_then_cosine_decays_head_lr():
+    encoder = TinyNoPoSplatEncoder()
+    optimizer = module._build_optimizer(
+        encoder,
+        "full",
+        lr=1e-4,
+        backbone_lr_multiplier=0.1,
+        weight_decay=0.05,
+    )
+    scheduler = module._build_lr_scheduler(
+        optimizer,
+        warm_up_steps=2,
+        max_steps=10,
+        base_lr=1e-4,
+        min_lr_ratio=0.1,
+    )
+
+    assert [group["lr"] for group in optimizer.param_groups] == pytest.approx([5e-5, 5e-6])
+    for _ in range(2):
+        optimizer.step()
+        scheduler.step()
+    assert [group["lr"] for group in optimizer.param_groups] == pytest.approx([1e-4, 1e-5])
+    optimizer.step()
+    scheduler.step()
+    assert optimizer.param_groups[0]["lr"] < 1e-4
+    assert optimizer.param_groups[1]["lr"] == pytest.approx(1e-5)
+
+
+def test_head_only_optimizer_retains_legacy_defaults():
+    encoder = TinyNoPoSplatEncoder()
+    module._configure_finetuning(encoder, "heads")
+    optimizer = module._build_optimizer(
+        encoder,
+        "heads",
+        lr=1e-5,
+        backbone_lr_multiplier=0.1,
+        weight_decay=1e-6,
+    )
+
+    assert len(optimizer.param_groups) == 1
+    assert optimizer.param_groups[0]["group_name"] == "head"
+    assert optimizer.defaults["betas"] == (0.9, 0.999)
+    assert optimizer.defaults["weight_decay"] == 1e-6
+    assert not encoder.backbone.weight.requires_grad
