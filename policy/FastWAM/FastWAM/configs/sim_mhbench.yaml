@@ -1,0 +1,49 @@
+# @package _global_
+# Serving config for MHBench: what deploy_policy.get_model composes when
+# policy/FastWAM/deploy.yml says sim_cfg_name: sim_mhbench.yaml. The task
+# override picks the mode (deploy.yml's sim_task):
+#   mhbench_uncond_2cam_384_1e-4  centralized (default here)
+#   mhbench_uncond_1cam_240_1e-4  decentralized
+# Mirrors sim_robotwin.yaml: the checkpoint carries every weight, so the
+# ActionDiT preprocess artefact is not needed at serving time.
+
+defaults:
+  - train
+  - override /task: mhbench_uncond_2cam_384_1e-4
+  - _self_
+
+ckpt: null
+gpu_id: 0
+
+model:
+  load_text_encoder: true
+  skip_dit_load_from_pretrain: true
+  action_dit_pretrained_path: null
+
+EVALUATION:
+  task_name: null
+  eval_num_episodes: 50
+  output_dir: ./evaluate_results/mhbench/${hydra:runtime.choices.task}/${now:%Y%m%d_%H%M%S}
+
+  # Action inference
+  action_horizon: null
+  replan_steps: 24
+  num_inference_steps: ${eval_num_inference_steps}
+  sigma_shift: null
+  text_cfg_scale: 1.0
+  negative_prompt: ""
+  rand_device: cpu
+  tiled: false
+  timing_enabled: false
+  skip_get_obs_within_replan: true
+
+  # Runtime inputs
+  dataset_stats_path: null
+  device: cuda
+
+hydra:
+  job:
+    chdir: false
+  run:
+    dir: .
+  output_subdir: null

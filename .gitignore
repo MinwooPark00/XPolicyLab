@@ -19,3 +19,6 @@ policy/H_RDT/H_RDT/t5-v1_1-xxl/
 policy/H_RDT/**/logs/
 policy/H_RDT/**/wandb/
 datasets/
+
+# Machine-local symlink into /scratch2 (DreamZero has no policy-level .gitignore)
+policy/DreamZero/checkpoints

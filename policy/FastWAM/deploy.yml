@@ -21,7 +21,20 @@ seed: null
 checkpoint_path: null
 dataset_stats_path: null
 
-# FastWAM upstream policy hyperparameters.
+# MHBench serving (bench_name=mhbench): centralized loads one 70D policy,
+# decentralized two 35D ones in the same server. Explicit weight files
+# (checkpoints/<run>/checkpoints/weights/step_*.pt) override the run-dir
+# resolution; empty means the newest step of the untagged run named by
+# ckpt_name/env_cfg_type/seed. checkpoint_num picks a step (EVAL_CKPT_NUM).
+mhbench_mode: null
+model_dir: null
+model_dir_robot_a: null
+model_dir_robot_b: null
+ckpt_tag: null
+checkpoint_num: null
+
+# FastWAM upstream policy hyperparameters. For mhbench the sim config is
+# sim_mhbench.yaml and the task yaml is derived from env_cfg_type in model.py.
 sim_cfg_name: sim_robotwin.yaml
 sim_task: robotwin_uncond_3cam_384_1e-4
 device: cuda
