@@ -127,7 +127,9 @@ def _mhbench_image_tensor_method(env_cfg_type: str):
             canvas = _resize(canvas, (320, 384))  # (384, 320, 3)
         else:
             canvas = images["ego"]  # (240, 320, 3)
-        tensor = torch.from_numpy(np.ascontiguousarray(canvas)).permute(2, 0, 1).unsqueeze(0).to(
+        # Decoded observation arrays are read-only views (AGENTS.md); copy before
+        # handing them to torch.
+        tensor = torch.from_numpy(np.array(canvas, dtype=np.uint8, copy=True)).permute(2, 0, 1).unsqueeze(0).to(
             device=self.model.device, dtype=self.model.torch_dtype
         )
         return tensor * (2.0 / 255.0) - 1.0
@@ -311,7 +313,20 @@ class Model(ModelTemplate):
     def _encode_mhbench(self, obs: dict) -> dict[str, dict]:
         """One env observation -> per-policy upstream observations."""
         vision = obs["vision"]
-        state = obs["mhbench_state"]
+        state = obs.get("mhbench_state")
+        if state is None:
+            if not self.allow_dummy_policy:
+                raise KeyError(
+                    "obs has no 'mhbench_state' -- the MHBench env client publishes it; "
+                    "this branch cannot run against a generic client"
+                )
+            # The debug client's generic observation carries no mhbench_state;
+            # zeros keep the wiring check (encode -> ws -> action packing)
+            # running under allow_dummy_policy without touching the real path.
+            state = {
+                robot: {"joint_pos": np.zeros(43, dtype=np.float32)}
+                for robot in ("robot_a", "robot_b")
+            }
         ego = {
             robot: _standardize_rgb(vision[MHBENCH_CAMERA_SLOT[robot]]["color"])
             for robot in ("robot_a", "robot_b")
