@@ -51,7 +51,10 @@ elif [ -f "${processed_data_path}/meta/info.json" ]; then
 else
     dataset_path="${default_lerobot_path}"
 fi
-run_basename="${data_tag}-${seed}"
+# CKPT_TAG separates runs over the same data (a 30-step probe, a LoRA-rank
+# sweep) -- without it a probe would write into, and .latest-point at, the
+# real run's directory. Same convention as GR00T/FastWAM.
+run_basename="${DREAMZERO_CKPT_SETTING:-${data_tag}-${seed}${CKPT_TAG:+-${CKPT_TAG}}}"
 output_dir="${SCRIPT_DIR}/checkpoints/${run_basename}"
 
 if [ ! -f "${dataset_path}/meta/info.json" ]; then
