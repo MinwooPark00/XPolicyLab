@@ -51,6 +51,12 @@ bash eval.sh RoboDojo stack_bowls RoboDojo-cotrain-arx_x5-joint-0 arx_x5 joint 0
 
 Optional policy-specific environment overrides used by the scripts: `FASTWAM_DATASET_ID`, `FASTWAM_BATCH_SIZE`, `FASTWAM_GRADIENT_ACCUMULATION_STEPS`, `FASTWAM_NUM_WORKERS`, `FASTWAM_NUM_EPOCHS`, `FASTWAM_CKPT_SETTING`, `FASTWAM_CKPT_ROOT`, `FASTWAM_CHECKPOINT_PATH`, `FASTWAM_DATASET_STATS_PATH`, `FASTWAM_ALLOW_DUMMY_POLICY`.
 
+## MHBench (bench_name=mhbench)
+
+Two Unitree G1 robots; centralized (`env_cfg_type=unitree_g1x2_centralized`, one 70D policy over both robots' ego views stacked onto a 384x320 canvas) or decentralized (`unitree_g1x2_decentralized`, one 35D policy per robot from its own 240x320 ego view, both served from one server). State is the raw joint-angle vector (86/43D), which the eval adapter reassembles exactly from `mhbench_state[*].joint_pos`; actions go out as `mhbench_raw_action` (the layout `MHBenchTaskEnv.take_action` requires -- DP's adapter is the reference).
+
+Data comes from MHBench's `baselines/scripts/prepare_fastwam_data.sh <task> <centralized|decentralized>`, which writes `data/<dataset_id>/{lerobot,lerobot_val}` + `dataset_stats.json` (the fixed 50/10 split; the random `val_set_proportion` carve is off). Training goes through MHBench's `train_launch.sh FastWAM ...` or the standard chain (`bash train.sh mhbench <ckpt_name> <env_cfg_type> joint <seed> 0`); `train.sh` derives the task yaml, injects the state width, resumes from the newest saved trainer state and logs to wandb (`MHBench-FastWAM`, run id = run-dir name). Checkpoints land in `checkpoints/<run>/checkpoints/weights/step_*.pt`; serving picks the newest (or `checkpoint_num`). Eval: `eval_launch.sh FastWAM <task>` on the MHBench side (`serve/FastWAM.sh`).
+
 ## Notes
 
 - Use the same `action_type` for training and evaluation. The reference FastWAM path follows XPolicyLab's `pack_robot_state` / `unpack_robot_state` helpers directly and does not add policy-local `ee` pose conversion.
