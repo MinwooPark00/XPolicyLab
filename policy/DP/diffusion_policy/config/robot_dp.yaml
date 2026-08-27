@@ -122,6 +122,9 @@ training:
   # replace BatchNorm with GroupNorm.
   use_ema: True
   freeze_encoder: False
+  # Clip the accumulated gradient's global norm before each optimizer step.
+  # null (or 0) = off, the behaviour of every DP run before this one.
+  max_grad_norm: null
   # Gaussian noise on agent_pos during training, in radians (see
   # robotworkspace.py). 0.0 = off, which is what every run before this used.
   obs_noise: 0.0

@@ -175,7 +175,13 @@ class RobotWorkspace(BaseWorkspace):
             cfg.training.gradient_accumulate_every,
             # pytorch assumes stepping LRScheduler every epoch
             # however huggingface diffusers steps it every batch
-            last_epoch=self.global_step - 1,
+            #
+            # ...but only on the batches that actually step the optimizer, so a
+            # resumed run has to divide by gradient_accumulate_every -- global_step
+            # counts micro-batches. Handing the raw count to a run accumulating 2
+            # micro-batches puts the schedule at twice its real progress, which for
+            # a cosine means the second half of the run trains at lr 0.
+            last_epoch=(self.global_step // cfg.training.gradient_accumulate_every) - 1,
         )
 
         # configure ema
@@ -228,6 +234,14 @@ class RobotWorkspace(BaseWorkspace):
             cfg.training.checkpoint_every = 1
             cfg.training.val_every = 1
             cfg.training.sample_every = 1
+
+        # Gradient-norm clip, applied to the accumulated gradient just before
+        # each optimizer step. null or 0 = off, which is what every DP run
+        # before this one did.
+        max_grad_norm = cfg.training.get("max_grad_norm", None)
+        max_grad_norm = float(max_grad_norm) if max_grad_norm else None
+        if max_grad_norm is not None:
+            print(f"[train] clipping gradient norm to {max_grad_norm}")
 
         # training loop
         log_path = os.path.join(self.output_dir, "logs.json.txt")
@@ -282,7 +296,17 @@ class RobotWorkspace(BaseWorkspace):
                         loss.backward()
 
                         # step optimizer
+                        grad_norm = None
                         if (self.global_step % cfg.training.gradient_accumulate_every == 0):
+                            # Clip the *accumulated* gradient, i.e. right before
+                            # the step that consumes it -- clipping every
+                            # backward instead would rescale each partial
+                            # gradient by a different factor and the sum would
+                            # no longer be the batch's gradient. null/0 keeps
+                            # the unclipped behaviour every run before this had.
+                            if max_grad_norm is not None:
+                                grad_norm = torch.nn.utils.clip_grad_norm_(
+                                    self.model.parameters(), max_grad_norm).item()
                             self.optimizer.step()
                             self.optimizer.zero_grad()
                             lr_scheduler.step()
@@ -301,6 +325,10 @@ class RobotWorkspace(BaseWorkspace):
                             "epoch": self.epoch,
                             "lr": lr_scheduler.get_last_lr()[0],
                         }
+                        # The pre-clip norm, so the log says how often the clip
+                        # actually bound rather than only that it was on.
+                        if grad_norm is not None:
+                            step_log["grad_norm"] = grad_norm
 
                         is_last_batch = batch_idx == (len(train_dataloader) - 1)
                         if not is_last_batch:
