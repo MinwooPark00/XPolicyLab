@@ -120,7 +120,7 @@ if [ "${bench_name}" = "mhbench" ]; then
     export WANDB_RUN_ID="${WANDB_RUN_ID:-${run_basename}}"
     export WANDB_RESUME="${WANDB_RESUME:-allow}"
     DREAMZERO_SAVE_LORA_ONLY="${DREAMZERO_SAVE_LORA_ONLY:-false}"
-    DREAMZERO_SAVE_TOTAL_LIMIT="${DREAMZERO_SAVE_TOTAL_LIMIT:-2}"
+    DREAMZERO_SAVE_TOTAL_LIMIT="${DREAMZERO_SAVE_TOTAL_LIMIT:-5}"   # base.py asserts >= 5
 fi
 python_cmd="${PYTHON:-$(command -v python || command -v python3 || true)}"
 if [ -z "${python_cmd}" ]; then
