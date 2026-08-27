@@ -1,28 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Usage: process_data.sh <bench> <ckpt> <env_cfg> <action_type> [task] [max_demos]
-bench=${1:?bench is required}
-ckpt=${2:?ckpt is required}
-env_cfg=${3:?env_cfg is required}
-action_type=${4:?action_type is required}
-task=${5:-${GAUDP_TASK:-${env_cfg}}}
-max_demos=${6:-}
-
-# Backward compatibility with the old five-argument form where argument 5 was
-# max_demos. A task name is never numeric, so the two forms are unambiguous.
-if [[ "${task}" =~ ^[0-9]+$ ]]; then
-    max_demos="${task}"
-    task="${GAUDP_TASK:-${env_cfg}}"
-fi
+POLICY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${POLICY_DIR}/launcher_args.sh"
+gaudp_parse_data_args "$@"
 if [[ "${action_type}" != "ee" ]]; then
     echo "[GauDP] only action_type=ee is supported" >&2
     exit 2
 fi
 
-POLICY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-XPL_ROOT="$(cd "${POLICY_DIR}/../.." && pwd)"
-DATASETS_ROOT="${XPL_ROOT}/datasets"
+MHBENCH_ROOT="$(cd "${POLICY_DIR}/../../../.." && pwd)"
+DATASETS_ROOT="${GAUDP_DATASETS_ROOT:-${MHBENCH_ROOT}/datasets}"
 
 is_lerobot_root() {
     [[ -f "$1/meta/info.json" && -d "$1/data" && -d "$1/videos" ]]
@@ -43,13 +31,13 @@ resolve_lerobot_root() {
     return 1
 }
 
-# Dataset folders use compact spellings while env_cfg names may contain an
-# underscore. An explicit task argument wins and permits variants such as
-# handover_easy and handover_hard that share env_cfg=handover.
+# Dataset folders may use compact spellings while env_cfg names contain an
+# underscore.
 task_names=("${task}")
 case "${task}" in
   door_passage) task_names+=(doorpassage) ;;
   frame_hang)   task_names+=(framehang) ;;
+  handover_easy) task_names+=(handovereasy) ;;
 esac
 
 source_path=""
