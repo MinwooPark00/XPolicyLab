@@ -12,6 +12,16 @@ action_dim: null
 seed: null
 eval_batch: false
 
+# MHBench serving (bench_name=mhbench, centralized only): the run directory
+# resolves through model_path/checkpoint roots as elsewhere; checkpoint_num
+# is unused (HF checkpoint-N dirs resolve to the newest). allow_dummy_policy
+# serves zero actions for the GPU-less wiring check.
+mhbench_mode: null
+model_dir: null
+ckpt_tag: null
+checkpoint_num: null
+allow_dummy_policy: false
+
 # DreamZero-specific parameters
 model_path: null
 pretrained_model_path: null

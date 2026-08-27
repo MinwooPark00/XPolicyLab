@@ -104,6 +104,21 @@ if [ "${native_dojo_action}" = "1" ] || [ "${native_dojo_action}" = "true" ]; th
     native_dojo_action=true
     data_config="${DREAMZERO_DATA_CONFIG:-dreamzero/robodojo_native_relative}"
 fi
+
+# MHBench: its own data config (the mhbench_g1x2 anchors under the reused
+# `agibot` embodiment key -- the robodojo_native precedent), full checkpoints
+# by default (the policy server loads standalone models, not LoRA adapters),
+# and the wandb run id pinned to the run-dir name so a requeue resumes the
+# same run and eval can write its rollout numbers back.
+if [ "${bench_name}" = "mhbench" ]; then
+    data_config="${DREAMZERO_DATA_CONFIG:-dreamzero/mhbench_relative}"
+    export WANDB_PROJECT="${WANDB_PROJECT:-MHBench-DreamZero}"
+    export WANDB_ENTITY="${WANDB_ENTITY:-mhbench_baselines}"
+    export WANDB_RUN_ID="${WANDB_RUN_ID:-${run_basename}}"
+    export WANDB_RESUME="${WANDB_RESUME:-allow}"
+    DREAMZERO_SAVE_LORA_ONLY="${DREAMZERO_SAVE_LORA_ONLY:-false}"
+    DREAMZERO_SAVE_TOTAL_LIMIT="${DREAMZERO_SAVE_TOTAL_LIMIT:-2}"
+fi
 python_cmd="${PYTHON:-$(command -v python || command -v python3 || true)}"
 if [ -z "${python_cmd}" ]; then
     echo "[DreamZero train][ERROR] Python executable not found. Activate the dreamzero conda env first."
@@ -131,8 +146,13 @@ require_dir() {
 }
 
 if [ "${DREAMZERO_DRY_RUN:-0}" != "1" ]; then
-    require_dir "${pretrained_model_path}" \
-        "Set DREAMZERO_PRETRAINED_MODEL_PATH to the local DreamZero-AgiBot checkpoint directory."
+    # DREAMZERO_PRETRAINED_MODEL_PATH=none trains from the Wan2.1 weights alone
+    # (the documented new-embodiment fallback when the DreamZero-AgiBot init
+    # refuses a different action head).
+    if [ "${pretrained_model_path}" != "none" ]; then
+        require_dir "${pretrained_model_path}" \
+            "Set DREAMZERO_PRETRAINED_MODEL_PATH to the local DreamZero-AgiBot checkpoint directory (or 'none')."
+    fi
     require_file "${wan_ckpt_dir}/models_t5_umt5-xxl-enc-bf16.pth" \
         "Download Wan-AI/Wan2.1-I2V-14B-480P or set WAN_CKPT_DIR to its local directory."
     require_file "${wan_ckpt_dir}/models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth" \
@@ -227,11 +247,13 @@ torchrun --nproc_per_node "${num_gpus}" --standalone groot/vla/experiment/experi
     image_encoder_pretrained_path="${wan_ckpt_dir}/models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth" \
     vae_pretrained_path="${wan_ckpt_dir}/Wan2.1_VAE.pth" \
     tokenizer_path="${tokenizer_dir}" \
-    pretrained_model_path="${pretrained_model_path}" \
     ++action_head_cfg.config.skip_component_loading=true \
     ++action_head_cfg.config.defer_lora_injection=true \
     ++action_head_cfg.config.native_dojo_action="${native_dojo_action}"
 )
+if [ "${pretrained_model_path}" != "none" ]; then
+    TRAIN_CMD+=("pretrained_model_path=${pretrained_model_path}")
+fi
 
 if [ "${DREAMZERO_DRY_RUN:-0}" = "1" ]; then
     printf '[DreamZero train] Dry run command:'

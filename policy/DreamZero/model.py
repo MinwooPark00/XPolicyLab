@@ -46,6 +46,38 @@ DEFAULT_CAMERA_GROUPS = (
     ("cam_right_wrist", "cam_hand_right"),
 )
 
+# MHBench: the env serves scene as cam_head, ego_a as cam_left_wrist and ego_b
+# as cam_right_wrist (mhbench_xpolicylab_env._VISION_SLOT); training used the
+# video.scene/ego_a/ego_b keys of the mhbench_relative data config, and the
+# state/action sub-keys below are the ones its GEAR conversion declared.
+MHBENCH_VIDEO_KEYS = (
+    (("cam_head", "cam_high"), "video.scene"),
+    (("cam_left_wrist", "cam_hand_left"), "video.ego_a"),
+    (("cam_right_wrist", "cam_hand_right"), "video.ego_b"),
+)
+MHBENCH_ACTION_FIELDS = (("action.upper_a", 31), ("action.base_a", 4),
+                         ("action.upper_b", 31), ("action.base_b", 4))
+
+
+def _is_true(value):
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    return str(value).lower() in {"1", "true", "yes", "y"}
+
+
+def _pack_mhbench_robot(upper: np.ndarray, base: np.ndarray) -> dict:
+    """One robot's (31,) targets + (4,) base -> MHBenchTaskEnv.take_action's
+    {joint_targets, height, base_vel} (DP's model.py is the reference)."""
+    upper = np.asarray(upper, dtype=np.float32).reshape(-1)
+    base = np.asarray(base, dtype=np.float32).reshape(-1)
+    return {
+        "joint_targets": upper[:31],
+        "height": base[0:1],
+        "base_vel": base[1:4],
+    }
+
 
 def _configure_torch_dynamo_for_eval() -> None:
     """Match DreamZero's original serving defaults for autoregressive inference."""
@@ -209,8 +241,32 @@ class Model(ModelTemplate):
         self.env_cfg_type = model_cfg["env_cfg_type"]
         self.task_name = model_cfg.get("task_name", "")
         self.default_prompt = model_cfg.get("prompt") or "Do your job."
-        self.robot_action_dim_info = get_robot_action_dim_info(self.env_cfg_type)
-        self.expected_action_dim = sum(self.robot_action_dim_info["arm_dim"]) + sum(self.robot_action_dim_info["ee_dim"])
+        self._mhbench = str(model_cfg.get("bench_name") or "") == "mhbench"
+        self.allow_dummy_policy = _is_true(model_cfg.get("allow_dummy_policy", False))
+        if self._mhbench:
+            if self.env_cfg_type != "unitree_g1x2_centralized":
+                raise ValueError(
+                    f"DreamZero's mhbench branch is centralized-only for now, got {self.env_cfg_type}"
+                )
+            # No env_cfg/<type>.yml exists for the mhbench profiles; the widths
+            # are the benchmark's fixed contract (70 = 2 x (31+1+3)).
+            self.robot_action_dim_info = None
+            self.expected_action_dim = 70
+            # The instruction the checkpoint trained with, from the converted
+            # dataset the run consumed; deploy.yml's `prompt` overrides it.
+            if not model_cfg.get("prompt"):
+                ckpt = str(model_cfg.get("ckpt_name") or "").strip()
+                data_tag = f"mhbench-{ckpt}-{self.env_cfg_type}-{model_cfg.get('action_type', 'joint')}"
+                tasks_file = SCRIPT_DIR / "data" / data_tag / "meta" / "tasks.jsonl"
+                try:
+                    import json as _json
+                    self.default_prompt = str(_json.loads(tasks_file.read_text().splitlines()[0])["task"])
+                except (OSError, IndexError, KeyError, ValueError):
+                    print(f"[DreamZero Model] no readable {tasks_file}; using the default prompt")
+        else:
+            self.robot_action_dim_info = get_robot_action_dim_info(self.env_cfg_type)
+        if not self._mhbench:
+            self.expected_action_dim = sum(self.robot_action_dim_info["arm_dim"]) + sum(self.robot_action_dim_info["ee_dim"])
         configured_action_dim = model_cfg.get("action_dim")
         if configured_action_dim is not None and int(configured_action_dim) != self.expected_action_dim:
             raise ValueError(
@@ -224,6 +280,14 @@ class Model(ModelTemplate):
         self.skip_img_transform = _as_bool(model_cfg.get("skip_img_transform"), False)
         self.tokenizer_path = _resolve_tokenizer_path(model_cfg)
         self.native_dojo_action = _as_bool(model_cfg.get("native_dojo_action"), False)
+
+        if self.allow_dummy_policy:
+            print("[DreamZero Model] allow_dummy_policy=true; serving zero actions for debug flow only.")
+            self.policy = None
+            self._obs_batch = {}
+            self._frame_buffers = {}
+            self._latest_env_idx_list = [0]
+            return
 
         self.model_path = _resolve_model_path(model_cfg)
         _configure_torch_dynamo_for_eval()
@@ -263,6 +327,13 @@ class Model(ModelTemplate):
         for env_idx in env_idx_list:
             if env_idx not in self._obs_batch:
                 raise RuntimeError(f"No observation buffered for env_idx={env_idx}. Call update_obs first.")
+            if self.allow_dummy_policy:
+                zero = {
+                    robot: _pack_mhbench_robot(np.zeros(31, np.float32), np.zeros(4, np.float32))
+                    for robot in ("robot_a", "robot_b")
+                }
+                batch_actions.append([{"mhbench_raw_action": dict(zero)} for _ in range(self.action_horizon)])
+                continue
             batch = Batch(obs=self._obs_batch[env_idx])
             with torch.inference_mode():
                 if self.inference_method == "lazy_joint_forward_causal":
@@ -281,6 +352,8 @@ class Model(ModelTemplate):
         print("[DreamZero Model] Reset")
 
     def _encode_obs(self, observation: dict[str, Any], env_idx: int) -> dict[str, Any]:
+        if self._mhbench:
+            return self._encode_obs_mhbench(observation, env_idx)
         buffers = self._frame_buffers.setdefault(
             env_idx,
             {"video.top_head": [], "video.hand_left": [], "video.hand_right": []},
@@ -326,7 +399,59 @@ class Model(ModelTemplate):
         encoded.update(state_fields)
         return encoded
 
+    def _encode_obs_mhbench(self, observation: dict[str, Any], env_idx: int) -> dict[str, Any]:
+        buffers = self._frame_buffers.setdefault(
+            env_idx, {key: [] for _, key in MHBENCH_VIDEO_KEYS}
+        )
+        for camera_keys, video_key in MHBENCH_VIDEO_KEYS:
+            frame = _extract_image(observation.get("vision", {}), camera_keys, self.image_resize)
+            buffers[video_key].append(frame)
+            buffers[video_key] = buffers[video_key][-self.video_history :]
+
+        state = observation.get("mhbench_state")
+        if state is None:
+            if not self.allow_dummy_policy:
+                raise KeyError(
+                    "obs has no 'mhbench_state' -- the MHBench env client publishes it; "
+                    "this branch cannot run against a generic client"
+                )
+            state = {r: {"joint_pos": np.zeros(43, np.float32)} for r in ("robot_a", "robot_b")}
+
+        prompt = observation.get("instruction", observation.get("instructions", self.default_prompt))
+        if isinstance(prompt, (list, tuple)):
+            prompt = prompt[0] if prompt else self.default_prompt
+        if not str(prompt).strip():
+            prompt = self.default_prompt
+
+        encoded = {
+            key: _stack_recent_frames(buffers[key], self.video_history)
+            for _, key in MHBENCH_VIDEO_KEYS
+        }
+        encoded["annotation.tasks"] = str(prompt)
+        encoded["state.joints_a"] = np.asarray(state["robot_a"]["joint_pos"], np.float32).reshape(1, 43)
+        encoded["state.joints_b"] = np.asarray(state["robot_b"]["joint_pos"], np.float32).reshape(1, 43)
+        return encoded
+
+    def _decode_actions_mhbench(self, action: dict[str, Any]) -> list[dict[str, Any]]:
+        fields = {
+            key: _extract_action_value(action, key, dim)
+            for key, dim in MHBENCH_ACTION_FIELDS
+        }
+        horizon = min(self.action_horizon, *(v.shape[0] for v in fields.values()))
+        steps = []
+        for t in range(max(horizon, 1)):
+            pick = {key: fields[key][min(t, fields[key].shape[0] - 1)] for key, _ in MHBENCH_ACTION_FIELDS}
+            steps.append({
+                "mhbench_raw_action": {
+                    "robot_a": _pack_mhbench_robot(pick["action.upper_a"], pick["action.base_a"]),
+                    "robot_b": _pack_mhbench_robot(pick["action.upper_b"], pick["action.base_b"]),
+                }
+            })
+        return steps
+
     def _decode_actions(self, action: dict[str, Any]) -> list[dict[str, np.ndarray]]:
+        if self._mhbench:
+            return self._decode_actions_mhbench(action)
         left_arm_dim = int(self.robot_action_dim_info["arm_dim"][0])
         right_arm_dim = int(self.robot_action_dim_info["arm_dim"][1])
         left_ee_dim = int(self.robot_action_dim_info["ee_dim"][0])
