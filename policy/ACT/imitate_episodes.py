@@ -163,10 +163,10 @@ def train_bc(train_dataloader, val_dataloader, config):
 
     set_seed(seed)
     
-    wandb.init(project="mhbench-act", name=f"{config['ckpt_setting']}-seed{seed}", config=config)
+    wandb.init(project=os.environ.get("WANDB_PROJECT", "mhbench-act"), name=f"{config['ckpt_setting']}-seed{seed}", config=config)
 
 
-    wandb.init(project="mhbench-act", name=f"{config['ckpt_setting']}-seed{seed}", config=config)
+    wandb.init(project=os.environ.get("WANDB_PROJECT", "mhbench-act"), name=f"{config['ckpt_setting']}-seed{seed}", config=config)
 
     policy = make_policy(policy_class, policy_config)
     policy.cuda()
