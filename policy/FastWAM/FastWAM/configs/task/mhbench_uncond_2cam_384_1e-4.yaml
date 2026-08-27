@@ -12,7 +12,11 @@ batch_size: 16
 num_workers: 8
 
 model:
-  mot_checkpoint_mixed_attn: false
+  # true also turns on gradient checkpointing (fastwam.yaml ties them), which
+  # is what fits a 5.6B-trainable DiT on 4x48GB with ZeRO-2 -- robotwin ran
+  # 64 GPUs and could afford false. Inference never checkpoints, so serving
+  # through this yaml is unaffected.
+  mot_checkpoint_mixed_attn: true
   # Self-contained on the Wan-AI/Wan2.2-TI2V-5B files (the T5 encoder and VAE
   # ship there as .pth): the DiffSynth-Studio safetensors redirect repo lives
   # on ModelScope, which a compute node cannot reach, and the loader hashes

@@ -74,6 +74,12 @@ num_workers="${FASTWAM_NUM_WORKERS:-8}"
 # be a non-null integer or trainer init crashes. Inject a large dummy by default;
 # user can override with FASTWAM_NUM_EPOCHS.
 num_epochs_override="${FASTWAM_NUM_EPOCHS:-16}"
+# Which ZeRO stage launches the run: 1 (upstream default) or 2. A 5.6B
+# trainable DiT's fp32 optimizer partition alone is ~67 GB, so few-GPU runs
+# want stage 2 (optimizer AND gradients sharded); MHBench's training hook
+# sets 2.
+zero_stage="${FASTWAM_ZERO:-1}"
+case "${zero_stage}" in 1|2) ;; *) echo "[ERROR] FASTWAM_ZERO must be 1 or 2, got ${zero_stage}" >&2; exit 2 ;; esac
 
 if [[ ! -d "${dataset_dir}/meta" ]]; then
     echo "[ERROR] LeRobot dataset not found: ${dataset_dir}/meta"
@@ -148,6 +154,13 @@ train_common=(
     "output_dir=${POLICY_DIR}/checkpoints/${ckpt_setting}"
 )
 
+# Anything else, verbatim, as a space-separated list of hydra overrides --
+# probe runs (num_epochs=1 wandb.mode=offline) that must not be named here.
+# shellcheck disable=SC2206
+if [[ -n "${FASTWAM_EXTRA:-}" ]]; then
+    train_common+=(${FASTWAM_EXTRA})
+fi
+
 if [[ "${bench_name}" == "mhbench" ]]; then
     # wandb.init reads WANDB_RUN_ID from the environment (the trainer passes
     # no id of its own), so pinning it to the run-dir name lets a requeue
@@ -155,6 +168,9 @@ if [[ "${bench_name}" == "mhbench" ]]; then
     export WANDB_ENTITY="${WANDB_ENTITY:-mhbench_baselines}"
     export WANDB_RUN_ID="${WANDB_RUN_ID:-${ckpt_setting}}"
     export WANDB_RESUME="${WANDB_RESUME:-allow}"
+    # One resumable state is enough, and a ZeRO-2 state is tens of GB: keep
+    # only the newest unless the caller says otherwise.
+    export FASTWAM_KEEP_STATES="${FASTWAM_KEEP_STATES:-1}"
     train_common+=(
         "wandb.enabled=true"
         "wandb.workspace=${WANDB_ENTITY}"
@@ -172,4 +188,4 @@ if [[ "${bench_name}" == "mhbench" ]]; then
     fi
 fi
 
-bash scripts/train_zero1.sh "${num_gpus}" "${train_common[@]}"
+bash "scripts/train_zero${zero_stage}.sh" "${num_gpus}" "${train_common[@]}"

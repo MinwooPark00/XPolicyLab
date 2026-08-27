@@ -596,6 +596,24 @@ class Wan22Trainer:
             self._save_trainer_state(state_path)
         self.accelerator.wait_for_everyone()
 
+        # FASTWAM_KEEP_STATES=N keeps only the N newest state dirs (resume
+        # needs one; a full DS ZeRO-2 state is tens of GB per save, and
+        # nothing else ever reads an older one -- the per-step weights .pt
+        # files are what curve evaluation uses). 0/unset keeps everything,
+        # the upstream behaviour.
+        keep = int(os.environ.get("FASTWAM_KEEP_STATES", "0") or 0)
+        if keep > 0 and self.accelerator.is_main_process:
+            import shutil
+
+            states = sorted(
+                d for d in os.listdir(self.state_dir)
+                if d.startswith("step_") and os.path.isdir(os.path.join(self.state_dir, d))
+            )
+            for stale in states[:-keep]:
+                shutil.rmtree(os.path.join(self.state_dir, stale), ignore_errors=True)
+                logger.info("[ckpt] pruned old state %s (FASTWAM_KEEP_STATES=%d)", stale, keep)
+        self.accelerator.wait_for_everyone()
+
         return {"weights_path": ckpt_path, "state_path": state_path}
 
     def load_training_state(self, state_dir: str):
