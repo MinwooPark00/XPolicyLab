@@ -56,11 +56,27 @@ train:
   text_embedding_cache_dir: ./data/text_embeds_cache/mhbench
   context_len: 128
 
+# shape_meta and processor are spelled out rather than interpolated from
+# train, matching robotwin.yaml: train.sh overrides the action/state widths on
+# both splits, and hydra cannot reach through `${data.train.shape_meta}` to a
+# key that does not exist under data.val ("Key 'action' is not in struct").
 val:
   _target_: fastwam.datasets.lerobot.robot_video_dataset.RobotVideoDataset
   dataset_dirs:
     - ./data/mhbench/lerobot_val
-  shape_meta: ${data.train.shape_meta}
+  shape_meta:
+    images:
+      - key: ego
+        raw_shape: [3, 240, 320]
+        shape: [3, 240, 320]
+    action:
+      - key: default
+        raw_shape: 35
+        shape: 35
+    state:
+      - key: default
+        raw_shape: 43
+        shape: 43
   num_frames: ${data.train.num_frames}
   global_sample_stride: ${data.train.global_sample_stride}
   action_video_freq_ratio: ${data.train.action_video_freq_ratio}
@@ -71,6 +87,26 @@ val:
   pretrained_norm_stats: ${data.train.pretrained_norm_stats}
   skip_padding_as_possible: false
   concat_multi_camera: ${data.train.concat_multi_camera}
-  processor: ${data.train.processor}
+  processor:
+    _target_: fastwam.datasets.lerobot.processors.fastwam_processor.FastWAMProcessor
+    shape_meta: ${data.val.shape_meta}
+    num_obs_steps: ${data.train.num_frames}
+    num_output_cameras: 1
+    action_output_dim: 35
+    proprio_output_dim: 43
+    action_state_transforms: null
+    use_stepwise_action_norm: False
+    norm_default_mode: "z-score"
+    norm_exception_mode: null
+    action_state_merger:
+      _target_: fastwam.datasets.lerobot.transforms.action_state_merger.ConcatLeftAlign
+    train_transforms:
+      - _target_: fastwam.datasets.lerobot.transforms.image.ToTensor
+      - _target_: torchvision.transforms.Resize
+        size: [240, 320]
+    val_transforms:
+      - _target_: fastwam.datasets.lerobot.transforms.image.ToTensor
+      - _target_: torchvision.transforms.Resize
+        size: [240, 320]
   text_embedding_cache_dir: ${data.train.text_embedding_cache_dir}
   context_len: ${data.train.context_len}

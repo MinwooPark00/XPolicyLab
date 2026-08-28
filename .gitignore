@@ -22,3 +22,6 @@ datasets/
 
 # Machine-local symlink into /scratch2 (DreamZero has no policy-level .gitignore)
 policy/DreamZero/checkpoints
+
+# Machine-local symlink into /scratch2 (a bare symlink is not matched by checkpoints/)
+policy/FastWAM/checkpoints

@@ -74,12 +74,16 @@ num_workers="${FASTWAM_NUM_WORKERS:-8}"
 # be a non-null integer or trainer init crashes. Inject a large dummy by default;
 # user can override with FASTWAM_NUM_EPOCHS.
 num_epochs_override="${FASTWAM_NUM_EPOCHS:-16}"
-# Which ZeRO stage launches the run: 1 (upstream default) or 2. A 5.6B
+# Which ZeRO stage launches the run: 1 (upstream default), 2, or 2off. A 5.6B
 # trainable DiT's fp32 optimizer partition alone is ~67 GB, so few-GPU runs
 # want stage 2 (optimizer AND gradients sharded); MHBench's training hook
-# sets 2.
+# sets 2. 2off adds CPU offload of that optimizer partition, which is what
+# makes 24 GB cards viable at all: stage 2 still replicates the bf16 weights
+# (~12 GB) on every GPU, so without offload even eight 24 GB GPUs leave no
+# room for activations. Offload trades that for a CPU AdamW step, so pair it
+# with gradient accumulation to keep the optimizer-step rate down.
 zero_stage="${FASTWAM_ZERO:-1}"
-case "${zero_stage}" in 1|2) ;; *) echo "[ERROR] FASTWAM_ZERO must be 1 or 2, got ${zero_stage}" >&2; exit 2 ;; esac
+case "${zero_stage}" in 1|2|2off) ;; *) echo "[ERROR] FASTWAM_ZERO must be 1, 2 or 2off, got ${zero_stage}" >&2; exit 2 ;; esac
 
 if [[ ! -d "${dataset_dir}/meta" ]]; then
     echo "[ERROR] LeRobot dataset not found: ${dataset_dir}/meta"
@@ -181,7 +185,11 @@ if [[ "${bench_name}" == "mhbench" ]]; then
     # A requeued job resumes from the newest saved trainer state (optimizer,
     # scheduler, step), which is what makes #SBATCH --requeue on the MHBench
     # runner cost steps rather than the run.
-    latest_state=$(ls -1d "${POLICY_DIR}/checkpoints/${ckpt_setting}/checkpoints/state/step_"* 2>/dev/null | sort | tail -1)
+    # `|| latest_state=` matters: with `set -o pipefail` a first run (no state
+    # dir yet) would otherwise fail the whole pipeline on ls's exit 2 and kill
+    # the script silently, since ls's stderr is discarded. `sort -V` because
+    # plain sort puts step_2500 after step_10000.
+    latest_state=$(ls -1d "${POLICY_DIR}/checkpoints/${ckpt_setting}/checkpoints/state/step_"* 2>/dev/null | sort -V | tail -1) || latest_state=
     if [[ -n "${latest_state}" ]]; then
         echo "[FastWAM] resuming from ${latest_state}"
         train_common+=("resume=${latest_state}")
