@@ -1,5 +1,6 @@
 # @package _global_
-# MHBench decentralized (one ego view, 240x320), uncond FastWAM.
+# MHBench decentralized (one ego view, 240x320 native -> 192x320 canvas),
+# uncond FastWAM.
 # Mirrors robotwin_uncond_3cam_384_1e-4 with the mhbench data config.
 
 defaults:

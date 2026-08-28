@@ -25,7 +25,13 @@ train:
   num_frames: 33
   global_sample_stride: 1
   action_video_freq_ratio: 4 # 32 action steps, 9 video frames
-  video_size: [240, 320]
+  # 192, not the camera's native 240: the VAE compresses space 16x and the DiT
+  # patch is 2x2, so a side must be a multiple of 32 (240 -> latent 15, odd,
+  # and training dies on "Latent spatial shape must be divisible by DiT patch
+  # size"). 192 is also exactly the per-view height centralized ends up with
+  # (two views stacked into its 384 canvas), so both modes see a view at the
+  # same resolution.
+  video_size: [192, 320]
   camera_key: null
   val_set_proportion: 0.0
   is_training_set: true

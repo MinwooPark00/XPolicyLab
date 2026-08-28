@@ -31,7 +31,7 @@ MHBENCH_CAMERA_SLOT = {"robot_a": "cam_left_wrist", "robot_b": "cam_right_wrist"
 # trains under, so serving cannot compose a different processor than training.
 MHBENCH_SIM_TASK = {
     "unitree_g1x2_centralized": "mhbench_uncond_2cam_384_1e-4",
-    "unitree_g1x2_decentralized": "mhbench_uncond_1cam_240_1e-4",
+    "unitree_g1x2_decentralized": "mhbench_uncond_1cam_192_1e-4",
 }
 
 
@@ -105,11 +105,12 @@ def _mhbench_image_tensor_method(env_cfg_type: str):
 
     Training's geometry, reproduced in the training order: per-view frames
     arrive 240x320 (the env's native resolution and the data config's
-    per-camera size, so the first Resize is a no-op), the centralized pair is
-    stacked vertically to 480x320 and resized once to the 384x320 canvas
-    (concat_multi_camera: "vertical" + video_size in
-    configs/data/mhbench_centralized.yaml); decentralized serves its single
-    240x320 view as-is. PIL bilinear, as the upstream robotwin builder uses.
+    per-camera size, so the first Resize is a no-op), then each mode resizes
+    once to its video_size canvas -- centralized stacks the pair vertically to
+    480x320 and resizes to 384x320, decentralized resizes its single view to
+    192x320. Both therefore show a view at the same 192x320, and both sides are
+    a multiple of 32, which the VAE (16x) and DiT patch (2x2) require. PIL
+    bilinear, as the upstream robotwin builder uses.
     """
     from PIL import Image
     import torch
@@ -126,7 +127,7 @@ def _mhbench_image_tensor_method(env_cfg_type: str):
             canvas = np.concatenate([images["ego_a"], images["ego_b"]], axis=0)  # (480, 320, 3)
             canvas = _resize(canvas, (320, 384))  # (384, 320, 3)
         else:
-            canvas = images["ego"]  # (240, 320, 3)
+            canvas = _resize(images["ego"], (320, 192))  # (192, 320, 3)
         # Decoded observation arrays are read-only views (AGENTS.md); copy before
         # handing them to torch.
         tensor = torch.from_numpy(np.array(canvas, dtype=np.uint8, copy=True)).permute(2, 0, 1).unsqueeze(0).to(

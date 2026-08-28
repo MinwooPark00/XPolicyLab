@@ -3,7 +3,7 @@
 # policy/FastWAM/deploy.yml says sim_cfg_name: sim_mhbench.yaml. The task
 # override picks the mode (deploy.yml's sim_task):
 #   mhbench_uncond_2cam_384_1e-4  centralized (default here)
-#   mhbench_uncond_1cam_240_1e-4  decentralized
+#   mhbench_uncond_1cam_192_1e-4  decentralized
 # Mirrors sim_robotwin.yaml: the checkpoint carries every weight, so the
 # ActionDiT preprocess artefact is not needed at serving time.
 

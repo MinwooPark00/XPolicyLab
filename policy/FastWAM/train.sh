@@ -51,7 +51,7 @@ if [[ "${bench_name}" == "mhbench" ]]; then
     state_dim=$(bash "${UTILS_DIR}/get_state_dim.sh" "${ROOT_DIR}" "${env_cfg_type}")
     case "${env_cfg_type}" in
         unitree_g1x2_centralized)   task_name="mhbench_uncond_2cam_384_1e-4" ;;
-        unitree_g1x2_decentralized) task_name="mhbench_uncond_1cam_240_1e-4" ;;
+        unitree_g1x2_decentralized) task_name="mhbench_uncond_1cam_192_1e-4" ;;
         *) echo "[ERROR] unknown mhbench env_cfg_type: ${env_cfg_type}" >&2; exit 2 ;;
     esac
 else
