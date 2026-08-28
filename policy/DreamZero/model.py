@@ -262,6 +262,7 @@ class Model(ModelTemplate):
         self._mhbench = str(model_cfg.get("bench_name") or "") == "mhbench"
         self.allow_dummy_policy = _is_true(model_cfg.get("allow_dummy_policy", False))
         self._decentralized = self.env_cfg_type == "unitree_g1x2_decentralized"
+        self._shared = False
         if self._mhbench:
             if self.env_cfg_type not in ("unitree_g1x2_centralized", "unitree_g1x2_decentralized"):
                 raise ValueError(
@@ -272,11 +273,20 @@ class Model(ModelTemplate):
             # centralized concatenates two of them).
             self.robot_action_dim_info = None
             self.expected_action_dim = 35 if self._decentralized else 70
-            # The instruction the checkpoint trained with, from the converted
-            # dataset the run consumed; deploy.yml's `prompt` overrides it.
+            # What a decentralized checkpoint is: `shared` is one multitask
+            # policy driving both agents, told them apart by the instruction
+            # each is given; `per_robot` is the older pair. eval_policy.sbatch
+            # sends whichever the serving hook declares.
+            self._shared = self._decentralized and str(
+                model_cfg.get("mhbench_decentralized_style") or "per_robot"
+            ).strip().lower() == "shared"
+            # A fallback instruction, for a deploy.py driving this model outside
+            # the eval client: the first sentence of the converted dataset the
+            # run consumed. The eval client sends each agent its own
+            # (`mhbench_instruction`), and deploy.yml's `prompt` beats both.
             if not model_cfg.get("prompt"):
                 ckpt = str(model_cfg.get("ckpt_name") or "").strip()
-                suffix = "_robot_a" if self._decentralized else ""
+                suffix = "_robot_a" if (self._decentralized and not self._shared) else ""
                 data_tag = f"mhbench-{ckpt}{suffix}-{self.env_cfg_type}-{model_cfg.get('action_type', 'joint')}"
                 tasks_file = SCRIPT_DIR / "data" / data_tag / "meta" / "tasks.jsonl"
                 try:
@@ -338,27 +348,46 @@ class Model(ModelTemplate):
     def _policy_device(index: int) -> str:
         """cuda:<index> when that many GPUs are visible, else fall back.
 
-        Decentralized serves two 22.9B policies from one process (~46 GB each
-        in bf16), which does not fit one card. Give the eval job two GPUs
-        (EVAL_GRES=gpu:2) and each robot lands on its own; with one visible
-        they share it, which only works on a 96 GB card and with the video
-        history kept short.
+        The shared multitask checkpoint is ONE 22.9B policy (~46 GB in bf16)
+        driving both agents, so one card is enough. Per-robot checkpoints are
+        two, which is not: give that eval job two GPUs (EVAL_GRES=gpu:2) and
+        each robot lands on its own; with one visible they share it, which only
+        works on a 96 GB card and with the video history kept short.
         """
         if not torch.cuda.is_available():
             return "cpu"
         return f"cuda:{index if index < torch.cuda.device_count() else 0}"
 
     def _load_mhbench_decentralized(self, model_cfg):
-        """One policy per robot, named the way its training run was.
+        """The decentralized policies, per what the checkpoint is.
 
-        Trained separately as mhbench-<task>_robot_a/-unitree_g1x2_decentralized
-        and ..._robot_b, so `ckpt_name` here is the task (e.g. handover_easy),
-        not a run dir -- the same convention DP, ACT, GR00T_N17 and FastWAM use
-        for this mode.
+        `shared` (the shipped form) is ONE policy trained on every task and
+        both roles, queried once per agent with that agent's own view and its
+        own instruction -- one 22.9B model on the card instead of two.
+        `per_robot` is the older pair, trained separately as
+        mhbench-<task>_robot_a/-unitree_g1x2_decentralized and ..._robot_b, so
+        `ckpt_name` there is the task -- the same convention DP, ACT, GR00T_N17
+        and FastWAM use for that mode.
         """
+        if self._shared:
+            path = model_cfg.get("model_dir") and Path(model_cfg["model_dir"]).expanduser().resolve()
+            path = (_latest_checkpoint(path) or path) if path else _resolve_model_path(model_cfg)
+            device = self._policy_device(0)
+            print(f"[DreamZero Model] shared (multitask): {path} (device={device})")
+            policy = GrootSimPolicy(
+                embodiment_tag=EmbodimentTag.AGIBOT,
+                model_path=str(path),
+                device=device,
+                tokenizer_path_override=self.tokenizer_path,
+                skip_img_transform=self.skip_img_transform,
+            )
+            for robot in MHBENCH_ROBOTS:
+                self._sub_policies[robot] = policy
+            return
+
         task = str(model_cfg.get("ckpt_name") or "").strip()
         if not task:
-            raise ValueError("mhbench decentralized eval needs ckpt_name=<task> (e.g. handover_easy)")
+            raise ValueError("mhbench per-robot eval needs ckpt_name=<task> (e.g. handover)")
         for index, robot in enumerate(MHBENCH_ROBOTS):
             explicit = model_cfg.get(f"model_dir_{robot}")
             if explicit:
@@ -508,17 +537,31 @@ class Model(ModelTemplate):
                 )
             state = {r: {"joint_pos": np.zeros(43, np.float32)} for r in MHBENCH_ROBOTS}
 
-        prompt = self._mhbench_prompt(observation)
         return {
             robot: {
                 MHBENCH_DEC_VIDEO_KEY: _stack_recent_frames(buffers[robot], self.video_history),
-                "annotation.tasks": prompt,
+                "annotation.tasks": self._mhbench_prompt(observation, robot),
                 "state.joints": np.asarray(state[robot]["joint_pos"], np.float32).reshape(1, 43),
             }
             for robot in MHBENCH_ROBOTS
         }
 
-    def _mhbench_prompt(self, observation: dict[str, Any]) -> str:
+    def _mhbench_prompt(self, observation: dict[str, Any], robot: str | None = None) -> str:
+        """What this agent is told to do.
+
+        `robot` names one agent in decentralized mode -- the two halves of a
+        task are different jobs (cocarry: one side-steps right, the other
+        left), and telling both the pair's sentence tells each to do its
+        partner's half too. The env publishes all three
+        (`mhbench_instruction`, from scripts/_task_text.py); `instruction` is
+        the pair's, and deploy.yml's `prompt` overrides everything.
+        """
+        if self.model_cfg.get("prompt"):
+            return str(self.model_cfg["prompt"])
+        if robot is not None:
+            per_agent = (observation.get("mhbench_instruction") or {}).get(robot)
+            if per_agent and str(per_agent).strip():
+                return str(per_agent)
         prompt = observation.get("instruction", observation.get("instructions", self.default_prompt))
         if isinstance(prompt, (list, tuple)):
             prompt = prompt[0] if prompt else self.default_prompt

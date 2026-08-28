@@ -46,6 +46,11 @@ MHBENCH_ROBOTS = ("robot_a", "robot_b")
 # MHBenchTaskEnv.get_obs puts each robot's ego camera on an XPolicyLab-generic
 # slot name; the scene camera lands on cam_head and no pi0.5 target reads it.
 MHBENCH_VIDEO_SLOT = {"ego_a": "cam_left_wrist", "ego_b": "cam_right_wrist"}
+MHBENCH_EGO_VIEW = {"robot_a": "ego_a", "robot_b": "ego_b"}
+
+# The run name of the shared decentralized policy -- one set of weights over
+# every task and both roles, so it is named for neither.
+MHBENCH_MULTITASK_CKPT = "multitask"
 
 # Per robot the policy commands 35 numbers, and MHBenchTaskEnv.take_action reads
 # them back in these three pieces. Same split ACT and DP pack (see
@@ -67,13 +72,21 @@ def _mhbench_train_config_name(task: str, robot: str | None) -> str:
     Derived from the task and the target rather than read from a `deploy.yml`
     key, so a checkpoint can never be served through another target's config --
     which would silently apply the wrong action width, prompt and norm stats.
+
+    The shared multitask policy is one config over the flattened all-task
+    dataset (`ckpt_name` is `multitask`, not a task), and it is the same one
+    for both agents -- what tells them apart is the instruction each is sent.
     """
+    if task == MHBENCH_MULTITASK_CKPT:
+        return "pi05_mhbench_multitask_decentralized"
     return f"pi05_mhbench_{task}_{robot or 'centralized'}"
 
 
 def _mhbench_model_dir(model_cfg: dict[str, Any], task: str, robot: str | None) -> Path:
     """`checkpoints/mhbench-<task>[_<robot>]-<env_cfg_type>-joint-<seed>/<step>`."""
-    explicit = model_cfg.get("model_dir" if robot is None else f"model_dir_{robot}")
+    explicit = model_cfg.get(
+        "model_dir" if robot is None or task == MHBENCH_MULTITASK_CKPT else f"model_dir_{robot}"
+    )
     if explicit:
         return _resolve_pi05_model_root({**model_cfg, "model_path": explicit})
 
@@ -81,6 +94,10 @@ def _mhbench_model_dir(model_cfg: dict[str, Any], task: str, robot: str | None) 
     if robot is None:
         run_cfg["ckpt_name"] = task
         run_cfg["env_cfg_type"] = MHBENCH_CENTRALIZED_ENV_CFG_TYPE
+    elif task == MHBENCH_MULTITASK_CKPT:
+        # One run directory, named for neither a task nor a robot.
+        run_cfg["ckpt_name"] = task
+        run_cfg["env_cfg_type"] = MHBENCH_DECENTRALIZED_ENV_CFG_TYPE
     else:
         run_cfg["ckpt_name"] = f"{task}_{robot}"
         run_cfg["env_cfg_type"] = MHBENCH_DECENTRALIZED_ENV_CFG_TYPE
@@ -112,6 +129,24 @@ def _encode_mhbench_obs(observation: dict[str, Any]) -> dict[str, Any]:
     for camera, slot in MHBENCH_VIDEO_SLOT.items():
         encoded[f"observation/{camera}"] = np.asarray(observation["vision"][slot]["color"])
     return encoded
+
+
+def _encode_mhbench_shared_obs(observation: dict[str, Any], robot: str) -> dict[str, Any]:
+    """One agent's view of the observation, as `MHBenchSharedInputs` reads it.
+
+    The shared policy trains on the flattened all-task dataset, where a row is
+    one robot: 43 joint angles and one camera. Which robot is decided here;
+    what it is being asked to do is the prompt, which the eval client sends per
+    agent.
+    """
+    return {
+        "observation/state": np.asarray(
+            observation["mhbench_state"][robot]["joint_pos"], dtype=np.float32
+        ),
+        "observation/ego": np.asarray(
+            observation["vision"][MHBENCH_VIDEO_SLOT[MHBENCH_EGO_VIEW[robot]]]["color"]
+        ),
+    }
 
 
 def _pack_mhbench_robot_action(flat: np.ndarray) -> dict[str, np.ndarray]:
@@ -212,8 +247,13 @@ class Model(ModelTemplate):
         process, because XPolicyLab's eval plumbing has exactly one model client.
         Same arrangement as GR00T_N17.
 
-        `ckpt_name` is the task here (cocarry / handover / ...), not a run
-        directory: the run directories are derived per robot.
+        Decentralized has two forms. The shipped one is a single *shared*
+        policy trained on every task and both roles, queried once per agent
+        with that agent's own camera, state and instruction -- one set of
+        weights, and `ckpt_name` is `multitask`. The other is the older pair,
+        two independently trained halves held side by side, where `ckpt_name`
+        is the task (cocarry / handover / ...) and the run directories are
+        derived per robot.
         """
         self.robot_action_dim_info = None  # MHBench never goes through pack_robot_state
         self._mhbench_mode = _mhbench_mode(model_cfg)
@@ -221,11 +261,15 @@ class Model(ModelTemplate):
         if not task:
             raise ValueError("mhbench eval needs ckpt_name=<task> (e.g. cocarry)")
 
+        self._mhbench_shared = task == MHBENCH_MULTITASK_CKPT
         targets: tuple[str | None, ...] = (
             (None,) if self._mhbench_mode == "centralized" else MHBENCH_ROBOTS
         )
+        # One policy object for both agents when it is one checkpoint: loading
+        # it twice would cost a second copy of the weights for nothing.
+        load_targets = targets[:1] if self._mhbench_shared else targets
         self._mhbench_policies: dict[str | None, Any] = {}
-        for robot in targets:
+        for robot in load_targets:
             config_name = _mhbench_train_config_name(task, robot)
             model_dir = _mhbench_model_dir(model_cfg, task, robot)
             config = _config.get_config(config_name)
@@ -235,6 +279,9 @@ class Model(ModelTemplate):
             # deploy.yml `repo_id` instead is how they end up silently missing.
             self._mhbench_policies[robot] = _policy_config.create_trained_policy(config, str(model_dir))
             print(f"[Pi_05][mhbench] {robot or 'centralized'}: {config_name} <- {model_dir}")
+        if self._mhbench_shared:
+            for robot in targets:
+                self._mhbench_policies[robot] = self._mhbench_policies[load_targets[0]]
 
         horizon = _config.get_config(_mhbench_train_config_name(task, targets[0])).model.action_horizon
         exec_horizon = model_cfg.get("exec_horizon")
@@ -246,6 +293,9 @@ class Model(ModelTemplate):
     def _mhbench_update_obs_batch(self, obs_list: list[dict[str, Any]]) -> None:
         self._latest_env_idx_list = [obs.get("env_idx", index) for index, obs in enumerate(obs_list)]
         self.observation_window = [_encode_mhbench_obs(obs) for obs in obs_list]
+        # The shared policy re-encodes per agent and needs the instructions the
+        # env sent, neither of which survives the pair-shaped encoding above.
+        self.observation_window_raw = list(obs_list)
 
     def _mhbench_get_action_batch(self, env_idx_list: list[int] | None) -> list[list[dict[str, Any]]]:
         if self.observation_window is None:
@@ -261,6 +311,20 @@ class Model(ModelTemplate):
                     robot: actions[:, i * MHBENCH_ACTION_DIM : (i + 1) * MHBENCH_ACTION_DIM]
                     for i, robot in enumerate(MHBENCH_ROBOTS)
                 }
+            elif self._mhbench_shared:
+                # The same policy twice, each time as one agent: its own view,
+                # its own 43 joints, its own sentence. The prompt is what makes
+                # the two answers differ.
+                source = self.observation_window_raw[index]
+                per_robot = {}
+                for robot in MHBENCH_ROBOTS:
+                    encoded = _encode_mhbench_shared_obs(source, robot)
+                    prompt = (source.get("mhbench_instruction") or {}).get(robot)
+                    if prompt:
+                        encoded["prompt"] = str(prompt)
+                    per_robot[robot] = np.asarray(
+                        self._mhbench_policies[robot].infer(encoded)["actions"]
+                    )
             else:
                 per_robot = {
                     robot: np.asarray(policy.infer(observation)["actions"])

@@ -22,7 +22,7 @@ MHBENCH_ROOT="$(cd "${POLICY_DIR}/../../../.." && pwd)"
 # The LeRobot export to convert (has meta/ and data/ inside).
 #
 # `env_cfg_type` names baselines/env_cfg/<name>.yml -- cocarry, handover,
-# handover_easy, door_passage, frame_hang -- and scripts/export_lerobot.py writes that task
+# door_passage, frame_hang -- and scripts/export_lerobot.py writes that task
 # under datasets/<task>/lerobot/. Two things stand between the two names: the
 # task directories are spelled without the underscore (datasets/doorpassage,
 # datasets/framehang), which is the same pair of spellings

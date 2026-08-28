@@ -1,23 +1,36 @@
 """GR00T modality config for the MHBench two-humanoid *decentralized* dataset
--- one policy per robot, trained as two separate finetuning runs against the
-same ``datasets/<task>/lerobot`` export (the modality config does the
-per-robot slicing; no repacked per-robot dataset exists any more).
+-- one policy per agent. Two shapes of it, selected by MHBENCH_ROBOT:
+
+``shared`` (the shipped one)
+    One policy over every task and both roles, trained on the flattened
+    all-task export (``baselines/data/multitask/lerobot``, written by
+    ``scripts/build_multitask_lerobot.py``). Each row of that dataset is
+    already ONE robot, so its keys carry no ``robot_a_``/``robot_b_`` prefix
+    and there is nothing to slice: video ``ego``, state ``left_leg`` ...
+    ``right_hand``, language ``annotation.human.task_description``. What tells
+    the two agents apart is the instruction each is given, not the key names.
+
+``robot_a`` / ``robot_b``
+    The older single-task per-robot runs, two separate finetunings against the
+    same ``datasets/<task>/lerobot`` export -- the modality config does the
+    per-robot slicing there, and the keys are prefixed accordingly (video
+    ``ego_a``/``ego_b``, language
+    ``annotation.human.task_description_robot_{a,b}``).
 
 This file is a thin shim: the key lists live in MHBench's own
 ``configs/gr00t/mhbench_modality.py`` (the single authority shared with the
-exporter), so the two cannot drift apart. Per robot that means:
+exporter), so the two cannot drift apart. Either way one agent sees:
 
-  - video: that robot's own ego view only (``ego_a`` / ``ego_b``).
+  - video: one ego view.
   - state: 43 joint angles (G1 contract, seven groups).
   - action: 35 = arms 14 + hands 14 + waist 3 + base height 1 + navigation 3,
     arms RELATIVE, everything else ABSOLUTE -- NVIDIA's own
     ``unitree_g1x2_full_body_with_waist_height_nav_cmd`` placement.
-  - language: that robot's own instruction
-    (``annotation.human.task_description_robot_{a,b}``).
+  - language: one instruction.
 
-Which robot this registers is selected by the MHBENCH_ROBOT env var
-(robot_a/robot_b, default robot_a) -- set it before calling train.sh /
-finetune.sh, since each run only ever needs one robot's config in a process.
+Set MHBENCH_ROBOT before calling train.sh / finetune.sh (default robot_a):
+each run only ever needs one config in a process, and
+``baselines/scripts/train/GR00T_N17.sh`` sets it from the checkpoint name.
 
 The action horizon is MHBENCH_ACTION_HORIZON (default 40 =
 ``mhbench_keys.ACTION_HORIZON_FINETUNE_SAFE``): the released N1.7-3B
@@ -45,8 +58,10 @@ from gr00t.configs.data.embodiment_configs import register_modality_config  # no
 from gr00t.data.embodiment_tags import EmbodimentTag  # noqa: E402
 
 robot = os.environ.get("MHBENCH_ROBOT", "robot_a")
-if robot not in ("robot_a", "robot_b"):
-    raise ValueError(f"MHBENCH_ROBOT must be 'robot_a' or 'robot_b', got {robot!r}")
+if robot not in ("robot_a", "robot_b", mhbench_keys.SHARED):
+    raise ValueError(
+        f"MHBENCH_ROBOT must be 'robot_a', 'robot_b' or '{mhbench_keys.SHARED}', got {robot!r}"
+    )
 
 action_horizon = int(
     os.environ.get("MHBENCH_ACTION_HORIZON", mhbench_keys.ACTION_HORIZON_FINETUNE_SAFE)

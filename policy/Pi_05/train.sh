@@ -15,7 +15,11 @@ gpu_id=$6
 
 POLICY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # ckpt_setting is the run directory name; pass it verbatim as ckpt_name to eval.sh.
-ckpt_setting="${bench_name}-${ckpt_name}-${env_cfg_type}-${action_type}-${seed}"
+# CKPT_TAG separates runs over the same data (a probe, a hyperparameter sweep)
+# the way GR00T's and FastWAM's do -- without it a tagged run would write into,
+# and resume from, the untagged run's directory while the launcher logged a
+# tagged name.
+ckpt_setting="${bench_name}-${ckpt_name}-${env_cfg_type}-${action_type}-${seed}${CKPT_TAG:+-${CKPT_TAG}}"
 ckpt_dir="${POLICY_DIR}/checkpoints/${ckpt_setting}"
 gpu_count=$(awk -F',' '{print NF}' <<<"${gpu_id}")
 fsdp_devices="${OPENPI_FSDP_DEVICES:-$(( gpu_count < 2 ? 1 : 2 ))}"
@@ -24,14 +28,21 @@ fsdp_devices="${OPENPI_FSDP_DEVICES:-$(( gpu_count < 2 ? 1 : 2 ))}"
 # be trained under one TrainConfig and served under another. Elsewhere the
 # config name and the LeRobot repo are the caller's to choose.
 #   centralized:   ckpt_name = <task>
-#   decentralized: ckpt_name = <task>_robot_a | <task>_robot_b
+#   decentralized: ckpt_name = multitask (the shared policy over every task and
+#                  both roles) | <task>_robot_a | <task>_robot_b (single-task)
 mhbench_repo_id=""
 if [[ "${bench_name}" == "mhbench" ]]; then
-  case "${env_cfg_type}" in
-    unitree_g1x2_centralized)   mhbench_task="${ckpt_name}";            mhbench_target="centralized" ;;
-    unitree_g1x2_decentralized) mhbench_task="${ckpt_name%_robot_*}";   mhbench_target="robot_${ckpt_name##*_robot_}" ;;
-    *) echo "unknown mhbench env_cfg_type ${env_cfg_type}" >&2; exit 2 ;;
-  esac
+  if [[ "${ckpt_name}" == "multitask" ]]; then
+    # Before the `_robot_` parsing below, which would read this as a task named
+    # "multitask" driven by a robot named "multitask".
+    mhbench_task="multitask"; mhbench_target="decentralized"
+  else
+    case "${env_cfg_type}" in
+      unitree_g1x2_centralized)   mhbench_task="${ckpt_name}";            mhbench_target="centralized" ;;
+      unitree_g1x2_decentralized) mhbench_task="${ckpt_name%_robot_*}";   mhbench_target="robot_${ckpt_name##*_robot_}" ;;
+      *) echo "unknown mhbench env_cfg_type ${env_cfg_type}" >&2; exit 2 ;;
+    esac
+  fi
   train_config_name="pi05_mhbench_${mhbench_task}_${mhbench_target}"
   mhbench_repo_id="mhbench-${mhbench_task}"
   # openpi's init_wandb passes only name and project, and takes the entity from

@@ -10,7 +10,7 @@
 #   MHBENCH_ROOT=/path/to/MHBench \
 #     sbatch -J latenttom-cocarry train.sbatch <task> [<ckpt_name> [hydra overrides...]]
 #
-# <task> is an env_cfg_type: cocarry, handover, handover_easy, door_passage,
+# <task> is an env_cfg_type: cocarry, handover, door_passage,
 # frame_hang. It
 # picks the dataset (datasets/<task>/lerobot) and the run directory, and the
 # checkpoints of two tasks never collide.
@@ -29,7 +29,7 @@ WT=${MHBENCH_ROOT:?set MHBENCH_ROOT to the MHBench checkout}
 POLICY_ENV=${POLICY_ENV:-latenttom}
 POLICY_DIR=$WT/baselines/XPolicyLab/policy/LatentToM
 
-task=${1:?usage: train.sbatch <cocarry|handover|handover_easy|door_passage|frame_hang> [ckpt_name] [overrides...]}
+task=${1:?usage: train.sbatch <cocarry|handover|door_passage|frame_hang> [ckpt_name] [overrides...]}
 shift
 ckpt_name=${1:-$task}
 shift 2>/dev/null || true

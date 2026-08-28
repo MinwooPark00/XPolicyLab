@@ -11,6 +11,9 @@ model: ???
 
 # === Data Arguments ===
 train_dataset: ???
+# A held-out set, when the data config declares one. Null keeps the trainer's
+# eval_dataset empty, which is what every config that predates this did.
+val_dataset: null
 
 # ======== Trainer ========
 trainer:

@@ -1,4 +1,12 @@
 #!/bin/bash
+#
+# The XPolicyLab standard 6-arg chain. MHBench does NOT come through here: its
+# runs go through baselines/scripts/dp_train.sh, which is this script plus a
+# stable wandb run id (eval resumes that run to log its rollout numbers into
+# it) and a pinned hydra.run.dir. The DP_* knobs below are this script's; that
+# one forwards the subset it names and refuses the rest rather than ignoring
+# them, so a knob set on the wrong side fails instead of training something
+# else quietly.
 
 bench_name=${1}
 ckpt_name=${2} # run name

@@ -568,6 +568,62 @@ class LeRobotMHBenchDataConfig(DataConfigFactory):
 
 
 @dataclasses.dataclass(frozen=True)
+class LeRobotMHBenchSharedDataConfig(LeRobotMHBenchDataConfig):
+    """MHBench: one policy over every task and both roles.
+
+    The dataset is the flattened all-task export
+    (`scripts/build_multitask_lerobot.py`, then the v3.0 view): every row is
+    one robot already, so there is no slicing to do and `robot` is meaningless
+    here. What differs from the per-task configs is only where the instruction
+    comes from -- **per row**, out of `meta/tasks.jsonl`, rather than one
+    constant baked in as a default prompt. That is what tells the four tasks
+    and the two roles apart, and it is the whole mechanism: same weights, eight
+    jobs, eight sentences.
+    """
+
+    # Read per sample by PromptFromLeRobotTask, which the loader inserts when
+    # `prompt_from_task` is set -- before the repack, so `prompt` is already in
+    # the row by the time MHBenchSharedInputs looks for it.
+    prompt_task_index: int = 0
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        root = self._dataset_root()
+
+        repack_transform = _transforms.Group(
+            inputs=[
+                _transforms.RepackTransform(
+                    {
+                        "observation/state": "observation.state",
+                        "observation/ego": "observation.images.ego",
+                        "action/all": "action",
+                        "prompt": "prompt",
+                    }
+                )
+            ]
+        )
+        data_transforms = _transforms.Group(
+            inputs=[mhbench_policy.MHBenchSharedInputs(model_type=model_config.model_type)],
+            outputs=[mhbench_policy.MHBenchOutputs(robot="robot_a")],
+        )
+        # No default_prompt: every row carries its own.
+        model_transforms = ModelTransformFactory()(model_config)
+
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs, model_config),
+            repack_transforms=repack_transform,
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
+            # One column now -- the merged export writes the 35 numbers already
+            # assembled, so there is nothing to chunk alongside it.
+            action_sequence_keys=("action",),
+            prompt_from_task=True,
+            episodes=self._split_episodes(root, self.train_split, required=True),
+            val_episodes=self._split_episodes(root, self.val_split, required=False),
+        )
+
+
+@dataclasses.dataclass(frozen=True)
 class RLDSDroidDataConfig(DataConfigFactory):
     """
     Config for training on DROID, using RLDS data format (for efficient training on larger datasets).
@@ -923,16 +979,18 @@ _CONFIGS = [
 ]
 
 # -- MHBench ----------------------------------------------------------------
-# Five tasks x three targets. The pair is one policy driving both robots; the
+# Four tasks x three targets. The pair is one policy driving both robots; the
 # other two are the decentralized halves, trained independently and served side
 # by side. Generated rather than written out fifteen times, because they differ
-# only in the task, the robot and the instruction row.
+# only in the task, the robot and the instruction row. The shared multitask
+# config below is the shipped decentralized policy; these are the single-task
+# per-robot variants and the centralized ones.
 #
 # LoRA, matching the GR00T_N17 baseline these are compared against -- same
 # batch, same step count. `action_dim` is the real action width -- pi0.5 has no
 # `state_proj`, so the state reaches the model as prompt text and its width is
 # independent of this number.
-MHBENCH_TASKS = ("cocarry", "handover", "handover_easy", "framehang", "doorpassage")
+MHBENCH_TASKS = ("cocarry", "handover", "framehang", "doorpassage")
 
 # (suffix, robot, tasks.parquet row). Row order is mhbench_keys.LANGUAGE_KEYS:
 # the pair's shared instruction, then robot_a's, then robot_b's.
@@ -944,7 +1002,7 @@ MHBENCH_TARGETS = (
 
 # Measured, not guessed: pi0.5 spells the state out as digits in the prompt, and
 # PaligemmaTokenizer truncates past this with only a logging.warning. Worst case
-# over all five tasks with every value three digits wide is 384 tokens for the
+# over all four tasks with every value three digits wide is 384 tokens for the
 # 86-dim pair and 217 for a single robot's 43. The pi0.5 default of 200 would
 # cut both. `mhbench_policy_test.py` re-measures and asserts the headroom.
 MHBENCH_MAX_TOKEN_LEN = {None: 400, "robot_a": 256, "robot_b": 256}
@@ -1007,6 +1065,32 @@ _CONFIGS.extend(
     )
     for task in MHBENCH_TASKS
     for suffix, robot, prompt_index in MHBENCH_TARGETS
+)
+
+# The shared decentralized policy: one set of weights over all four tasks and
+# both roles, the same budget as one of the per-task runs above so a comparison
+# is about the method rather than the compute. `robot_a`'s model shape -- 43-dim
+# state, 35-dim action, one camera -- because every row of the flattened dataset
+# is one robot.
+_CONFIGS.append(
+    TrainConfig(
+        name="pi05_mhbench_multitask_decentralized",
+        project_name="MHBench-Pi05",
+        model=_mhbench_lora_model("robot_a"),
+        data=LeRobotMHBenchSharedDataConfig(repo_id="mhbench-multitask"),
+        weight_loader=weight_loaders.PartialCheckpointWeightLoader(
+            "gs://openpi-assets/checkpoints/pi05_base/params"
+        ),
+        freeze_filter=_mhbench_lora_model("robot_a").get_freeze_filter(),
+        ema_decay=None,
+        batch_size=32,
+        num_train_steps=20_000,
+        save_interval=2000,
+        num_workers=12,
+        val_interval=1000,
+        val_batches=16,
+        keep_period=None,
+    )
 )
 
 if len({config.name for config in _CONFIGS}) != len(_CONFIGS):

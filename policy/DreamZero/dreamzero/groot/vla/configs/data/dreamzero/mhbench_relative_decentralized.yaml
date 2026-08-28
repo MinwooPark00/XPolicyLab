@@ -29,6 +29,13 @@ mixture_dataset_cls: groot.vla.data.dataset.lerobot_sharded.ShardedLeRobotMixtur
 single_dataset_cls: groot.vla.data.dataset.lerobot_sharded.ShardedLeRobotSubLangSingleActionChunkDatasetDROID
 
 agibot_data_root: ???
+# The held-out split, as its own dataset root -- LeRobot's `splits` are not a
+# concept this loader has, so the benchmark's fixed 50/10 is two directories
+# (baselines/scripts/prepare_dreamzero_data.sh writes both). Null when the
+# caller has none, which leaves the trainer with no eval_dataset exactly as
+# before; train.sh sets it, and eval_strategy with it, when the directory is
+# there.
+agibot_val_data_root: null
 
 modality_configs:
   agibot: ${modality_config_mhbench_g1x2_dec}
@@ -66,3 +73,34 @@ train_dataset:
     balance_dataset_weights: false
     seed: 42
     shard_sampling_rate: ${dataset_shard_sampling_rate}
+
+# Same datasets, same transforms, read once and in order: `training: false`
+# makes the shard schedule deterministic and stops the per-shard shuffle, so
+# two evaluations of the same checkpoint report the same number.
+val_dataset:
+  _target_: ${mixture_dataset_cls}
+  _convert_: object
+  mixture_spec:
+    - dataset_path:
+        agibot:
+          - ${agibot_val_data_root}
+      dataset_weight: 1.0
+      distribute_weights: true
+
+  dataset_class: ${single_dataset_cls}
+  all_modality_configs: ${modality_configs}
+  all_transforms: ${transforms}
+  metadata_versions: ${metadata_versions}
+  fps: ${fps}
+  dataset_kwargs:
+    video_backend: decord
+    use_global_metadata: ${use_global_metadata}
+    max_chunk_size: ${max_chunk_size}
+    relative_action: ${relative_action}
+    relative_action_keys: ${relative_action_keys}
+    relative_action_per_horizon: ${relative_action_per_horizon}
+  mixture_kwargs:
+    training: false
+    balance_dataset_weights: false
+    seed: 42
+    shard_sampling_rate: 1.0

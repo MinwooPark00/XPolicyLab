@@ -29,6 +29,10 @@ MHBENCH_CAMERA_SLOT = {"robot_a": "cam_left_wrist", "robot_b": "cam_right_wrist"
 
 # The serving task yaml per checkpoint profile -- the same yamls train.sh
 # trains under, so serving cannot compose a different processor than training.
+# Where _encode_mhbench parks the env's per-agent sentences inside the encoded
+# observation. Not a policy target, so the inference loop skips it.
+INSTRUCTIONS_KEY = "__mhbench_instructions__"
+
 MHBENCH_SIM_TASK = {
     "unitree_g1x2_centralized": "mhbench_uncond_2cam_384_1e-4",
     "unitree_g1x2_decentralized": "mhbench_uncond_1cam_192_1e-4",
@@ -196,6 +200,13 @@ class Model(ModelTemplate):
             raise ValueError(f"unsupported mhbench env_cfg_type for FastWAM: {self.env_cfg_type}")
         self._sim_task = str(sim_task)
         self._decentralized = self.env_cfg_type == "unitree_g1x2_decentralized"
+        # What a decentralized checkpoint is: `shared` is one multitask policy
+        # driving both agents, told them apart by the instruction each is
+        # given; `per_robot` is the older pair, one checkpoint per (task,
+        # robot). eval_policy.sbatch sends whichever the serving hook declares.
+        self._shared = str(
+            self.model_cfg.get("mhbench_decentralized_style") or "per_robot"
+        ).strip().lower() == "shared"
         task = str(self.model_cfg.get("ckpt_name") or "").strip()
         if not task:
             raise ValueError("mhbench eval needs ckpt_name=<task> (e.g. cocarry)")
@@ -212,7 +223,25 @@ class Model(ModelTemplate):
                 self._instructions[target] = self.default_instruction
             return
 
-        if self._decentralized:
+        if self._decentralized and self._shared:
+            # One policy trained on every task and both roles, queried once per
+            # agent. Its checkpoint is not named for a task, so `ckpt_name`
+            # (multitask) is the run name itself and the instruction is what
+            # tells the two agents apart -- the eval client sends each its own.
+            ckpt = self.model_cfg.get("model_dir") or self.model_cfg.get("checkpoint_path")
+            run_name = build_run_dir_name(dict(self.model_cfg))
+            if _is_none_like(ckpt):
+                ckpt = self._newest_weights(POLICY_DIR / "checkpoints" / run_name)
+            stats = self._mhbench_stats_path(task)
+            policy = self._load_upstream_policy(
+                ckpt, stats, sim_cfg_name="sim_mhbench.yaml", sim_task=self._sim_task
+            )
+            fallback = self._mhbench_instruction(task)
+            for robot in ("robot_a", "robot_b"):
+                self._policies[robot] = policy
+                self._instructions[robot] = fallback
+            print(f"[FastWAM][mhbench] shared (multitask): {ckpt}")
+        elif self._decentralized:
             for robot in ("robot_a", "robot_b"):
                 ckpt = self.model_cfg.get(f"model_dir_{robot}")
                 run_cfg = dict(self.model_cfg)
@@ -266,6 +295,22 @@ class Model(ModelTemplate):
         except (OSError, IndexError, KeyError, json.JSONDecodeError):
             print(f"[FastWAM][mhbench] no readable {tasks_file}; using the default instruction")
             return self.default_instruction
+
+    def _mhbench_instruction_for(self, target: str, wire: dict[str, str]) -> str:
+        """What this agent is told to do, for one inference.
+
+        The env publishes all three sentences per step (`mhbench_instruction`,
+        from scripts/_task_text.py) and they are the authority: a shared
+        multitask checkpoint has one dataset behind it and could not name its
+        task any other way. deploy.yml's `prompt` overrides, and the
+        dataset-read fallback covers a deploy.py outside the eval client.
+        """
+        if self.model_cfg.get("prompt") or self.model_cfg.get("default_instruction"):
+            return self.default_instruction
+        sentence = wire.get(target)
+        if sentence and str(sentence).strip():
+            return str(sentence)
+        return self._instructions[target]
 
     def _newest_weights(self, run_dir: Path) -> str:
         """A servable weights file the trainer wrote under a run
@@ -354,6 +399,10 @@ class Model(ModelTemplate):
                     )
                 },
             }
+        # The sentences ride with the observation rather than on the model, so
+        # a batch of envs cannot hand one env's instruction to another's
+        # inference. `duo` is the pair's, for the centralized policy.
+        encoded[INSTRUCTIONS_KEY] = dict(obs.get("mhbench_instruction") or {})
         return encoded
 
     def _mhbench_chunks(self, per_policy_obs: dict[str, dict]) -> list[dict]:
@@ -366,10 +415,13 @@ class Model(ModelTemplate):
             }
             return [{"mhbench_raw_action": dict(zero)} for _ in range(self.replan_steps)]
 
+        wire = per_policy_obs.get(INSTRUCTIONS_KEY) or {}
         chunks = {}
         for target, policy in self._policies.items():
             chunk = np.asarray(
-                policy._infer_action_chunk(per_policy_obs[target], self._instructions[target]),
+                policy._infer_action_chunk(
+                    per_policy_obs[target], self._mhbench_instruction_for(target, wire)
+                ),
                 dtype=np.float32,
             )
             if chunk.ndim == 1:

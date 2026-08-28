@@ -63,6 +63,7 @@ if [ ! -f "${dataset_path}/meta/info.json" ]; then
     exit 1
 fi
 
+
 IFS=',' read -ra GPU_ARRAY <<< "${gpu_id}"
 num_gpus=${#GPU_ARRAY[@]}
 num_gpus=${DREAMZERO_NUM_GPUS:-${num_gpus}}
@@ -144,6 +145,30 @@ if [ "${bench_name}" = "mhbench" ]; then
     DREAMZERO_SAVE_LORA_ONLY="${DREAMZERO_SAVE_LORA_ONLY:-false}"
     DREAMZERO_SAVE_TOTAL_LIMIT="${DREAMZERO_SAVE_TOTAL_LIMIT:-5}"   # base.py asserts >= 5
 fi
+# The held-out split, beside the training one under the same 4-tuple name.
+# This loader has no notion of LeRobot `splits`, so the benchmark's fixed
+# 50/10 is two dataset roots (baselines/scripts/prepare_dreamzero_data.sh
+# writes both and links `<data_tag>_val`). Without one the trainer keeps its
+# empty eval_dataset, which is what every DreamZero run before this had --
+# training is unchanged, there is simply no val curve to read.
+val_dataset_path="${LEROBOT_VAL_DATA_PATH:-${processed_data_path}_val}"
+if [ -f "${val_dataset_path}/meta/info.json" ]; then
+    eval_steps="${DREAMZERO_EVAL_STEPS:-${save_steps}}"
+    VAL_ARGS=(
+        "agibot_val_data_root=${val_dataset_path}"
+        "eval_strategy=steps"
+        "do_eval=true"
+        "eval_steps=${eval_steps}"
+        # The upstream default is 64, sized for a small model; this one is
+        # 22.9B and evaluates at whatever the training step fits.
+        "per_device_eval_batch_size=${DREAMZERO_PER_DEVICE_EVAL_BATCH_SIZE:-${batch_size}}"
+    )
+    echo "[DreamZero train] val=${val_dataset_path} every ${eval_steps} steps"
+else
+    VAL_ARGS=("val_dataset=null")
+    echo "[DreamZero train] no held-out split at ${val_dataset_path} -- training without a val curve"
+fi
+
 python_cmd="${PYTHON:-$(command -v python || command -v python3 || true)}"
 if [ -z "${python_cmd}" ]; then
     echo "[DreamZero train][ERROR] Python executable not found. Activate the dreamzero conda env first."
@@ -267,6 +292,7 @@ torchrun --nproc_per_node "${num_gpus}" --standalone groot/vla/experiment/experi
     frame_seqlen="${DREAMZERO_FRAME_SEQLEN:-880}" \
     save_strategy=steps \
     agibot_data_root="${dataset_path}" \
+    "${VAL_ARGS[@]}" \
     dit_version="${wan_ckpt_dir}" \
     text_encoder_pretrained_path="${wan_ckpt_dir}/models_t5_umt5-xxl-enc-bf16.pth" \
     image_encoder_pretrained_path="${wan_ckpt_dir}/models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth" \

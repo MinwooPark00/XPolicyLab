@@ -21,12 +21,17 @@ state_dim=$(bash "${UTILS_DIR}/get_state_dim.sh" "${ROOT_DIR}" "${env_cfg_type}"
 export ACT_ACTION_DIM=${action_dim}
 export ACT_STATE_DIM=${state_dim}
 ckpt_setting="${bench_name}-${ckpt_name}-${env_cfg_type}-${action_type}"
+# CKPT_TAG separates runs over the same data (a probe, a hyperparameter sweep)
+# the way GR00T's and FastWAM's do -- without it a tagged run would write into,
+# and resume from, the untagged run's directory while the launcher logged a
+# tagged name.
+ckpt_dir="${SCRIPT_DIR}/checkpoints/${ckpt_setting}-${seed}${CKPT_TAG:+-${CKPT_TAG}}"
 
 python3 imitate_episodes.py \
     --bench_name ${bench_name} \
     --task_name ${ckpt_name} \
     --ckpt_setting ${ckpt_setting} \
-    --ckpt_dir "${SCRIPT_DIR}/checkpoints/${ckpt_setting}-${seed}" \
+    --ckpt_dir "${ckpt_dir}" \
     --policy_class ACT \
     --kl_weight 10 \
     --chunk_size 50 \

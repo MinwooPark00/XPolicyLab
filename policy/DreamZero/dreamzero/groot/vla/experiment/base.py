@@ -771,7 +771,27 @@ class BaseExperiment(ABC):
         return train_dataset
 
     def create_val_dataset(self, cfg, model):
-        return None
+        """The held-out set, when the data config names one.
+
+        `create_trainer` already passes whatever this returns as the Trainer's
+        `eval_dataset`, so a data config that declares a `val_dataset` node
+        gets validation loss for free; the ones that leave it null keep
+        training exactly as before.
+
+        The one thing that cannot be left at its default is
+        `num_shards_to_sample`. It is 2**20 in the mixture, which is right for
+        a training stream meant never to end and would make one evaluation
+        pass a million shards long. An evaluation is one deterministic pass
+        over what is there, so it is set to the shard count.
+        """
+        spec = cfg.get("val_dataset", None)
+        if spec is None:
+            return None
+        val_dataset = instantiate(spec)
+        if hasattr(val_dataset, "all_shards"):
+            val_dataset.num_shards_to_sample = len(val_dataset.all_shards)
+            val_dataset.reset_seed(getattr(val_dataset, "seed", 42))
+        return val_dataset
 
     def create_data_collator(self, cfg, model):
         return instantiate(cfg.data_collator)

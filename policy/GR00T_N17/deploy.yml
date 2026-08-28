@@ -33,7 +33,8 @@ policy_uv_env_path: gr00t_n17
 port: 6000
 
 # --- MHBench (bench_name=mhbench): one server drives both decentralized robots ---
-# ckpt_name is the task (cocarry/handover/handover_easy); per-robot merged model dirs resolve to
+# ckpt_name is the task (cocarry/handover/...), or `multitask` for the shared
+# decentralized policy; per-robot merged model dirs resolve to
 # checkpoints/mhbench-<task>_robot_<r>-unitree_g1x2_decentralized-joint-<seed>/<same>/merged-<step>.
 merged_checkpoint: last
 exec_horizon: 40

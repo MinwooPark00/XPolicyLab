@@ -6,9 +6,13 @@ everything, and a policy is trained against one of two targets:
     centralized     one policy drives both robots -- 86-dim state (both robots'
                     43 joint angles), 70-dim action (both robots' 35), and both
                     ego cameras.
-    decentralized   one policy per robot -- 43-dim state, 35-dim action, and
-                    that robot's own ego camera. Two checkpoints, trained
-                    independently, served side by side at eval.
+    decentralized   one policy per agent -- 43-dim state, 35-dim action, and
+                    that robot's own ego camera. The shipped form is one
+                    *shared* checkpoint over every task and both roles, told
+                    them apart by the instruction each agent is given
+                    (:class:`MHBenchSharedInputs`, on the flattened all-task
+                    dataset); naming a robot trains the single-task per-robot
+                    variant instead.
 
 Both read the *same* LeRobot export (``datasets/<task>/lerobot``); the slicing
 happens here rather than in a repacked copy on disk, which is how GR00T reads
@@ -252,6 +256,39 @@ class MHBenchInputs(transforms.DataTransformFn):
         if "prompt" in data:
             inputs["prompt"] = data["prompt"]
 
+        return inputs
+
+
+@dataclasses.dataclass(frozen=True)
+class MHBenchSharedInputs(transforms.DataTransformFn):
+    """One flattened row of the all-task dataset -> pi0.5 model inputs.
+
+    The shared decentralized policy trains on
+    ``baselines/data/multitask/lerobot``, where every row is already *one*
+    robot: 43-dim state, 35-dim action in ``mhbench_keys.ACTION_KEYS`` order,
+    one camera. So unlike :class:`MHBenchInputs` there is nothing to slice or
+    assemble -- which is the point of building that dataset rather than
+    teaching a mixture loader to do it per sample.
+
+    What tells the four tasks and the two roles apart is the prompt, read per
+    row from ``meta/tasks.jsonl`` by ``PromptFromLeRobotTask`` and, at serving
+    time, sent over the wire by the eval client.
+    """
+
+    model_type: _model.ModelType
+
+    def __call__(self, data: dict) -> dict:
+        inputs: dict[str, Any] = {
+            "state": np.asarray(data["observation/state"], dtype=np.float32),
+            # One camera, in the first slot. The other two are dropped rather
+            # than masked, for the reason MHBenchInputs spells out.
+            "image": {PI0_IMAGE_SLOTS[0]: _parse_image(data["observation/ego"])},
+            "image_mask": {PI0_IMAGE_SLOTS[0]: np.True_},
+        }
+        if "action/all" in data:
+            inputs["actions"] = np.asarray(data["action/all"], dtype=np.float32)
+        if "prompt" in data:
+            inputs["prompt"] = data["prompt"]
         return inputs
 
 

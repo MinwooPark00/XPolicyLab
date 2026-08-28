@@ -48,7 +48,7 @@ action_clip: fitted            # fitted | None
 # How much it changes depends on how much of the robot a task's demonstrations
 # actually move, which is why leaving it off looked survivable: fitted on the
 # 1000-epoch checkpoints, cocarry has no observation dimension narrower than
-# 0.52 rad and rolls out fine without clamping, while handover_easy has 11
+# 0.52 rad and rolls out fine without clamping, while handover has 11
 # under 0.01 rad -- one of them 9.1e-6, a gain of ~220,000 per radian -- and
 # framehang 6. Those are the two that freeze and shake seconds into an
 # episode.
