@@ -74,7 +74,12 @@ echo "[DreamZero train] gpu_id=${gpu_id}, num_gpus=${num_gpus}, action_dim=${act
 
 export CUDA_VISIBLE_DEVICES="${gpu_id}"
 export HYDRA_FULL_ERROR=1
-export WANDB_PROJECT="${WANDB_PROJECT:-dreamzero}"
+# Remember whether the caller named a project BEFORE defaulting it, so the
+# mhbench block below can pick its own default without a caller-set value
+# looking like one (an unconditional default here made `MHBench-DreamZero`
+# dead code -- every mhbench run logged to `dreamzero`).
+caller_wandb_project="${WANDB_PROJECT:-}"
+export WANDB_PROJECT="${caller_wandb_project:-dreamzero}"
 export PYTHONPATH="${DREAMZERO_DIR}:${SCRIPT_DIR}:${ROOT_DIR}/XPolicyLab:${ROOT_DIR}:${PYTHONPATH:-}"
 
 checkpoints_dir="${SCRIPT_DIR}/checkpoints"
@@ -100,7 +105,11 @@ image_height="${DREAMZERO_IMAGE_HEIGHT:-176}"
 action_horizon="${DREAMZERO_ACTION_HORIZON:-24}"
 num_frames="${DREAMZERO_NUM_FRAMES:-33}"
 max_chunk_size="${DREAMZERO_MAX_CHUNK_SIZE:-4}"
+# tensorboard upstream; mhbench overrides to wandb below, where the project,
+# entity and run id are already pinned.
 report_to="${DREAMZERO_REPORT_TO:-${REPORT_TO:-tensorboard}}"
+# Three views (scene + both egos) upstream; decentralized is one.
+num_views="${DREAMZERO_NUM_VIEWS:-3}"
 native_dojo_action="${DREAMZERO_NATIVE_DOJO_ACTION:-false}"
 data_config="${DREAMZERO_DATA_CONFIG:-dreamzero/agibot_relative}"
 if [ "${native_dojo_action}" = "1" ] || [ "${native_dojo_action}" = "true" ]; then
@@ -114,8 +123,21 @@ fi
 # and the wandb run id pinned to the run-dir name so a requeue resumes the
 # same run and eval can write its rollout numbers back.
 if [ "${bench_name}" = "mhbench" ]; then
-    data_config="${DREAMZERO_DATA_CONFIG:-dreamzero/mhbench_relative}"
-    export WANDB_PROJECT="${WANDB_PROJECT:-MHBench-DreamZero}"
+    # centralized  : one 70D policy over scene + both ego views.
+    # decentralized: one 35D policy per robot over that robot's own ego view.
+    # Same network either way -- only the width (handled by the DiT overrides
+    # at the bottom of this script) and the view count differ.
+    case "${env_cfg_type}" in
+        unitree_g1x2_centralized)
+            data_config="${DREAMZERO_DATA_CONFIG:-dreamzero/mhbench_relative}"
+            num_views="${DREAMZERO_NUM_VIEWS:-3}" ;;
+        unitree_g1x2_decentralized)
+            data_config="${DREAMZERO_DATA_CONFIG:-dreamzero/mhbench_relative_decentralized}"
+            num_views="${DREAMZERO_NUM_VIEWS:-1}" ;;
+        *) echo "[DreamZero train][ERROR] unknown mhbench env_cfg_type: ${env_cfg_type}" >&2; exit 2 ;;
+    esac
+    report_to="${DREAMZERO_REPORT_TO:-${REPORT_TO:-wandb}}"
+    export WANDB_PROJECT="${caller_wandb_project:-MHBench-DreamZero}"
     export WANDB_ENTITY="${WANDB_ENTITY:-mhbench_baselines}"
     export WANDB_RUN_ID="${WANDB_RUN_ID:-${run_basename}}"
     export WANDB_RESUME="${WANDB_RESUME:-allow}"
@@ -213,7 +235,7 @@ torchrun --nproc_per_node "${num_gpus}" --standalone groot/vla/experiment/experi
     train_architecture="${DREAMZERO_TRAIN_ARCHITECTURE:-lora}" \
     num_frames="${num_frames}" \
     action_horizon="${action_horizon}" \
-    num_views=3 \
+    num_views="${num_views}" \
     model=dreamzero/vla \
     model/dreamzero/action_head=wan_flow_matching_action_tf \
     model/dreamzero/transform=dreamzero_cotrain \

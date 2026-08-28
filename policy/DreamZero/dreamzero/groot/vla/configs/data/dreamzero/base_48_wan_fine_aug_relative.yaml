@@ -541,3 +541,77 @@ transform_mhbench_g1x2:
       action_concat_order: ${modality_config_mhbench_g1x2.action.modality_keys}
 
     - ${model_specific_transform}
+
+################################################################################
+# MHBench unitree_g1x2 decentralized (one 35D policy per robot).
+# Nothing about the network differs from the centralized anchors above -- it is
+# the same model at a different width and view count: that robot's own ego view
+# instead of three, its own 43D joint state instead of both robots', and its own
+# 35D targets instead of the concatenated 70D.
+#
+# Keys match the GEAR conversion prepare_dreamzero_data.sh runs per robot over
+# `data_convertion.py --format fastwam --robot both`:
+#   state  43D = joints [0,43]                (raw joint angles, one robot)
+#   action 35D = upper  [0,31]  base [31,35]  (31 joint targets + height + 3D
+#                                              base velocity)
+################################################################################
+
+modality_config_mhbench_g1x2_dec:
+  video:
+    _target_: groot.vla.data.dataset.ModalityConfig
+    delta_indices: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24]
+    eval_delta_indices: [-3, -2, -1, 0]
+    modality_keys:
+      - video.ego
+  state:
+    _target_: groot.vla.data.dataset.ModalityConfig
+    delta_indices: [0]
+    modality_keys:
+      - state.joints
+  action:
+    _target_: groot.vla.data.dataset.ModalityConfig
+    delta_indices: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23]
+    modality_keys:
+      - action.upper
+      - action.base
+  language:
+    _target_: groot.vla.data.dataset.ModalityConfig
+    delta_indices: [0]
+    modality_keys:
+      - annotation.tasks
+
+transform_mhbench_g1x2_dec:
+  _target_: groot.vla.data.transform.ComposedModalityTransform
+  transforms:
+    - <<: *totensor_cfg
+      apply_to: ${modality_config_mhbench_g1x2_dec.video.modality_keys}
+    - <<: *crop_cfg
+      apply_to: ${modality_config_mhbench_g1x2_dec.video.modality_keys}
+    - <<: *resize_cfg
+      apply_to: ${modality_config_mhbench_g1x2_dec.video.modality_keys}
+    - <<: *color_jitter_cfg
+      apply_to: ${modality_config_mhbench_g1x2_dec.video.modality_keys}
+    - <<: *to_numpy_cfg
+      apply_to: ${modality_config_mhbench_g1x2_dec.video.modality_keys}
+
+    - _target_: groot.vla.data.transform.StateActionToTensor
+      apply_to: ${modality_config_mhbench_g1x2_dec.state.modality_keys}
+    - _target_: groot.vla.data.transform.StateActionTransform
+      apply_to: ${modality_config_mhbench_g1x2_dec.state.modality_keys}
+      normalization_modes:
+        state.joints: q99
+
+    - _target_: groot.vla.data.transform.StateActionToTensor
+      apply_to: ${modality_config_mhbench_g1x2_dec.action.modality_keys}
+    - _target_: groot.vla.data.transform.StateActionTransform
+      apply_to: ${modality_config_mhbench_g1x2_dec.action.modality_keys}
+      normalization_modes:
+        action.upper: q99
+        action.base: q99
+
+    - _target_: groot.vla.data.transform.ConcatTransform
+      video_concat_order: ${modality_config_mhbench_g1x2_dec.video.modality_keys}
+      state_concat_order: ${modality_config_mhbench_g1x2_dec.state.modality_keys}
+      action_concat_order: ${modality_config_mhbench_g1x2_dec.action.modality_keys}
+
+    - ${model_specific_transform}

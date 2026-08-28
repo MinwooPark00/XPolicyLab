@@ -1,0 +1,5 @@
+# Site-local: symlinks into the converted datasets and the downloaded
+# checkpoints, both of which live outside the repo. Anchored, so the
+# vendored configs/data tree is untouched.
+/data/
+/checkpoints/

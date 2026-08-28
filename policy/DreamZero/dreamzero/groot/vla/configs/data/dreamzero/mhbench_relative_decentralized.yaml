@@ -1,0 +1,68 @@
+# @package _global_
+# MHBench unitree_g1x2 decentralized: one policy per robot, trained on that
+# robot's own first-person view. Identical to mhbench_relative.yaml except for
+# the width and the view count -- same `agibot` embodiment key (the
+# robodojo_native precedent, so no schema tag and EmbodimentTag.AGIBOT on the
+# serving side), same absolute joint-target actions (the 43D raw-joint state
+# and the 35D target layout share no sub-keys, so relative actions are not
+# expressible here either).
+#
+# train.sh derives num_views=1 and the DiT's 35/43 widths from the same
+# env_cfg_type that selects this file; one dataset per robot, named
+# mhbench-<task>_robot_a/-unitree_g1x2_decentralized-joint and ..._robot_b.
+
+defaults:
+  - dreamzero/base_48_wan_fine_aug_relative
+  - _self_
+
+max_state_dim: 43
+max_action_dim: 35
+use_global_metadata: false
+relative_action: false
+relative_action_per_horizon: false
+relative_action_keys: []
+max_chunk_size: 5
+# 50 training episodes: sample every shard every epoch (the 0.1 the large
+# mixtures use would look at five episodes per pass).
+dataset_shard_sampling_rate: 1.0
+mixture_dataset_cls: groot.vla.data.dataset.lerobot_sharded.ShardedLeRobotMixtureDataset.from_mixture_spec
+single_dataset_cls: groot.vla.data.dataset.lerobot_sharded.ShardedLeRobotSubLangSingleActionChunkDatasetDROID
+
+agibot_data_root: ???
+
+modality_configs:
+  agibot: ${modality_config_mhbench_g1x2_dec}
+
+transforms:
+  agibot: ${transform_mhbench_g1x2_dec}
+
+metadata_versions:
+  agibot: '0221'
+
+train_dataset:
+  _target_: ${mixture_dataset_cls}
+  _convert_: object
+  mixture_spec:
+    - dataset_path:
+        agibot:
+          - ${agibot_data_root}
+      dataset_weight: 1.0
+      distribute_weights: true
+
+  dataset_class: ${single_dataset_cls}
+  all_modality_configs: ${modality_configs}
+  all_transforms: ${transforms}
+  metadata_versions: ${metadata_versions}
+  fps: ${fps}
+  dataset_kwargs:
+    video_backend: decord
+    use_global_metadata: ${use_global_metadata}
+    max_chunk_size: ${max_chunk_size}
+    relative_action: ${relative_action}
+    relative_action_keys: ${relative_action_keys}
+    relative_action_per_horizon: ${relative_action_per_horizon}
+  mixture_kwargs:
+    training: true
+    balance_dataset_weights: false
+    seed: 42
+    shard_sampling_rate: ${dataset_shard_sampling_rate}

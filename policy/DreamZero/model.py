@@ -68,6 +68,14 @@ MHBENCH_VIDEO_KEYS = (
 MHBENCH_ACTION_FIELDS = (("action.upper_a", 31), ("action.base_a", 4),
                          ("action.upper_b", 31), ("action.base_b", 4))
 
+# Decentralized: one 35D policy per robot, seeing only its own first-person
+# view. Same network, same keys, one robot's worth of them -- the GEAR
+# conversion drops the _a/_b suffix because each dataset holds one robot.
+MHBENCH_CAMERA_SLOT = {"robot_a": "cam_left_wrist", "robot_b": "cam_right_wrist"}
+MHBENCH_DEC_VIDEO_KEY = "video.ego"
+MHBENCH_DEC_ACTION_FIELDS = (("action.upper", 31), ("action.base", 4))
+MHBENCH_ROBOTS = ("robot_a", "robot_b")
+
 
 def _is_true(value):
     if isinstance(value, bool):
@@ -253,20 +261,23 @@ class Model(ModelTemplate):
         self.default_prompt = model_cfg.get("prompt") or "Do your job."
         self._mhbench = str(model_cfg.get("bench_name") or "") == "mhbench"
         self.allow_dummy_policy = _is_true(model_cfg.get("allow_dummy_policy", False))
+        self._decentralized = self.env_cfg_type == "unitree_g1x2_decentralized"
         if self._mhbench:
-            if self.env_cfg_type != "unitree_g1x2_centralized":
+            if self.env_cfg_type not in ("unitree_g1x2_centralized", "unitree_g1x2_decentralized"):
                 raise ValueError(
-                    f"DreamZero's mhbench branch is centralized-only for now, got {self.env_cfg_type}"
+                    f"DreamZero's mhbench branch supports the two g1x2 profiles, got {self.env_cfg_type}"
                 )
             # No env_cfg/<type>.yml exists for the mhbench profiles; the widths
-            # are the benchmark's fixed contract (70 = 2 x (31+1+3)).
+            # are the benchmark's fixed contract (35 = 31+1+3 per robot, and
+            # centralized concatenates two of them).
             self.robot_action_dim_info = None
-            self.expected_action_dim = 70
+            self.expected_action_dim = 35 if self._decentralized else 70
             # The instruction the checkpoint trained with, from the converted
             # dataset the run consumed; deploy.yml's `prompt` overrides it.
             if not model_cfg.get("prompt"):
                 ckpt = str(model_cfg.get("ckpt_name") or "").strip()
-                data_tag = f"mhbench-{ckpt}-{self.env_cfg_type}-{model_cfg.get('action_type', 'joint')}"
+                suffix = "_robot_a" if self._decentralized else ""
+                data_tag = f"mhbench-{ckpt}{suffix}-{self.env_cfg_type}-{model_cfg.get('action_type', 'joint')}"
                 tasks_file = SCRIPT_DIR / "data" / data_tag / "meta" / "tasks.jsonl"
                 try:
                     import json as _json
@@ -299,23 +310,74 @@ class Model(ModelTemplate):
             self._latest_env_idx_list = [0]
             return
 
-        self.model_path = _resolve_model_path(model_cfg)
         _configure_torch_dynamo_for_eval()
         _ensure_dist_initialized()
-        print(f"[DreamZero Model] Loading model from: {self.model_path}")
-        self.policy = GrootSimPolicy(
-            embodiment_tag=EmbodimentTag.AGIBOT,
-            model_path=str(self.model_path),
-            device="cuda:0" if torch.cuda.is_available() else "cpu",
-            tokenizer_path_override=self.tokenizer_path,
-            skip_img_transform=self.skip_img_transform,
-        )
+        self._sub_policies: dict[str, Any] = {}
+        if self._mhbench and self._decentralized:
+            self.model_path = None
+            self._load_mhbench_decentralized(model_cfg)
+            self.policy = self._sub_policies["robot_a"]
+        else:
+            self.model_path = _resolve_model_path(model_cfg)
+            print(f"[DreamZero Model] Loading model from: {self.model_path}")
+            self.policy = GrootSimPolicy(
+                embodiment_tag=EmbodimentTag.AGIBOT,
+                model_path=str(self.model_path),
+                device=self._policy_device(0),
+                tokenizer_path_override=self.tokenizer_path,
+                skip_img_transform=self.skip_img_transform,
+            )
         self.native_dojo_action = self.native_dojo_action or _policy_uses_native_dojo_action(self.policy)
 
         self._obs_batch: dict[int, dict[str, Any]] = {}
         self._frame_buffers: dict[int, dict[str, list[np.ndarray]]] = {}
         self._latest_env_idx_list = [0]
         print(f"[DreamZero Model] Initialized | action_type={self.action_type}")
+
+    @staticmethod
+    def _policy_device(index: int) -> str:
+        """cuda:<index> when that many GPUs are visible, else fall back.
+
+        Decentralized serves two 22.9B policies from one process (~46 GB each
+        in bf16), which does not fit one card. Give the eval job two GPUs
+        (EVAL_GRES=gpu:2) and each robot lands on its own; with one visible
+        they share it, which only works on a 96 GB card and with the video
+        history kept short.
+        """
+        if not torch.cuda.is_available():
+            return "cpu"
+        return f"cuda:{index if index < torch.cuda.device_count() else 0}"
+
+    def _load_mhbench_decentralized(self, model_cfg):
+        """One policy per robot, named the way its training run was.
+
+        Trained separately as mhbench-<task>_robot_a/-unitree_g1x2_decentralized
+        and ..._robot_b, so `ckpt_name` here is the task (e.g. handover_easy),
+        not a run dir -- the same convention DP, ACT, GR00T_N17 and FastWAM use
+        for this mode.
+        """
+        task = str(model_cfg.get("ckpt_name") or "").strip()
+        if not task:
+            raise ValueError("mhbench decentralized eval needs ckpt_name=<task> (e.g. handover_easy)")
+        for index, robot in enumerate(MHBENCH_ROBOTS):
+            explicit = model_cfg.get(f"model_dir_{robot}")
+            if explicit:
+                path = Path(explicit).expanduser().resolve()
+                path = _latest_checkpoint(path) or path
+            else:
+                run_cfg = dict(model_cfg)
+                run_cfg["ckpt_name"] = f"{task}_{robot}"
+                path = _resolve_model_path(run_cfg)
+            device = self._policy_device(index)
+            print(f"[DreamZero Model] {robot}: {path} (device={device}, "
+                  f"camera={MHBENCH_CAMERA_SLOT[robot]})")
+            self._sub_policies[robot] = GrootSimPolicy(
+                embodiment_tag=EmbodimentTag.AGIBOT,
+                model_path=str(path),
+                device=device,
+                tokenizer_path_override=self.tokenizer_path,
+                skip_img_transform=self.skip_img_transform,
+            )
 
     def update_obs(self, obs):
         self.update_obs_batch([obs])
@@ -344,16 +406,29 @@ class Model(ModelTemplate):
                 }
                 batch_actions.append([{"mhbench_raw_action": dict(zero)} for _ in range(self.action_horizon)])
                 continue
-            batch = Batch(obs=self._obs_batch[env_idx])
-            with torch.inference_mode():
-                if self.inference_method == "lazy_joint_forward_causal":
-                    result, _ = self.policy.lazy_joint_forward_causal(batch)
-                elif self.inference_method == "lazy_joint_forward":
-                    result, _ = self.policy.lazy_joint_forward(batch)
-                else:
-                    result = self.policy.forward(batch)
-            batch_actions.append(self._decode_actions(result.act))
+            if self._mhbench and self._decentralized:
+                per_robot = {
+                    robot: self._run_policy(self._sub_policies[robot],
+                                            self._obs_batch[env_idx][robot]).act
+                    for robot in MHBENCH_ROBOTS
+                }
+                batch_actions.append(self._decode_actions_mhbench_dec(per_robot))
+                continue
+            batch_actions.append(
+                self._decode_actions(self._run_policy(self.policy, self._obs_batch[env_idx]).act)
+            )
         return batch_actions
+
+    def _run_policy(self, policy, obs):
+        batch = Batch(obs=obs)
+        with torch.inference_mode():
+            if self.inference_method == "lazy_joint_forward_causal":
+                result, _ = policy.lazy_joint_forward_causal(batch)
+            elif self.inference_method == "lazy_joint_forward":
+                result, _ = policy.lazy_joint_forward(batch)
+            else:
+                result = policy.forward(batch)
+        return result
 
     def reset(self):
         self._obs_batch = {}
@@ -409,7 +484,51 @@ class Model(ModelTemplate):
         encoded.update(state_fields)
         return encoded
 
+    def _encode_obs_mhbench_dec(self, observation: dict[str, Any], env_idx: int) -> dict[str, Any]:
+        """One encoded observation per robot: its own ego view and 43D state.
+
+        Returns {robot: encoded}; `get_action_batch` feeds each to that robot's
+        own policy.
+        """
+        buffers = self._frame_buffers.setdefault(
+            env_idx, {robot: [] for robot in MHBENCH_ROBOTS}
+        )
+        vision = observation.get("vision", {})
+        for robot in MHBENCH_ROBOTS:
+            frame = _extract_image(vision, (MHBENCH_CAMERA_SLOT[robot],), self.image_resize)
+            buffers[robot].append(frame)
+            buffers[robot] = buffers[robot][-self.video_history :]
+
+        state = observation.get("mhbench_state")
+        if state is None:
+            if not self.allow_dummy_policy:
+                raise KeyError(
+                    "obs has no 'mhbench_state' -- the MHBench env client publishes it; "
+                    "this branch cannot run against a generic client"
+                )
+            state = {r: {"joint_pos": np.zeros(43, np.float32)} for r in MHBENCH_ROBOTS}
+
+        prompt = self._mhbench_prompt(observation)
+        return {
+            robot: {
+                MHBENCH_DEC_VIDEO_KEY: _stack_recent_frames(buffers[robot], self.video_history),
+                "annotation.tasks": prompt,
+                "state.joints": np.asarray(state[robot]["joint_pos"], np.float32).reshape(1, 43),
+            }
+            for robot in MHBENCH_ROBOTS
+        }
+
+    def _mhbench_prompt(self, observation: dict[str, Any]) -> str:
+        prompt = observation.get("instruction", observation.get("instructions", self.default_prompt))
+        if isinstance(prompt, (list, tuple)):
+            prompt = prompt[0] if prompt else self.default_prompt
+        if not str(prompt).strip():
+            prompt = self.default_prompt
+        return str(prompt)
+
     def _encode_obs_mhbench(self, observation: dict[str, Any], env_idx: int) -> dict[str, Any]:
+        if self._decentralized:
+            return self._encode_obs_mhbench_dec(observation, env_idx)
         buffers = self._frame_buffers.setdefault(
             env_idx, {key: [] for _, key in MHBENCH_VIDEO_KEYS}
         )
@@ -427,20 +546,36 @@ class Model(ModelTemplate):
                 )
             state = {r: {"joint_pos": np.zeros(43, np.float32)} for r in ("robot_a", "robot_b")}
 
-        prompt = observation.get("instruction", observation.get("instructions", self.default_prompt))
-        if isinstance(prompt, (list, tuple)):
-            prompt = prompt[0] if prompt else self.default_prompt
-        if not str(prompt).strip():
-            prompt = self.default_prompt
-
         encoded = {
             key: _stack_recent_frames(buffers[key], self.video_history)
             for _, key in MHBENCH_VIDEO_KEYS
         }
-        encoded["annotation.tasks"] = str(prompt)
+        encoded["annotation.tasks"] = self._mhbench_prompt(observation)
         encoded["state.joints_a"] = np.asarray(state["robot_a"]["joint_pos"], np.float32).reshape(1, 43)
         encoded["state.joints_b"] = np.asarray(state["robot_b"]["joint_pos"], np.float32).reshape(1, 43)
         return encoded
+
+    def _decode_actions_mhbench_dec(self, per_robot: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+        """Two single-robot chunks -> the one `mhbench_raw_action` the env takes."""
+        fields = {
+            robot: {key: _extract_action_value(action, key, dim)
+                    for key, dim in MHBENCH_DEC_ACTION_FIELDS}
+            for robot, action in per_robot.items()
+        }
+        horizon = min([self.action_horizon]
+                      + [v.shape[0] for robot in fields.values() for v in robot.values()])
+        steps = []
+        for t in range(max(horizon, 1)):
+            steps.append({
+                "mhbench_raw_action": {
+                    robot: _pack_mhbench_robot(
+                        fields[robot]["action.upper"][min(t, fields[robot]["action.upper"].shape[0] - 1)],
+                        fields[robot]["action.base"][min(t, fields[robot]["action.base"].shape[0] - 1)],
+                    )
+                    for robot in MHBENCH_ROBOTS
+                }
+            })
+        return steps
 
     def _decode_actions_mhbench(self, action: dict[str, Any]) -> list[dict[str, Any]]:
         fields = {
