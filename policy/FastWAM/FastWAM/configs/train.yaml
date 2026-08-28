@@ -13,6 +13,11 @@ output_dir: ./runs/train/${now:%Y-%m-%d}_${now:%H-%M-%S}
 batch_size: 2
 num_workers: 4
 
+# Fine-tuning knob: keep the pretrained video world model frozen and train only
+# the action expert (+ proprio encoder). Declared here so hydra's struct mode
+# accepts it as an override; default off leaves full fine-tuning unchanged.
+freeze_video_dit: false
+
 # scheduler
 lr_scheduler_type: "cosine"
 learning_rate: 1.0e-4

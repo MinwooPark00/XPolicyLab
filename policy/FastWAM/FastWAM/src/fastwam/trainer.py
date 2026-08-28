@@ -48,6 +48,10 @@ class Wan22Trainer:
         self.seed = int(cfg.seed)
         
         self.resume = cfg.resume
+        # Fine-tuning knob: train the action expert only, leaving the pretrained
+        # video world model frozen. Off by default, so full fine-tuning is
+        # unchanged.
+        self.freeze_video_dit = bool(cfg.get("freeze_video_dit", False))
         self.mixed_precision = str(cfg.mixed_precision).strip().lower()
         if self.mixed_precision not in {"no", "fp16", "bf16"}:
             raise ValueError(
@@ -81,11 +85,19 @@ class Wan22Trainer:
 
         # Freeze non-trainable modules before optimizer/deepspeed initialization.
         # This keeps DiT (+ optional proprio encoder) as trainable when ZeRO builds optimizer state.
-        self._apply_dit_only_train_mode(self.model)
-        trainable_params = list(self.model.dit.parameters())
+        self._apply_dit_only_train_mode(self.model, freeze_video_dit=self.freeze_video_dit)
+        trainable_params = [p for p in self.model.dit.parameters() if p.requires_grad]
         proprio_encoder = getattr(self.model, "proprio_encoder", None)
         if proprio_encoder is not None:
-            trainable_params.extend(list(proprio_encoder.parameters()))
+            trainable_params.extend(p for p in proprio_encoder.parameters() if p.requires_grad)
+        if not trainable_params:
+            raise ValueError("No trainable parameters remain after applying freeze settings.")
+        logger.info(
+            "Trainable parameters: %.3fB of %.3fB (freeze_video_dit=%s)",
+            sum(p.numel() for p in trainable_params) / 1e9,
+            sum(p.numel() for p in self.model.dit.parameters()) / 1e9,
+            self.freeze_video_dit,
+        )
         self.optimizer = torch.optim.AdamW(
             trainable_params,
             lr=self.learning_rate,
@@ -281,14 +293,34 @@ class Wan22Trainer:
         # Match DiffSynth's freeze_except("dit"): only DiT stays trainable/in-train-mode.
         logger.info("Setting DiT to train mode and freezing other model components.")
         model = self.accelerator.unwrap_model(self.model)
-        self._apply_dit_only_train_mode(model)
+        # Also here, not just at init: this runs again after every eval pass, and
+        # without the flag it would quietly re-enable grads on the video expert.
+        self._apply_dit_only_train_mode(model, freeze_video_dit=self.freeze_video_dit)
 
     @staticmethod
-    def _apply_dit_only_train_mode(model):
+    def _apply_dit_only_train_mode(model, *, freeze_video_dit: bool = False):
         model.eval()
         model.requires_grad_(False)
         model.dit.train()
         model.dit.requires_grad_(True)
+        if freeze_video_dit:
+            # Fine-tuning a released checkpoint on a small downstream dataset:
+            # keep the pretrained video world model fixed and train only the
+            # action expert (+ proprio encoder). The MoT keeps both experts in
+            # one joint attention, so this removes the video expert's weight
+            # gradients and optimizer state, not its forward pass.
+            # nn.ModuleDict has no .get(), so membership-test it.
+            mixtures = getattr(model.dit, "mixtures", None)
+            if mixtures is not None and "video" in mixtures:
+                video_dit = mixtures["video"]
+            else:
+                video_dit = getattr(model, "video_expert", None)
+            if video_dit is None:
+                raise ValueError(
+                    "freeze_video_dit=true requires a model with a video DiT expert."
+                )
+            video_dit.eval()
+            video_dit.requires_grad_(False)
         proprio_encoder = getattr(model, "proprio_encoder", None)
         if proprio_encoder is not None:
             proprio_encoder.train()
