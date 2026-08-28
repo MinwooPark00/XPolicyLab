@@ -16,6 +16,7 @@ from torch.optim.lr_scheduler import ConstantLR, CosineAnnealingLR, LinearLR, Se
 from torch.utils.data import DataLoader
 
 from .utils.fs import ensure_dir
+from .utils import lora as lora_utils
 from .utils.logging_config import get_logger, setup_logging
 from .utils.pytorch_utils import set_global_seed
 from .utils.samplers import ResumableEpochSampler
@@ -52,6 +53,23 @@ class Wan22Trainer:
         # video world model frozen. Off by default, so full fine-tuning is
         # unchanged.
         self.freeze_video_dit = bool(cfg.get("freeze_video_dit", False))
+        # The other parameter-efficient lever: LoRA on the video expert's
+        # linear projections, with the action expert still trained in full
+        # (its head has to be relearned at the new action width anyway). Rank
+        # 0 is off, which leaves full fine-tuning untouched.
+        self.lora_rank = int(cfg.get("lora_rank", 0) or 0)
+        self.lora_alpha = float(cfg.get("lora_alpha", 16) or 16)
+        self.lora_dropout = float(cfg.get("lora_dropout", 0.0) or 0.0)
+        if self.lora_rank and self.freeze_video_dit:
+            raise ValueError(
+                "freeze_video_dit and lora_rank are alternatives: freezing the video "
+                "expert outright leaves the adapters with nothing to adapt."
+            )
+        # Weights-only initialisation from a released checkpoint, as opposed to
+        # `resume`, which continues a run of our own. Kept separate because it
+        # has to happen BEFORE accelerate/DeepSpeed build the optimizer (see
+        # `_load_init_weights`).
+        self.init_weights = cfg.get("init_weights", None)
         self.mixed_precision = str(cfg.mixed_precision).strip().lower()
         if self.mixed_precision not in {"no", "fp16", "bf16"}:
             raise ValueError(
@@ -83,9 +101,19 @@ class Wan22Trainer:
         if self.val_dataset is not None:
             self._assert_dataset_length_consistent(self.val_dataset, "val_dataset")
 
+        # Both of these must land before `accelerator.prepare`: DeepSpeed copies
+        # the bf16 parameters into its fp32 master partition at optimizer
+        # construction, so weights written afterwards are silently overwritten
+        # by the first step, and adapters added afterwards would have no
+        # optimizer state at all.
+        self._load_init_weights()
+        self._inject_lora()
+
         # Freeze non-trainable modules before optimizer/deepspeed initialization.
         # This keeps DiT (+ optional proprio encoder) as trainable when ZeRO builds optimizer state.
-        self._apply_dit_only_train_mode(self.model, freeze_video_dit=self.freeze_video_dit)
+        self._apply_dit_only_train_mode(
+            self.model, freeze_video_dit=self.freeze_video_dit, lora=bool(self.lora_rank)
+        )
         trainable_params = [p for p in self.model.dit.parameters() if p.requires_grad]
         proprio_encoder = getattr(self.model, "proprio_encoder", None)
         if proprio_encoder is not None:
@@ -93,10 +121,11 @@ class Wan22Trainer:
         if not trainable_params:
             raise ValueError("No trainable parameters remain after applying freeze settings.")
         logger.info(
-            "Trainable parameters: %.3fB of %.3fB (freeze_video_dit=%s)",
+            "Trainable parameters: %.3fB of %.3fB (freeze_video_dit=%s lora_rank=%d)",
             sum(p.numel() for p in trainable_params) / 1e9,
             sum(p.numel() for p in self.model.dit.parameters()) / 1e9,
             self.freeze_video_dit,
+            self.lora_rank,
         )
         self.optimizer = torch.optim.AdamW(
             trainable_params,
@@ -274,6 +303,54 @@ class Wan22Trainer:
         eta_m, eta_s = divmod(eta_rem, 60)
         return f"{eta_h:02d}:{eta_m:02d}:{eta_s:02d}", steps_per_sec
 
+    def _load_init_weights(self):
+        """Initialise from a released .pt before the optimizer exists.
+
+        `resume` cannot do this job: it runs after `accelerator.prepare`, where
+        DeepSpeed has already copied the bf16 parameters into its fp32 master
+        partition, so the first optimizer step would write the pre-load values
+        straight back over anything loaded there.
+        """
+        if not self.init_weights:
+            return
+        path = Path(str(self.init_weights))
+        if not path.is_file():
+            raise FileNotFoundError(f"init_weights checkpoint not found: {path}")
+        logger.info("Initialising weights from %s", path)
+        payload = self.model.load_checkpoint(str(path), optimizer=None)
+        logger.info(
+            "Loaded init weights (source step=%s dtype=%s); optimizer and step start from zero.",
+            payload.get("step"), payload.get("torch_dtype"),
+        )
+
+    def _inject_lora(self):
+        if not self.lora_rank:
+            return
+        video_dit = self._video_expert(self.model)
+        if video_dit is None:
+            raise ValueError("lora_rank > 0 requires a model with a video DiT expert.")
+        layers, added = lora_utils.inject_lora(
+            video_dit, rank=self.lora_rank, alpha=self.lora_alpha, dropout=self.lora_dropout,
+        )
+        if layers == 0:
+            raise ValueError(
+                "lora_rank > 0 but no target projection matched; the video expert's block "
+                f"layout must have changed (expected {lora_utils.DEFAULT_TARGETS})."
+            )
+        logger.info(
+            "LoRA: wrapped %d projections in the video expert, +%.1fM parameters "
+            "(rank=%d alpha=%.1f dropout=%.2f)",
+            layers, added / 1e6, self.lora_rank, self.lora_alpha, self.lora_dropout,
+        )
+
+    @staticmethod
+    def _video_expert(model):
+        # nn.ModuleDict has no .get(), so membership-test it.
+        mixtures = getattr(model.dit, "mixtures", None)
+        if mixtures is not None and "video" in mixtures:
+            return mixtures["video"]
+        return getattr(model, "video_expert", None)
+
     def _resume_or_load_checkpoint(self):
         resume = self.resume
         if not resume:
@@ -294,33 +371,39 @@ class Wan22Trainer:
         logger.info("Setting DiT to train mode and freezing other model components.")
         model = self.accelerator.unwrap_model(self.model)
         # Also here, not just at init: this runs again after every eval pass, and
-        # without the flag it would quietly re-enable grads on the video expert.
-        self._apply_dit_only_train_mode(model, freeze_video_dit=self.freeze_video_dit)
+        # without the flags it would quietly re-enable grads on the video expert.
+        self._apply_dit_only_train_mode(
+            model, freeze_video_dit=self.freeze_video_dit, lora=bool(self.lora_rank)
+        )
 
-    @staticmethod
-    def _apply_dit_only_train_mode(model, *, freeze_video_dit: bool = False):
+    @classmethod
+    def _apply_dit_only_train_mode(cls, model, *, freeze_video_dit: bool = False,
+                                   lora: bool = False):
         model.eval()
         model.requires_grad_(False)
         model.dit.train()
         model.dit.requires_grad_(True)
-        if freeze_video_dit:
+        if freeze_video_dit or lora:
             # Fine-tuning a released checkpoint on a small downstream dataset:
-            # keep the pretrained video world model fixed and train only the
-            # action expert (+ proprio encoder). The MoT keeps both experts in
-            # one joint attention, so this removes the video expert's weight
-            # gradients and optimizer state, not its forward pass.
-            # nn.ModuleDict has no .get(), so membership-test it.
-            mixtures = getattr(model.dit, "mixtures", None)
-            if mixtures is not None and "video" in mixtures:
-                video_dit = mixtures["video"]
-            else:
-                video_dit = getattr(model, "video_expert", None)
+            # hold the pretrained video world model back and spend the
+            # optimizer on the action expert (+ proprio encoder). The MoT keeps
+            # both experts in one joint attention, so this removes the video
+            # expert's weight gradients and optimizer state, not its forward
+            # pass. With `lora` the adapters are then re-enabled, which is the
+            # only difference between the two arms.
+            video_dit = cls._video_expert(model)
             if video_dit is None:
                 raise ValueError(
-                    "freeze_video_dit=true requires a model with a video DiT expert."
+                    "freeze_video_dit/lora require a model with a video DiT expert."
                 )
             video_dit.eval()
             video_dit.requires_grad_(False)
+            if lora:
+                # train() for the adapters' dropout; the base blocks carry no
+                # dropout or running statistics, so the mode is otherwise inert.
+                video_dit.train()
+                for param in lora_utils.lora_parameters(video_dit):
+                    param.requires_grad_(True)
         proprio_encoder = getattr(model, "proprio_encoder", None)
         if proprio_encoder is not None:
             proprio_encoder.train()
@@ -599,7 +682,13 @@ class Wan22Trainer:
     def _save_weights_checkpoint(self, step_tag: str):
         model = self.accelerator.unwrap_model(self.model)
         ckpt_path = os.path.join(self.weights_dir, f"{step_tag}.pt")
-        model.save_checkpoint(ckpt_path, optimizer=None, step=self.global_step)
+        # A LoRA run folds its adapters back into the base weights on the way
+        # out, so every arm writes the same key set and the policy server needs
+        # no LoRA support of its own.
+        mot_state_dict = lora_utils.merged_state_dict(model.mot) if self.lora_rank else None
+        model.save_checkpoint(
+            ckpt_path, optimizer=None, step=self.global_step, mot_state_dict=mot_state_dict
+        )
         return ckpt_path
 
     def _save_trainer_state(self, state_path: str):

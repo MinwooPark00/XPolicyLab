@@ -1085,9 +1085,12 @@ class FastWAM(torch.nn.Module):
             tiled=tiled,
         )
 
-    def save_checkpoint(self, path, optimizer=None, step=None):
+    def save_checkpoint(self, path, optimizer=None, step=None, mot_state_dict=None):
+        # `mot_state_dict` lets a caller substitute an equivalent state dict --
+        # a LoRA run passes the adapter-merged one so the file it writes is
+        # keyed exactly like a full fine-tune's.
         payload = {
-            "mot": self.mot.state_dict(),
+            "mot": self.mot.state_dict() if mot_state_dict is None else mot_state_dict,
             "step": step,
             "torch_dtype": str(self.torch_dtype),
         }
@@ -1100,7 +1103,21 @@ class FastWAM(torch.nn.Module):
     def load_checkpoint(self, path, optimizer=None):
         payload = torch.load(path, map_location="cpu")
         if "mot" in payload:
-            self.mot.load_state_dict(payload["mot"], strict=False)
+            # strict=False so a checkpoint trained at another action width can
+            # initialise everything except the projections that carry it. It
+            # also hides a genuinely mismatched checkpoint, so say out loud
+            # what did not land.
+            incompatible = self.mot.load_state_dict(payload["mot"], strict=False)
+            logger.info(
+                "Loaded %d/%d `mot` tensors from %s (%d missing, %d unexpected)",
+                len(payload["mot"]) - len(incompatible.unexpected_keys),
+                len(self.mot.state_dict()), path,
+                len(incompatible.missing_keys), len(incompatible.unexpected_keys),
+            )
+            for key in incompatible.missing_keys:
+                logger.info("  not in checkpoint, keeping initialised value: %s", key)
+            for key in incompatible.unexpected_keys:
+                logger.warning("  in checkpoint but not in this model: %s", key)
         elif "dit" in payload:
             logger.warning("Loading legacy `dit` checkpoint into video expert only.")
             self.video_expert.load_state_dict(payload["dit"], strict=False)

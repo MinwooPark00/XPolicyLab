@@ -158,6 +158,33 @@ train_common=(
     "output_dir=${POLICY_DIR}/checkpoints/${ckpt_setting}"
 )
 
+# Parameter-efficient fine-tuning, as named variables rather than through
+# FASTWAM_EXTRA: values with spaces cannot ride an `sbatch --export` list, so a
+# training hook can only forward these one at a time.
+#   FASTWAM_INIT_WEIGHTS      a released .pt to start the weights from. Unlike
+#                             `resume` it carries no optimizer/step, and it is
+#                             applied before DeepSpeed builds its fp32 master
+#                             copy, so a requeue's `resume=` still wins.
+#   FASTWAM_FREEZE_VIDEO_DIT  1 -> train the action expert only.
+#   FASTWAM_LORA_RANK         >0 -> LoRA on the video expert instead.
+if [[ -n "${FASTWAM_INIT_WEIGHTS:-}" ]]; then
+    if [[ ! -f "${FASTWAM_INIT_WEIGHTS}" ]]; then
+        echo "[ERROR] FASTWAM_INIT_WEIGHTS is not a file: ${FASTWAM_INIT_WEIGHTS}" >&2
+        exit 2
+    fi
+    train_common+=("init_weights=${FASTWAM_INIT_WEIGHTS}")
+fi
+if [[ "${FASTWAM_FREEZE_VIDEO_DIT:-0}" == "1" ]]; then
+    train_common+=("freeze_video_dit=true")
+fi
+if [[ -n "${FASTWAM_LORA_RANK:-}" && "${FASTWAM_LORA_RANK}" != "0" ]]; then
+    train_common+=(
+        "lora_rank=${FASTWAM_LORA_RANK}"
+        "lora_alpha=${FASTWAM_LORA_ALPHA:-16}"
+        "lora_dropout=${FASTWAM_LORA_DROPOUT:-0.0}"
+    )
+fi
+
 # Anything else, verbatim, as a space-separated list of hydra overrides --
 # probe runs (num_epochs=1 wandb.mode=offline) that must not be named here.
 # shellcheck disable=SC2206
