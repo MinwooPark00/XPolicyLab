@@ -100,6 +100,13 @@ pretrained_model_path="${DREAMZERO_PRETRAINED_MODEL_PATH:-${default_pretrained_m
 max_steps="${DREAMZERO_MAX_STEPS:-5000}"
 save_steps="${DREAMZERO_SAVE_STEPS:-2500}"
 batch_size="${DREAMZERO_PER_DEVICE_BATCH_SIZE:-1}"
+# The batch an optimizer step actually sees. conf.yaml leaves
+# `global_batch_size: null`, which means base.py never touches
+# gradient_accumulation_steps and the effective batch is
+# per_device_train_batch_size x world_size -- so the same script trained a
+# different batch on every allocation shape. Setting this pins it: base.py
+# asserts it divides by per-device x world and derives the accumulation.
+global_batch_size="${DREAMZERO_GLOBAL_BATCH_SIZE:-}"
 dataloader_workers="${DREAMZERO_DATALOADER_WORKERS:-1}"
 image_width="${DREAMZERO_IMAGE_WIDTH:-320}"
 image_height="${DREAMZERO_IMAGE_HEIGHT:-176}"
@@ -319,6 +326,10 @@ if [ "${bench_name}" = "mhbench" ]; then
         "++action_head_cfg.config.diffusion_model_cfg.action_dim=${action_dim}"
         "++action_head_cfg.config.diffusion_model_cfg.max_state_dim=${state_dim}"
     )
+fi
+
+if [ -n "${global_batch_size}" ]; then
+    TRAIN_CMD+=("global_batch_size=${global_batch_size}")
 fi
 
 if [ "${pretrained_model_path}" != "none" ]; then

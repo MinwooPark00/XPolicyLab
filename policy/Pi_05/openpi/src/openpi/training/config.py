@@ -1044,11 +1044,13 @@ _CONFIGS.extend(
         freeze_filter=_mhbench_lora_model(robot).get_freeze_filter(),
         # LoRA: an EMA copy would shadow the frozen base weights too, for nothing.
         ema_decay=None,
-        # Matched to the GR00T_N17 baseline these are compared against
-        # (train_groot_*.sbatch: GLOBAL_BATCH_SIZE=32, MAX_STEPS=20000,
-        # SAVE_STEPS=2000), so the two differ in method and not in budget.
+        # The benchmark's shared budget, matched to the GR00T_N17 baseline
+        # these are compared against (baselines/scripts/train/GR00T_N17.sh:
+        # GLOBAL_BATCH_SIZE=32, MAX_STEPS=40000, SAVE_STEPS=2000), so the two
+        # differ in method and not in compute. 40k since 2026-08-29; the
+        # checkpoints trained before that stopped at 20k.
         batch_size=32,
-        num_train_steps=20_000,
+        num_train_steps=40_000,
         save_interval=2000,
         # 16 CPUs per GPU on the partitions these run on (DefCpuPerGPU=16);
         # video decode is the loader's cost and 8 leaves half of them idle.
@@ -1084,7 +1086,7 @@ _CONFIGS.append(
         freeze_filter=_mhbench_lora_model("robot_a").get_freeze_filter(),
         ema_decay=None,
         batch_size=32,
-        num_train_steps=20_000,
+        num_train_steps=40_000,
         save_interval=2000,
         num_workers=12,
         val_interval=1000,

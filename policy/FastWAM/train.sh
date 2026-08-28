@@ -74,6 +74,12 @@ num_workers="${FASTWAM_NUM_WORKERS:-8}"
 # be a non-null integer or trainer init crashes. Inject a large dummy by default;
 # user can override with FASTWAM_NUM_EPOCHS.
 num_epochs_override="${FASTWAM_NUM_EPOCHS:-16}"
+# A step budget, when you want one. `_estimate_total_train_steps()` returns
+# max_steps verbatim if it is set and otherwise derives it from the dataset
+# length and num_epochs, so setting this makes the schedule independent of how
+# big the dataset is -- which is what comparing policies on a fixed budget
+# needs. Unset leaves the task yaml's `max_steps: null` alone.
+max_steps_override="${FASTWAM_MAX_STEPS:-}"
 # Which ZeRO stage launches the run: 1 (upstream default), 2, or 2off. A 5.6B
 # trainable DiT's fp32 optimizer partition alone is ~67 GB, so few-GPU runs
 # want stage 2 (optimizer AND gradients sharded); MHBench's training hook
@@ -157,6 +163,10 @@ train_common=(
     "data.val.processor.proprio_output_dim=${state_dim}"
     "output_dir=${POLICY_DIR}/checkpoints/${ckpt_setting}"
 )
+
+if [[ -n "${max_steps_override}" ]]; then
+    train_common+=("max_steps=${max_steps_override}")
+fi
 
 # Parameter-efficient fine-tuning, as named variables rather than through
 # FASTWAM_EXTRA: values with spaces cannot ride an `sbatch --export` list, so a
