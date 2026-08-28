@@ -254,6 +254,25 @@ torchrun --nproc_per_node "${num_gpus}" --standalone groot/vla/experiment/experi
     ++action_head_cfg.config.defer_lora_injection=true \
     ++action_head_cfg.config.native_dojo_action="${native_dojo_action}"
 )
+# The DiT's own action/state widths, which the shared action-head yaml pins to
+# AgiBot's (`diffusion_model_cfg.action_dim: 32`, and max_state_dim left at the
+# constructor default of 64). The global `max_action_dim`/`max_state_dim` the
+# data config sets reach the transform and the head, but NOT the DiT, so
+# without these the encoder bank is built 32-wide and the first training step
+# dies in `MultiEmbodimentActionEncoder`:
+#   RuntimeError: Expected size for first two dimensions of batch2 tensor to
+#   be: [1, 70] but got: [1, 32].
+# Overridden here rather than in the yaml so agibot/robodojo/droid keep the
+# exact widths their released checkpoints were trained at.
+if [ "${bench_name}" = "mhbench" ]; then
+    state_dim=$(bash "${UTILS_DIR}/get_state_dim.sh" "${ROOT_DIR}" "${env_cfg_type}")
+    echo "[DreamZero train] mhbench DiT widths: action_dim=${action_dim} max_state_dim=${state_dim}"
+    TRAIN_CMD+=(
+        "++action_head_cfg.config.diffusion_model_cfg.action_dim=${action_dim}"
+        "++action_head_cfg.config.diffusion_model_cfg.max_state_dim=${state_dim}"
+    )
+fi
+
 if [ "${pretrained_model_path}" != "none" ]; then
     TRAIN_CMD+=("pretrained_model_path=${pretrained_model_path}")
 fi
