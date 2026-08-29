@@ -107,8 +107,19 @@ def collate(features: List[dict], tokenizer: AutoTokenizer, num_views=3, embodim
                         # If it's already a scalar (string, float, int, etc.), convert to string
                         processed_item = str(parsed_item)
                     
-                    if num_views > 1 and elem["embodiment_id"] == embodiment_tag_mapping[EmbodimentTag.AGIBOT.value]:
-                        processed_item = "A multi-view video shows that a robot " + processed_item.lower() + " The video is split into four views: The top-left view shows the camera view from the robot's head, the top-right view shows the camera view from the right hand, the bottom-left view shows the camera view from the left hand, and the bottom-right view is a black screen (inactive view). The robot " + processed_item.lower()
+                    # A single-view AGIBOT run matched no branch at all before
+                    # this: the multi-view arm is guarded on num_views > 1 and
+                    # every other arm is a different embodiment, so collate
+                    # fell through to the raise below. MHBench's decentralized
+                    # policy is one ego view under the reused `agibot` tag, so
+                    # it could not take a single training step (job 2116768,
+                    # "Embodiment ID 26 not supported"). Multi-view behaviour
+                    # is byte-for-byte what it was.
+                    if elem["embodiment_id"] == embodiment_tag_mapping[EmbodimentTag.AGIBOT.value]:
+                        if num_views > 1:
+                            processed_item = "A multi-view video shows that a robot " + processed_item.lower() + " The video is split into four views: The top-left view shows the camera view from the robot's head, the top-right view shows the camera view from the right hand, the bottom-left view shows the camera view from the left hand, and the bottom-right view is a black screen (inactive view). The robot " + processed_item.lower()
+                        else:
+                            processed_item = "A single view video shows that a robot " + processed_item.lower()
                     elif elem["embodiment_id"] == embodiment_tag_mapping[EmbodimentTag.OXE_DROID.value]:
                         processed_item = (
                             "A multi-view video shows that a robot "
@@ -129,8 +140,12 @@ def collate(features: List[dict], tokenizer: AutoTokenizer, num_views=3, embodim
                     output_values.append(processed_item)  
                 except (ValueError, SyntaxError, TypeError):
                     # If parsing fails or item is already a string, use it directly
-                    if num_views > 1 and elem["embodiment_id"] == embodiment_tag_mapping[EmbodimentTag.AGIBOT.value]:
-                        item = "A multi-view video shows that a robot " + str(item).lower() + " The video is split into four views: The top-left view shows the camera view from the robot's head, the top-right view shows the camera view from the right hand, the bottom-left view shows the camera view from the left hand, and the bottom-right view is a black screen (inactive view). The robot " + str(item).lower()
+                    # Same single-view gap as the parsed path above.
+                    if elem["embodiment_id"] == embodiment_tag_mapping[EmbodimentTag.AGIBOT.value]:
+                        if num_views > 1:
+                            item = "A multi-view video shows that a robot " + str(item).lower() + " The video is split into four views: The top-left view shows the camera view from the robot's head, the top-right view shows the camera view from the right hand, the bottom-left view shows the camera view from the left hand, and the bottom-right view is a black screen (inactive view). The robot " + str(item).lower()
+                        else:
+                            item = "A single view video shows that a robot " + str(item).lower()
                     elif elem["embodiment_id"] == embodiment_tag_mapping[EmbodimentTag.OXE_DROID.value]:
                         item = (
                             "A multi-view video shows that a robot "
