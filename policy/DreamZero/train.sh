@@ -136,12 +136,24 @@ if [ "${bench_name}" = "mhbench" ]; then
     # Same network either way -- only the width (handled by the DiT overrides
     # at the bottom of this script) and the view count differ.
     case "${env_cfg_type}" in
+        # frame_seqlen is the DiT's latent tokens per video frame, and it is a
+        # property of the CANVAS, not of one view: the views are tiled 2x2, so
+        # three views make a 640x352 canvas and one view is just 320x176. With
+        # the Wan2.1 VAE (8x spatial) and patch 2 that is 40x22 -> 880 tokens
+        # against 20x11 -> 220. The script defaulted to 880 for both, so the
+        # decentralized run built a 9-latent-frame clip, divided it by the
+        # 4-tile figure, got 2 frames and no image blocks at all, and died in
+        # the DiT's block-layout check (job 2116860). 220 gives 9 frames ->
+        # 4 blocks -> a register of 4*(24+1) = 100, which is exactly the
+        # action_register_length that check reported.
         unitree_g1x2_centralized)
             data_config="${DREAMZERO_DATA_CONFIG:-dreamzero/mhbench_relative}"
-            num_views="${DREAMZERO_NUM_VIEWS:-3}" ;;
+            num_views="${DREAMZERO_NUM_VIEWS:-3}"
+            mhbench_frame_seqlen=880 ;;
         unitree_g1x2_decentralized)
             data_config="${DREAMZERO_DATA_CONFIG:-dreamzero/mhbench_relative_decentralized}"
-            num_views="${DREAMZERO_NUM_VIEWS:-1}" ;;
+            num_views="${DREAMZERO_NUM_VIEWS:-1}"
+            mhbench_frame_seqlen=220 ;;
         *) echo "[DreamZero train][ERROR] unknown mhbench env_cfg_type: ${env_cfg_type}" >&2; exit 2 ;;
     esac
     report_to="${DREAMZERO_REPORT_TO:-${REPORT_TO:-wandb}}"
@@ -296,7 +308,7 @@ torchrun --nproc_per_node "${num_gpus}" --standalone groot/vla/experiment/experi
     image_resolution_height="${image_height}" \
     save_lora_only="${DREAMZERO_SAVE_LORA_ONLY:-true}" \
     max_chunk_size="${max_chunk_size}" \
-    frame_seqlen="${DREAMZERO_FRAME_SEQLEN:-880}" \
+    frame_seqlen="${DREAMZERO_FRAME_SEQLEN:-${mhbench_frame_seqlen:-880}}" \
     save_strategy=steps \
     agibot_data_root="${dataset_path}" \
     "${VAL_ARGS[@]}" \
