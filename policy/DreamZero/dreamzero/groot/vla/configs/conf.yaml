@@ -71,6 +71,7 @@ max_steps: -1
 save_strategy: steps
 save_steps: 500
 eval_strategy: "no"  # there has to be a double quote; otherwise a bare `no` will be interpreted as False
+eval_steps: null     # how often, when eval_strategy is "steps"
 save_total_limit: 8
 report_to: wandb
 seed: 42
@@ -124,6 +125,13 @@ training_args:
   report_to: ${report_to}
   seed: ${seed}
   do_eval: ${do_eval}
+  # Both of these existed at the top level but were never referenced here, so
+  # setting eval_strategy did nothing and eval_steps was not a key at all --
+  # a `eval_steps=N` override died with "Key 'eval_steps' is not in struct"
+  # (job 2116510). The trainer only evaluates on a schedule if HF's
+  # TrainingArguments is told to, hence both.
+  eval_strategy: ${eval_strategy}
+  eval_steps: ${eval_steps}
   ddp_find_unused_parameters: ${ddp_find_unused_parameters}
   ddp_bucket_cap_mb: ${ddp_bucket_cap_mb}
   torch_compile_mode: ${torch_compile_mode}
