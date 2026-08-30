@@ -805,6 +805,19 @@ class BaseExperiment(ABC):
         if hasattr(val_dataset, "all_shards"):
             val_dataset.num_shards_to_sample = len(val_dataset.all_shards)
             val_dataset.reset_seed(getattr(val_dataset, "seed", 42))
+        # The mixture's `training` flag fuses two roles: iteration order and
+        # transform mode. `training=False` gives the deterministic shard
+        # schedule an evaluation needs, but it also put the transforms in eval
+        # mode -- and eval-mode apply_single() skips the whole action block, so
+        # the batch has no `action`, `action_mask` or `has_real_action` and the
+        # action head cannot compute a loss (job 2123707 died on exactly that).
+        # A validation loss is the training objective measured on held-out
+        # data, so the transforms must build training-style batches; for this
+        # config train mode adds no stochastic augmentation (language dropout
+        # 0.0, DROID language-key sampling is another embodiment), so the
+        # deterministic iteration is preserved.
+        for ds in getattr(val_dataset, "datasets", []):
+            ds.transforms.train()
         return val_dataset
 
     def create_data_collator(self, cfg, model):
