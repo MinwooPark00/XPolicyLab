@@ -98,4 +98,9 @@ val_dataset:
     training: false
     balance_dataset_weights: false
     seed: 42
-    shard_sampling_rate: 1.0
+    # Capped for the same reason as the decentralized config: a full held-out
+    # pass costs hours per evaluation (three-view samples run ~14 s each), and
+    # with training=false the unshuffled per-shard step list makes this a
+    # deterministic leading subset -- comparable across evaluations. train.sh
+    # overrides via DREAMZERO_VAL_SHARD_RATE.
+    shard_sampling_rate: 0.005

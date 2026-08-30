@@ -181,8 +181,14 @@ if [ -f "${val_dataset_path}/meta/info.json" ]; then
         # The upstream default is 64, sized for a small model; this one is
         # 22.9B and evaluates at whatever the training step fits.
         "per_device_eval_batch_size=${DREAMZERO_PER_DEVICE_EVAL_BATCH_SIZE:-${batch_size}}"
+        # How much of the held-out split one evaluation reads. At 1.0 a pass is
+        # every val step -- 50,000 forwards, ~43 h, longer than the training
+        # run. 0.005 is the deterministic leading 50 steps of each shard (250
+        # samples decentralized, ~13 min); see the val_dataset node in the
+        # mhbench data configs.
+        "val_dataset.mixture_kwargs.shard_sampling_rate=${DREAMZERO_VAL_SHARD_RATE:-0.005}"
     )
-    echo "[DreamZero train] val=${val_dataset_path} every ${eval_steps} steps"
+    echo "[DreamZero train] val=${val_dataset_path} every ${eval_steps} steps (shard rate ${DREAMZERO_VAL_SHARD_RATE:-0.005})"
 else
     VAL_ARGS=("val_dataset=null")
     echo "[DreamZero train] no held-out split at ${val_dataset_path} -- training without a val curve"

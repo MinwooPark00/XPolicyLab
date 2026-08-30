@@ -437,6 +437,20 @@ class BaseTrainer(transformers.Trainer):
 
         return (loss, outputs) if return_outputs else loss
 
+    def prediction_step(self, model, inputs, prediction_loss_only, ignore_keys=None):
+        # VLA.forward takes the batch dict as its one positional argument (the
+        # convention compute_loss uses above); the stock implementation unpacks
+        # it as model(**inputs) and dies on the first keyword. Upstream never
+        # evaluates, so nothing exercised this path until a val split was wired
+        # in. Calling the model directly rather than through compute_loss also
+        # keeps its moving-average bookkeeping and step-keyed self.log() calls
+        # out of evaluation passes.
+        inputs = self._prepare_inputs(inputs)
+        with torch.no_grad(), self.compute_loss_context_manager():
+            outputs = model(inputs)
+            loss = outputs["loss"]
+        return (loss.detach(), None, None)
+
     def create_optimizer(self):
         """
         Setup the optimizer.

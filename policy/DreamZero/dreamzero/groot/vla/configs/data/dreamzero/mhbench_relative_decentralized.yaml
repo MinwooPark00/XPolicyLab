@@ -103,4 +103,11 @@ val_dataset:
     training: false
     balance_dataset_weights: false
     seed: 42
-    shard_sampling_rate: 1.0
+    # A full pass over the held-out split is 5 shards x 10k nominal steps =
+    # 50,000 forwards at ~3.1 s each -- 43 hours PER evaluation, longer than
+    # the training run (job 2121285's eval dataloader length: 50000). With
+    # training=false the per-shard step list is unshuffled, so this rate takes
+    # the same leading int(1e4 * rate) steps of every shard each time: a small,
+    # deterministic subset whose loss is comparable across evaluations, which
+    # is all a val curve needs. train.sh overrides via DREAMZERO_VAL_SHARD_RATE.
+    shard_sampling_rate: 0.005
