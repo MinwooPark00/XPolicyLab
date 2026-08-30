@@ -4,9 +4,9 @@ set -euo pipefail
 POLICY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${POLICY_DIR}/launcher_args.sh"
 gaudp_parse_stage_args "$@"
-if [[ "${action_type}" != "ee" ]]; then echo "[GauDP] only action_type=ee is supported" >&2; exit 2; fi
-data="${POLICY_DIR}/data/${bench}-${ckpt}-${env_cfg}-${action_type}.hdf5"
-run="${POLICY_DIR}/checkpoints/${bench}-${ckpt}-${env_cfg}-${action_type}-${seed}"
+gaudp_require_joint_action_type
+data="$(gaudp_data_path)"
+run="$(gaudp_run_dir)"
 if [[ ! -f "${data}" ]]; then bash "${POLICY_DIR}/process_data.sh" "${bench}" "${ckpt}" "${env_cfg}" "${action_type}" "${task}"; fi
 
 set -- "${extra[@]}"
@@ -15,8 +15,8 @@ if (( $# > 0 )) && [[ "$1" != -* ]]; then
     shift
 elif [[ -n "${GAUDP_GAUSSIAN_CKPT:-}" ]]; then
     gaussian="${GAUDP_GAUSSIAN_CKPT}"
-elif [[ -s "${run}/gaussian/best.ckpt" ]]; then
-    gaussian="${run}/gaussian/best.ckpt"
+elif gaussian="$(gaudp_find_gaussian_artifact best.ckpt)"; then
+    :
 else
     # Keep Gaussian fine-tuning optional by falling back to the official
     # pretrained checkpoint when no run-local checkpoint exists.
@@ -28,7 +28,17 @@ if [[ ! -s "${gaussian}" ]]; then
     exit 2
 fi
 
-features="${GAUDP_GAUSSIAN_FEATURES:-${run}/gaussian/features.hdf5}"
+# Reuse an existing cache rather than writing a second 94 GB copy: extraction
+# depends on the RGB frames, the camera order and the encoder checkpoint, none
+# of which the joint-space switch changed, and extract_gaussian_features.py
+# re-validates all three before it decides the cache is complete.
+if [[ -n "${GAUDP_GAUSSIAN_FEATURES:-}" ]]; then
+    features="${GAUDP_GAUSSIAN_FEATURES}"
+elif ! features="$(gaudp_find_gaussian_artifact features.hdf5)"; then
+    features="${run}/gaussian/features.hdf5"
+fi
+echo "[GauDP] gaussian ${gaussian}"
+echo "[GauDP] features ${features}"
 python_bin="${GAUDP_PYTHON:-python}"
 if ! command -v "${python_bin}" >/dev/null 2>&1; then
     echo "[GauDP] Python executable not found: ${python_bin}; activate the GauDP environment or set GAUDP_PYTHON" >&2

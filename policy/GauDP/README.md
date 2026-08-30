@@ -1,7 +1,26 @@
 # GauDP for MHBench
 
 This directory contains the standalone GauDP training and evaluation code for
-MHBench. GauDP supports only `action_type=ee`.
+MHBench.
+
+GauDP is **centralized and joint-space**: one network reads both robots' 86D
+URDF-ordered joint state and the two ego views (`ego_a`, `ego_b`) and predicts
+the pair's 70D absolute joint-target action — the same contract GR00T N1.7 and
+every other MHBench baseline uses (`configs/gr00t/mhbench_keys.py`). So
+`action_type=joint`, and its runs are named the way the shared evaluator looks
+for them:
+
+```text
+data/mhbench-<task>-unitree_g1x2_centralized-joint.hdf5
+checkpoints/mhbench-<task>-unitree_g1x2_centralized-joint-<seed>/
+```
+
+GauDP used to predict pelvis-relative wrist poses (42D state / 44D action,
+`action_type=ee`). Those datasets and checkpoints are kept and are **not**
+overwritten, but nothing in a `*-ee-*` policy checkpoint transfers to joint
+space — `model.py` refuses one by name rather than partially loading it, and a
+run has to be retrained. The Gaussian artifacts are the exception: see
+[Reusing pre-joint Gaussian artifacts](#reusing-pre-joint-gaussian-artifacts).
 
 ## 1. Download a dataset
 
@@ -25,7 +44,7 @@ Task names are:
 |---|---|
 | `cocarry` | `cocarry` |
 | `handover` | `handover` |
-| `handover_easy` | `handover_easy` |
+| `handover` | `handover` |
 | `framehang` | `frame_hang` |
 | `doorpassage` | `door_passage` |
 
@@ -118,30 +137,31 @@ Run from `baselines/XPolicyLab/policy/GauDP`:
 The normal interface only needs the task name:
 
 ```bash
-bash process_data.sh handover_easy
+bash process_data.sh handover
 ```
 
 Convert only the first 20 episodes:
 
 ```bash
-bash process_data.sh handover_easy 20
+bash process_data.sh handover 20
 ```
 
-The fixed values `bench=mhbench`, `ckpt=<task>`, `env_cfg=<task>`, and
-`action_type=ee` are filled automatically. Compact aliases such as
-`doorpassage`, `framehang`, and `handovereasy` are accepted. The original
-XPolicyLab interface remains available for existing jobs:
+The fixed values `bench=mhbench`, `ckpt=<task>`,
+`env_cfg=unitree_g1x2_centralized`, and `action_type=joint` are filled
+automatically. Compact aliases such as `doorpassage`, `framehang`, and
+`handovereasy` are accepted and resolve to `handover`. The original XPolicyLab interface remains
+available for existing jobs:
 
 ```bash
-bash process_data.sh <bench> <ckpt> <env_cfg> ee [task] [max_demos]
+bash process_data.sh <bench> <ckpt> <env_cfg> joint [task] [max_demos]
 ```
 
 The training launchers use the same task-first form. Seed and GPU default to 0:
 
 ```bash
-bash train_gaussian.sh handover_easy 0 0 --finetune-mode heads
-bash extract_gaussian_features.sh handover_easy 0 0
-bash train.sh handover_easy 0 0 --epochs 30
+bash train_gaussian.sh handover 0 0 --finetune-mode heads
+bash extract_gaussian_features.sh handover 0 0
+bash train.sh handover 0 0 --epochs 30
 ```
 
 Resolution order is:
@@ -153,8 +173,17 @@ Resolution order is:
 This creates:
 
 ```text
-data/mhbench-<task>-<env_cfg>-ee.hdf5
+data/mhbench-<task>-unitree_g1x2_centralized-joint.hdf5
 ```
+
+State and action are read out of the source's `meta/modality.json` by name —
+the same named slices GR00T's config uses — so a column that moves in a future
+export moves here too rather than being silently mislabelled. Per robot, state
+is `left_leg(6) right_leg(6) waist(3) left_arm(7) left_hand(7) right_arm(7)
+right_hand(7)` = 43D, and action is `left_arm(7) right_arm(7) left_hand(7)
+right_hand(7) waist(3) base_height(1) navigate(3)` = 35D. The file records
+`action_type`, `schema_version` and both key orders as HDF5 attributes, and
+training refuses a file whose attributes do not match.
 
 The optional `max_demos` argument limits the number of converted episodes. GauDP uses
 the train/validation episode ranges declared in `meta/info.json`. It falls back
@@ -226,8 +255,8 @@ mode. Every checkpoint now stores both optimizer and scheduler state.
 Checkpoints are written to:
 
 ```text
-checkpoints/mhbench-cocarry-cocarry-ee-0/gaussian/best.ckpt
-checkpoints/mhbench-cocarry-cocarry-ee-0/gaussian/last.ckpt
+checkpoints/mhbench-cocarry-unitree_g1x2_centralized-joint-0/gaussian/best.ckpt
+checkpoints/mhbench-cocarry-unitree_g1x2_centralized-joint-0/gaussian/last.ckpt
 ```
 
 To evaluate reconstruction on the GauDP validation split:
@@ -238,7 +267,7 @@ bash eval_gaussian.sh cocarry 0 0
 
 # Fine-tuned checkpoint
 bash eval_gaussian.sh cocarry 0 0 \
-  checkpoints/mhbench-cocarry-cocarry-ee-0/gaussian/best.ckpt
+  checkpoints/mhbench-cocarry-unitree_g1x2_centralized-joint-0/gaussian/best.ckpt
 ```
 
 ### Option B: use the official encoder without fine-tuning
@@ -265,7 +294,7 @@ bash extract_gaussian_features.sh cocarry 0 0 \
 The default cache is:
 
 ```text
-checkpoints/mhbench-cocarry-cocarry-ee-0/gaussian/features.hdf5
+checkpoints/mhbench-cocarry-unitree_g1x2_centralized-joint-0/gaussian/features.hdf5
 ```
 
 Use another disk when necessary:
@@ -292,9 +321,9 @@ The last two positional arguments are `<seed> <gpu>`. `train.sh` requires the
 completed feature cache from the previous step. Outputs are:
 
 ```text
-checkpoints/mhbench-cocarry-cocarry-ee-0/policy/best.ckpt
-checkpoints/mhbench-cocarry-cocarry-ee-0/policy/last.ckpt
-checkpoints/mhbench-cocarry-cocarry-ee-0/policy/metrics.jsonl
+checkpoints/mhbench-cocarry-unitree_g1x2_centralized-joint-0/policy/best.ckpt
+checkpoints/mhbench-cocarry-unitree_g1x2_centralized-joint-0/policy/last.ckpt
+checkpoints/mhbench-cocarry-unitree_g1x2_centralized-joint-0/policy/metrics.jsonl
 ```
 
 Use `best.ckpt`, which minimizes `val/loss`, for evaluation. The program default
@@ -311,7 +340,45 @@ bash train.sh cocarry 0 0 --epochs 30
 
 ## 6. Evaluate in MHBench
 
-Run the shared evaluator from the MHBench repository root:
+Run the shared sharded evaluator from the MHBench repository root. This is the
+recommended path for a 50-episode result:
+
+```bash
+baselines/scripts/eval_launch.sh GauDP handover_easy 50 0
+```
+
+The arguments are `<policy> <task> <episodes> <seed>`. By default the launcher
+submits five shards, so the command above runs `5 x 10` independent episodes,
+then submits a CPU aggregation job with an `afterany` dependency. Each shard
+starts its own GauDP server and runs a fresh Isaac Sim process per episode; it
+does not use a different GauDP eval implementation.
+
+Override the shard count when needed (the episode count must divide evenly):
+
+```bash
+EVAL_SHARDS=10 baselines/scripts/eval_launch.sh GauDP handover_easy 50 0
+```
+
+To queue evaluation only after a policy training job succeeds:
+
+```bash
+EVAL_DEPENDENCY=afterok:<training-job-id> \
+  baselines/scripts/eval_launch.sh GauDP handover_easy 50 0
+```
+
+The launcher prints the shard-array job ID, aggregation job ID and final result
+path. For this example the outputs are:
+
+```text
+eval_results/handover_easy/GauDP-centralized-seed0/results.json
+eval_results/handover_easy/GauDP-centralized-seed0/videos/
+```
+
+Videos are enabled by default. Use `EVAL_VIDEO=0` to disable them, and inspect
+an active array with `squeue -j <array-job-id>`.
+
+For a manually configured, unsharded Slurm job, invoke the underlying runner
+directly:
 
 ```bash
 sbatch --partition=suma_rtx4090 --qos=base_qos --exclude=cs-gpu-01 \
@@ -320,14 +387,13 @@ sbatch --partition=suma_rtx4090 --qos=base_qos --exclude=cs-gpu-01 \
   baselines/scripts/eval_policy.sbatch GauDP cocarry 50 0
 ```
 
-The final arguments are `<policy> <task> <episodes> <seed>`. Replace the Slurm
-partition, container, and asset paths for the target cluster.
+Replace the Slurm partition, container, and asset paths for the target cluster.
 
 For a single-episode wiring check, run from the GauDP directory:
 
 ```bash
 bash eval.sh \
-  mhbench Isaac-CoCarry-G1x2-v0 cocarry cocarry ee 0 0 0 \
+  mhbench Isaac-CoCarry-G1x2-v0 cocarry unitree_g1x2_centralized joint 0 0 0 \
   gaudp_env mhbench_env
 ```
 
@@ -337,6 +403,40 @@ The ten arguments are:
 <bench> <task_name> <ckpt> <env_cfg> <action_type> <seed>
 <policy_gpu> <env_gpu> <policy_conda_env> <eval_conda_env>
 ```
+
+## Reusing pre-joint Gaussian artifacts
+
+The NoPoSplat encoder and its offline feature cache are functions of the RGB
+frames and the camera geometry alone — neither reads a state or an action — so
+the move to the joint contract does not invalidate either. Both are expensive
+(a ~26 h fine-tune, and ~94 GB of cache), so the launchers look for them in
+this order and reuse whatever they find:
+
+1. `GAUDP_GAUSSIAN_CKPT` / `GAUDP_GAUSSIAN_FEATURES`, when set;
+2. this run: `checkpoints/mhbench-<task>-unitree_g1x2_centralized-joint-<seed>/gaussian/`;
+3. the pre-joint runs: `checkpoints/mhbench-<task>-<task>-ee-<seed>/gaussian/`
+   and `checkpoints/<task>-experiment-<task>-ee-<seed>/gaussian/`.
+
+`train_gaussian.sh` exits without fine-tuning when it finds one
+(`GAUDP_FORCE_GAUSSIAN=1` fine-tunes anyway), and
+`extract_gaussian_features.sh` reuses a complete cache in place rather than
+writing a second copy.
+
+Reuse is *checked*, not assumed. `extract_gaussian_features.py` re-validates
+the frame count, camera order and encoder checkpoint before it calls a cache
+complete, and `gaudp/dataset.py` additionally proves that the cache's recorded
+source dataset and the joint dataset came from the **same LeRobot export**,
+with the same episode boundaries and the same cameras. A cache from a different
+export, a different episode selection, or a different number of views fails
+loudly at the start of policy training instead of training on frames that do
+not line up with the actions.
+
+Changing the camera count (`GAUDP_USE_SCENE=1`) is the one case that does
+require re-extraction, and a Gaussian checkpoint built for that many views.
+
+The trainable parts — the observation encoder, the Gaussian fusion CNN and the
+diffusion U-Net — do change shape with the contract, so the policy itself is
+trained from scratch.
 
 ## Optional settings
 

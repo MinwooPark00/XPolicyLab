@@ -23,10 +23,15 @@ if str(_MHBENCH_SCRIPTS) not in sys.path:
 from _dataset import DemoSource  # noqa: E402
 from XPolicyLab.policy.GauDP.gaudp.schema import (  # noqa: E402
     ACTION_DIM,
+    ACTION_GROUPS,
+    ACTION_SCHEMA,
     PROPRIO_DIM,
+    ROBOT_ACTION_DIM,
     ROBOT_NAMES,
-    compress_joint_action,
-    proprio_from_demo,
+    ROBOT_PROPRIO_DIM,
+    STATE_GROUPS,
+    STATE_SLICES,
+    STATE_SCHEMA,
 )
 
 
@@ -58,6 +63,86 @@ def _camera_array(demo, camera: str, field: str, length: int) -> np.ndarray:
     return value
 
 
+def _direct_modality() -> dict:
+    """GR00T modality slices for the canonical exported float columns."""
+    state, action = {}, {}
+    for robot_index, robot in enumerate(ROBOT_NAMES):
+        base = robot_index * ROBOT_PROPRIO_DIM
+        for group, _ in STATE_GROUPS:
+            sl = STATE_SLICES[group]
+            state[f"{robot}_{group}"] = {"start": base + sl.start, "end": base + sl.stop}
+        for group, _ in ACTION_GROUPS:
+            key = f"{robot}_{group}"
+            if group == "base_height_command":
+                action[key] = {
+                    "start": robot_index,
+                    "end": robot_index + 1,
+                    "original_key": "teleop.base_height_command",
+                }
+            elif group == "navigate_command":
+                action[key] = {
+                    "start": robot_index * 3,
+                    "end": robot_index * 3 + 3,
+                    "original_key": "teleop.navigate_command",
+                }
+            else:
+                sl = STATE_SLICES[group]
+                action[key] = {"start": base + sl.start, "end": base + sl.stop}
+    return {"state": state, "action": action}
+
+
+def _modality_slice(
+    columns: dict[str, np.ndarray], entry: dict, default_column: str, name: str
+) -> np.ndarray:
+    column = str(entry.get("original_key", default_column))
+    if column not in columns:
+        raise KeyError(f"{name} requires missing source column {column!r}")
+    start, end = int(entry["start"]), int(entry["end"])
+    values = np.asarray(columns[column], dtype=np.float32)
+    if values.ndim != 2 or not 0 <= start < end <= values.shape[1]:
+        raise ValueError(
+            f"invalid modality slice {name}: {column}[{start}:{end}] for shape {values.shape}"
+        )
+    return values[:, start:end]
+
+
+def _joint_state_action_from_columns(
+    columns: dict[str, np.ndarray], modality: dict
+) -> tuple[np.ndarray, np.ndarray]:
+    """Select exactly the centralized GR00T state/action modality keys."""
+    states, actions = [], []
+    for robot in ROBOT_NAMES:
+        state_parts = []
+        action_parts = []
+        for group, width in STATE_GROUPS:
+            key = f"{robot}_{group}"
+            try:
+                entry = modality["state"][key]
+            except KeyError as error:
+                raise KeyError(f"meta/modality.json is missing state key {key!r}") from error
+            value = _modality_slice(columns, entry, "observation.state", key)
+            if value.shape[1] != width:
+                raise ValueError(f"{key} is {value.shape[1]}D, expected {width}D")
+            state_parts.append(value)
+        for group, width in ACTION_GROUPS:
+            key = f"{robot}_{group}"
+            try:
+                entry = modality["action"][key]
+            except KeyError as error:
+                raise KeyError(f"meta/modality.json is missing action key {key!r}") from error
+            value = _modality_slice(columns, entry, "action", key)
+            if value.shape[1] != width:
+                raise ValueError(f"{key} is {value.shape[1]}D, expected {width}D")
+            action_parts.append(value)
+        states.append(np.concatenate(state_parts, axis=-1))
+        actions.append(np.concatenate(action_parts, axis=-1))
+    state = np.concatenate(states, axis=-1).astype(np.float32)
+    action = np.concatenate(actions, axis=-1).astype(np.float32)
+    if state.shape[1] != PROPRIO_DIM or action.shape[1] != ACTION_DIM:
+        raise AssertionError(f"GR00T schema mismatch: state={state.shape}, action={action.shape}")
+    return state, action
+
+
 def _convert_hdf5(
     source: Path,
     target: h5py.File,
@@ -65,8 +150,16 @@ def _convert_hdf5(
     use_scene: bool,
     include_failed: bool,
 ) -> tuple[int, list[int], list[str]]:
+    try:
+        from export_lerobot import ACTION_TERM_LAYOUT, episode_columns, precheck
+    except ImportError as error:
+        raise SystemExit(
+            "raw HDF5 joint conversion requires scripts/export_lerobot.py and its dependencies; "
+            "export the dataset to LeRobot v2.1 first"
+        ) from error
     cameras = ["ego_a", "ego_b"] + (["scene"] if use_scene else [])
     with DemoSource(source) as demos:
+        facts = precheck(demos, selection=None, layout=ACTION_TERM_LAYOUT)
         names = [name for name in demos.names if include_failed or bool(demos[name].attrs.get("success", True))]
         if max_demos is not None:
             names = names[:max_demos]
@@ -77,13 +170,13 @@ def _convert_hdf5(
         total = 0
         for episode_index, name in enumerate(names):
             demo = demos[name]
-            if "actions" not in demo:
-                raise KeyError(f"{demo.name!r} has no raw 'actions' dataset")
-            raw_action = np.asarray(demo["actions"], dtype=np.float32)
-            length = raw_action.shape[0]
-            action = compress_joint_action(raw_action)
-            per_robot_state = [proprio_from_demo(demo, robot, length) for robot in ROBOT_NAMES]
-            state = np.concatenate(per_robot_state, axis=-1)
+            columns = episode_columns(demo, facts)
+            state, action = _joint_state_action_from_columns(columns, _direct_modality())
+            length = state.shape[0]
+            per_robot_state = [
+                state[:, i * ROBOT_PROPRIO_DIM : (i + 1) * ROBOT_PROPRIO_DIM]
+                for i in range(len(ROBOT_NAMES))
+            ]
             if state.shape[1] != PROPRIO_DIM or action.shape[1] != ACTION_DIM:
                 raise AssertionError(f"schema mismatch: state={state.shape}, action={action.shape}")
 
@@ -91,7 +184,11 @@ def _convert_hdf5(
             _append(target, "action", action)
             for robot_index, robot in enumerate(ROBOT_NAMES):
                 _append(target, f"state_{robot_index}", per_robot_state[robot_index])
-                _append(target, f"action_{robot_index}", action[:, robot_index * 22 : (robot_index + 1) * 22])
+                _append(
+                    target,
+                    f"action_{robot_index}",
+                    action[:, robot_index * ROBOT_ACTION_DIM : (robot_index + 1) * ROBOT_ACTION_DIM],
+                )
 
             for camera_index, camera in enumerate(cameras):
                 rgb = _camera_array(demo, camera, "rgb", length).astype(np.uint8)
@@ -137,18 +234,6 @@ def _named_columns(values: np.ndarray, names: list[str], wanted: list[str], key:
     return values[:, [positions[name] for name in wanted]]
 
 
-def _robot_pose_names(robot: str, prefix: str) -> list[str]:
-    return [
-        f"{robot}/{prefix}_pos_x",
-        f"{robot}/{prefix}_pos_y",
-        f"{robot}/{prefix}_pos_z",
-        f"{robot}/{prefix}_quat_x",
-        f"{robot}/{prefix}_quat_y",
-        f"{robot}/{prefix}_quat_z",
-        f"{robot}/{prefix}_quat_w",
-    ]
-
-
 def _camera_pose_names(camera: str) -> list[str]:
     return [
         f"{camera}/pos_x",
@@ -161,12 +246,12 @@ def _camera_pose_names(camera: str) -> list[str]:
     ]
 
 
-def _lerobot_state_action(columns: dict[str, np.ndarray], info: dict) -> tuple[np.ndarray, np.ndarray]:
-    """Map the named LeRobot v2.1 fields to GauDP's 42D/44D contract."""
+def _lerobot_state_action(
+    columns: dict[str, np.ndarray], info: dict, modality: dict | None = None
+) -> tuple[np.ndarray, np.ndarray]:
+    """Map LeRobot v2.1 fields to the centralized GR00T 86D/70D contract."""
     required = (
-        "observation.robots_state",
-        "observation.eef_state",
-        "action.eef",
+        "observation.state",
         "action",
         "teleop.navigate_command",
         "teleop.base_height_command",
@@ -174,67 +259,17 @@ def _lerobot_state_action(columns: dict[str, np.ndarray], info: dict) -> tuple[n
     missing = [key for key in required if key not in columns]
     if missing:
         raise KeyError(f"LeRobot episode is missing required columns: {missing}")
-
-    root_names = _feature_names(info, "observation.robots_state")
-    eef_state_names = _feature_names(info, "observation.eef_state")
-    eef_action_names = _feature_names(info, "action.eef")
-    joint_action_names = _feature_names(info, "action")
-    navigation_names = _feature_names(info, "teleop.navigate_command")
-    height_names = _feature_names(info, "teleop.base_height_command")
-
-    states, actions = [], []
-    for robot in ROBOT_NAMES:
-        root = _named_columns(
-            columns["observation.robots_state"],
-            root_names,
-            _robot_pose_names(robot, "root"),
-            "observation.robots_state",
-        )
-        wrists = []
-        eef_actions = []
-        for side in ("left", "right"):
-            prefix = f"{side}_wrist"
-            wanted = _robot_pose_names(robot, prefix)
-            wrists.append(
-                _named_columns(
-                    columns["observation.eef_state"], eef_state_names, wanted, "observation.eef_state"
-                )
+    # ``info`` remains an argument because callers already load it and its
+    # declared widths are a useful early corruption check. The authoritative
+    # group ordering/slices live in meta/modality.json.
+    for key in required:
+        names = _feature_names(info, key)
+        if len(names) != np.asarray(columns[key]).shape[1]:
+            raise ValueError(
+                f"{key} metadata declares {len(names)} dimensions but data has "
+                f"{np.asarray(columns[key]).shape[1]}"
             )
-            eef_actions.append(
-                _named_columns(columns["action.eef"], eef_action_names, wanted, "action.eef")
-            )
-        states.append(np.concatenate((root, *wrists), axis=-1))
-
-        hands = _named_columns(
-            columns["action"],
-            joint_action_names,
-            [
-                f"{robot}/left_hand_index_0_joint",
-                f"{robot}/left_hand_middle_0_joint",
-                f"{robot}/right_hand_index_0_joint",
-                f"{robot}/right_hand_middle_0_joint",
-            ],
-            "action",
-        )
-        navigation = _named_columns(
-            columns["teleop.navigate_command"],
-            navigation_names,
-            [f"{robot}/lin_vel_x", f"{robot}/lin_vel_y", f"{robot}/ang_vel_z"],
-            "teleop.navigate_command",
-        )
-        height = _named_columns(
-            columns["teleop.base_height_command"],
-            height_names,
-            [f"{robot}/base_height"],
-            "teleop.base_height_command",
-        )
-        actions.append(np.concatenate((*eef_actions, hands, navigation, height), axis=-1))
-
-    state = np.concatenate(states, axis=-1).astype(np.float32)
-    action = np.concatenate(actions, axis=-1).astype(np.float32)
-    if state.shape[1] != PROPRIO_DIM or action.shape[1] != ACTION_DIM:
-        raise AssertionError(f"LeRobot schema mismatch: state={state.shape}, action={action.shape}")
-    return state, action
+    return _joint_state_action_from_columns(columns, modality or _direct_modality())
 
 
 def _read_video(path: Path, length: int) -> np.ndarray:
@@ -345,6 +380,13 @@ def _convert_lerobot(
     info_path = source / "meta" / "info.json"
     with info_path.open(encoding="utf-8") as stream:
         info = json.load(stream)
+    modality_path = source / "meta" / "modality.json"
+    if not modality_path.is_file():
+        raise FileNotFoundError(
+            f"LeRobot dataset is missing {modality_path}; GauDP uses the same named slices as GR00T"
+        )
+    with modality_path.open(encoding="utf-8") as stream:
+        modality = json.load(stream)
     cameras = ["ego_a", "ego_b"] + (["scene"] if use_scene else [])
     for camera in cameras:
         key = f"observation.images.{camera}"
@@ -394,7 +436,7 @@ def _convert_lerobot(
         episode = _episode_index(path)
         table = parquet.read_table(path)
         columns = {key: np.asarray(table[key].to_pylist()) for key in table.column_names}
-        state, action = _lerobot_state_action(columns, info)
+        state, action = _lerobot_state_action(columns, info, modality)
         length = state.shape[0]
         if action.shape[0] != length:
             raise ValueError(f"{path} state/action length mismatch: {length} vs {action.shape[0]}")
@@ -402,8 +444,16 @@ def _convert_lerobot(
         _append(target, "state", state)
         _append(target, "action", action)
         for robot_index in range(len(ROBOT_NAMES)):
-            _append(target, f"state_{robot_index}", state[:, robot_index * 21 : (robot_index + 1) * 21])
-            _append(target, f"action_{robot_index}", action[:, robot_index * 22 : (robot_index + 1) * 22])
+            _append(
+                target,
+                f"state_{robot_index}",
+                state[:, robot_index * ROBOT_PROPRIO_DIM : (robot_index + 1) * ROBOT_PROPRIO_DIM],
+            )
+            _append(
+                target,
+                f"action_{robot_index}",
+                action[:, robot_index * ROBOT_ACTION_DIM : (robot_index + 1) * ROBOT_ACTION_DIM],
+            )
 
         chunk = episode // int(info.get("chunks_size", 1000))
         for camera_index, camera in enumerate(cameras):
@@ -475,7 +525,10 @@ def convert(source: Path, output: Path, max_demos: int | None, use_scene: bool, 
             target.attrs["use_scene"] = bool(use_scene)
             target.attrs["state_dim"] = PROPRIO_DIM
             target.attrs["action_dim"] = ACTION_DIM
-            target.attrs["quaternion_order"] = "xyzw"
+            target.attrs["schema_version"] = "mhbench-gaudp-joint-v2"
+            target.attrs["action_type"] = "joint"
+            target.attrs["state_schema"] = json.dumps(STATE_SCHEMA)
+            target.attrs["action_schema"] = json.dumps(ACTION_SCHEMA)
             target.attrs["source"] = str(source.resolve())
         temporary.replace(output)
     except BaseException:

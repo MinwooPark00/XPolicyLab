@@ -12,7 +12,7 @@ from .core.model.diffusion.conditional_unet1d import ConditionalUnet1D
 from .core.model.gaussian_cnn import GaussianConvEncoder
 from .gaussian import build_gaussian_encoder, encode_gaussians, freeze_gaussian_encoder
 from .normalizer import GauDPNormalizer
-from .schema import ACTION_DIM, PROPRIO_DIM, ROBOT_ACTION_DIM
+from .schema import ACTION_DIM, ACTION_SCHEMA, PROPRIO_DIM, ROBOT_ACTION_DIM, STATE_SCHEMA
 
 
 def _replace_batch_norm(module: nn.Module) -> nn.Module:
@@ -28,7 +28,7 @@ def _replace_batch_norm(module: nn.Module) -> nn.Module:
 
 
 class MultiViewObservationEncoder(nn.Module):
-    """Shared ResNet-18 over each fused view plus real 42D proprio."""
+    """Shared ResNet-18 over each fused view plus the pair's 86D joint state."""
 
     def __init__(self, num_views: int, feature_dim: int = 512) -> None:
         super().__init__()
@@ -66,7 +66,7 @@ class GauDPPolicy(nn.Module):
         *,
         num_views: int = 2,
         horizon: int = 8,
-        n_obs_steps: int = 3,
+        n_obs_steps: int = 1,
         n_action_steps: int = 6,
         num_train_timesteps: int = 100,
         num_inference_steps: int = 100,
@@ -90,8 +90,8 @@ class GauDPPolicy(nn.Module):
         self.n_action_steps = int(n_action_steps)
         self.num_inference_steps = int(num_inference_steps)
         self.down_dims = tuple(int(value) for value in down_dims)
-        if self.n_obs_steps > self.horizon:
-            raise ValueError("n_obs_steps cannot exceed horizon")
+        if not 1 <= self.n_obs_steps <= self.horizon:
+            raise ValueError("n_obs_steps must be between 1 and horizon")
         if self.n_obs_steps - 1 + self.n_action_steps > self.horizon:
             raise ValueError("requested action chunk does not fit inside the diffusion horizon")
 
@@ -220,10 +220,14 @@ class GauDPPolicy(nn.Module):
 
         robot_a = list(range(0, ROBOT_ACTION_DIM))
         robot_b = list(range(ROBOT_ACTION_DIM, ACTION_DIM))
-        eef = list(range(0, 14)) + list(range(ROBOT_ACTION_DIM, ROBOT_ACTION_DIM + 14))
-        hand = list(range(14, 18)) + list(range(ROBOT_ACTION_DIM + 14, ROBOT_ACTION_DIM + 18))
-        base = list(range(18, 21)) + list(range(ROBOT_ACTION_DIM + 18, ROBOT_ACTION_DIM + 21))
-        height = [ROBOT_ACTION_DIM - 1, ACTION_DIM - 1]
+        def both(local: range | list[int]) -> list[int]:
+            return [index + offset for offset in (0, ROBOT_ACTION_DIM) for index in local]
+
+        arm = both(range(0, 14))
+        hand = both(range(14, 28))
+        waist = both(range(28, 31))
+        height = both([31])
+        navigation = both(range(32, 35))
         snr = alpha / (1.0 - alpha).clamp_min(1e-6)
         noise_cosine = F.cosine_similarity(
             prediction.flatten(1), noise.flatten(1), dim=1
@@ -239,10 +243,11 @@ class GauDPPolicy(nn.Module):
             "action/x0_clipped_mae": float(absolute_error.mean().detach()),
             "action/robot_a_mse": group_mse(robot_a),
             "action/robot_b_mse": group_mse(robot_b),
-            "action/eef_pose_mse": group_mse(eef),
+            "action/arm_mse": group_mse(arm),
             "action/hand_mse": group_mse(hand),
-            "action/base_velocity_mse": group_mse(base),
+            "action/waist_mse": group_mse(waist),
             "action/height_mse": group_mse(height),
+            "action/navigation_mse": group_mse(navigation),
         }
         return loss, metrics
 
@@ -271,7 +276,11 @@ def policy_checkpoint_payload(policy: GauDPPolicy, **metadata: Any) -> dict[str,
         if not key.startswith("gaussian_encoder.")
     }
     return {
-        "format": "mhbench-gaudp-policy-v1",
+        "format": "mhbench-gaudp-policy-v2",
+        "state_dim": PROPRIO_DIM,
+        "action_dim": ACTION_DIM,
+        "state_schema": STATE_SCHEMA,
+        "action_schema": ACTION_SCHEMA,
         "config": policy.config(),
         "state_dict": state,
         **metadata,

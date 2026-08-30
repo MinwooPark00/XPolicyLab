@@ -11,7 +11,7 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import Dataset
 
-from .schema import ACTION_DIM, PROPRIO_DIM, pose7_xyzw_to_matrix
+from .schema import ACTION_DIM, ACTION_SCHEMA, PROPRIO_DIM, STATE_SCHEMA, pose7_xyzw_to_matrix
 
 IMAGE_SIZE = (240, 320)
 _OPENGL_TO_OPENCV = np.diag([1.0, -1.0, -1.0, 1.0]).astype(np.float32)
@@ -81,7 +81,15 @@ class _LazyH5Dataset(Dataset):
                 self.val_mask[val_ids] = True
                 self.split_source = "95:5-fallback"
             if int(source.attrs["state_dim"]) != PROPRIO_DIM or int(source.attrs["action_dim"]) != ACTION_DIM:
-                raise ValueError("dataset does not follow GauDP's 42D state / 44D action contract")
+                raise ValueError("dataset does not follow GauDP's 86D state / 70D joint-action contract")
+            if str(source.attrs.get("action_type", "")) != "joint":
+                raise ValueError("dataset is not marked action_type=joint; regenerate it with process_data.sh")
+            state_schema = tuple(json.loads(source.attrs.get("state_schema", "[]")))
+            action_schema = tuple(json.loads(source.attrs.get("action_schema", "[]")))
+            if state_schema != STATE_SCHEMA or action_schema != ACTION_SCHEMA:
+                raise ValueError(
+                    f"dataset schema differs from centralized GR00T: state={state_schema}, action={action_schema}"
+                )
 
     def split_ids(self, train: bool) -> list[int]:
         mask = self.train_mask if train else self.val_mask
@@ -116,12 +124,16 @@ class GauDPSequenceDataset(_LazyH5Dataset):
         path: str | Path,
         train: bool,
         horizon: int = 8,
-        n_obs_steps: int = 3,
+        n_obs_steps: int = 1,
         gaussian_features: str | Path | None = None,
     ) -> None:
         super().__init__(path)
-        self.horizon = horizon
-        self.n_obs_steps = n_obs_steps
+        self.horizon = int(horizon)
+        self.n_obs_steps = int(n_obs_steps)
+        if self.horizon < 1:
+            raise ValueError("horizon must be positive")
+        if not 1 <= self.n_obs_steps <= self.horizon:
+            raise ValueError("n_obs_steps must be between 1 and horizon")
         if gaussian_features is None:
             raise ValueError("offline Gaussian feature file is required for GauDP policy training")
         self.gaussian_features_path = str(Path(gaussian_features).resolve())
@@ -142,10 +154,76 @@ class GauDPSequenceDataset(_LazyH5Dataset):
                 )
             if not bool(features.attrs.get("complete", False)):
                 raise ValueError(f"Gaussian feature extraction is incomplete: {self.gaussian_features_path}")
+            self._validate_feature_source(features)
             self.gaussian_checkpoint = str(features.attrs.get("gaussian_checkpoint", ""))
         ranges = _episode_ranges(self.episode_ends)
         self.ranges = [ranges[i] for i in self.split_ids(train)]
         self.samples = [(episode, t) for episode, (start, end) in enumerate(self.ranges) for t in range(start, end)]
+
+    def _validate_feature_source(self, features: h5py.File) -> None:
+        """Allow an EE-era cache only when its image timeline is identical."""
+        recorded = Path(str(features.attrs.get("source_data", ""))).expanduser()
+        current = Path(self.path)
+        if recorded.resolve() == current.resolve():
+            return
+        if not recorded.is_file():
+            # Pre-joint caches point at the converted ``*-ee.hdf5`` file. That
+            # intermediate may have been deleted after the new joint file was
+            # generated even though both came from the same LeRobot export.
+            # Accept only the narrow, independently verifiable case: same
+            # GauDP data directory, legacy EE filename for this task, and a
+            # complete LeRobot export whose declared frame/episode counts are
+            # exactly the new conversion's timeline. Shape and camera order
+            # were already checked against the cache above.
+            with h5py.File(current, "r") as new:
+                new_source = Path(str(new.attrs.get("source", ""))).resolve()
+                episode_ids = np.asarray(new.get("episode_ids", []), dtype=np.int64)
+            info_path = new_source / "meta" / "info.json"
+            task = new_source.parent.name if new_source.name == "lerobot" else new_source.name
+            # The handover_easy LeRobot folder was renamed to handover without
+            # changing its episodes or images. Policy/checkpoint names remain
+            # handover_easy because that is the benchmark task eval_launch
+            # receives; only provenance lookup follows the dataset rename.
+            if not info_path.is_file() and task == "handover_easy":
+                renamed_source = new_source.parent.parent / "handover" / new_source.name
+                renamed_info = renamed_source / "meta" / "info.json"
+                if renamed_info.is_file():
+                    info_path = renamed_info
+            legacy_names = {
+                f"mhbench-{task}-{task}-ee.hdf5",
+                f"{task}-experiment-{task}-ee.hdf5",
+            }
+            try:
+                info = json.loads(info_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                info = {}
+            complete_ids = np.arange(len(self.episode_ends), dtype=np.int64)
+            if not (
+                recorded.parent.resolve() == current.parent.resolve()
+                and recorded.name in legacy_names
+                and int(info.get("total_frames", -1)) == int(self.episode_ends[-1])
+                and int(info.get("total_episodes", -1)) == len(self.episode_ends)
+                and np.array_equal(episode_ids, complete_ids)
+            ):
+                raise ValueError(
+                    f"Gaussian cache records unavailable source data {recorded}; "
+                    "cannot prove image compatibility"
+                )
+            return
+        with h5py.File(recorded, "r") as old:
+            old_cameras = json.loads(old.attrs["camera_order"])
+            old_ends = np.asarray(old["episode_ends"], dtype=np.int64)
+            old_source = str(old.attrs.get("source", ""))
+        with h5py.File(current, "r") as new:
+            new_source = str(new.attrs.get("source", ""))
+        if old_cameras != self.camera_order or not np.array_equal(old_ends, self.episode_ends):
+            raise ValueError(
+                "Gaussian cache source has different cameras or episode boundaries; re-extract features"
+            )
+        if not old_source or not new_source or Path(old_source).resolve() != Path(new_source).resolve():
+            raise ValueError(
+                "Gaussian cache and joint dataset were not converted from the same source dataset"
+            )
 
     @property
     def gaussian_file(self) -> h5py.File:
@@ -175,17 +253,23 @@ class GauDPSequenceDataset(_LazyH5Dataset):
         episode, current = self.samples[index]
         start, end = self.ranges[episode]
         first = current - (self.n_obs_steps - 1)
-        indices = np.clip(np.arange(first, first + self.horizon), start, end - 1)
-        state = torch.from_numpy(_read_rows(self.file["state"], indices).astype(np.float32))
-        action = torch.from_numpy(_read_rows(self.file["action"], indices).astype(np.float32))
+        action_indices = np.clip(np.arange(first, first + self.horizon), start, end - 1)
+        observation_indices = action_indices[: self.n_obs_steps]
+        state = torch.from_numpy(
+            _read_rows(self.file["state"], observation_indices).astype(np.float32)
+        )
+        action = torch.from_numpy(
+            _read_rows(self.file["action"], action_indices).astype(np.float32)
+        )
         images = []
         for camera_index in range(len(self.camera_order)):
-            frames = _read_rows(self.file[f"rgb_{camera_index}"], indices).astype(np.uint8)
+            frames = _read_rows(
+                self.file[f"rgb_{camera_index}"], observation_indices
+            ).astype(np.uint8)
             tensor = torch.from_numpy(frames).permute(0, 3, 1, 2).float().div_(255.0)
             images.append(_resize_chw(tensor))
-        feature_indices = indices[: self.n_obs_steps]
         gaussian_features = torch.from_numpy(
-            _read_rows(self.gaussian_file["gaussian_features"], feature_indices)
+            _read_rows(self.gaussian_file["gaussian_features"], observation_indices)
         )
         return {
             "images": torch.stack(images, dim=1),

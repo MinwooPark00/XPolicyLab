@@ -4,10 +4,7 @@ set -euo pipefail
 POLICY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${POLICY_DIR}/launcher_args.sh"
 gaudp_parse_data_args "$@"
-if [[ "${action_type}" != "ee" ]]; then
-    echo "[GauDP] only action_type=ee is supported" >&2
-    exit 2
-fi
+gaudp_require_joint_action_type
 
 MHBENCH_ROOT="$(cd "${POLICY_DIR}/../../../.." && pwd)"
 DATASETS_ROOT="${GAUDP_DATASETS_ROOT:-${MHBENCH_ROOT}/datasets}"
@@ -37,7 +34,9 @@ task_names=("${task}")
 case "${task}" in
   door_passage) task_names+=(doorpassage) ;;
   frame_hang)   task_names+=(framehang) ;;
-  handover_easy) task_names+=(handovereasy) ;;
+  # The handover_easy release was renamed on disk to handover. Keep the
+  # policy/checkpoint task name stable so eval_launch still resolves it.
+  handover_easy) task_names+=(handover) ;;
 esac
 
 source_path=""
@@ -91,7 +90,7 @@ print(f"[GauDP] task     {sentences[0]}")
 PROV
 fi
 
-output="${POLICY_DIR}/data/${bench}-${ckpt}-${env_cfg}-${action_type}.hdf5"
+output="$(gaudp_data_path)"
 extra=()
 if [[ -n "${max_demos}" ]]; then extra+=(--max-demos "${max_demos}"); fi
 if [[ "${GAUDP_USE_SCENE:-0}" == "1" ]]; then extra+=(--use-scene); fi

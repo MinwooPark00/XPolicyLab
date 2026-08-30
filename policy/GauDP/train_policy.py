@@ -98,7 +98,10 @@ def _accumulate(sums: dict[str, float], metrics: dict[str, float]) -> None:
         sums[key] = sums.get(key, 0.0) + float(value)
 
 
-def _save(path: Path, policy: GauDPPolicy, optimizer, scheduler, epoch, metrics, gaussian_checkpoint: Path):
+def _save(
+    path: Path, policy: GauDPPolicy, optimizer, scheduler, epoch, metrics,
+    gaussian_checkpoint: Path, camera_order: list[str],
+):
     path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(
         policy_checkpoint_payload(
@@ -110,6 +113,7 @@ def _save(path: Path, policy: GauDPPolicy, optimizer, scheduler, epoch, metrics,
             # Preserve checkpoints outside the run directory (for example the
             # official NoPoSplat checkpoint used with RGB-only LeRobot data).
             gaussian_checkpoint=str(gaussian_checkpoint.expanduser().resolve()),
+            camera_order=list(camera_order),
         ),
         path,
     )
@@ -127,7 +131,7 @@ def main() -> None:
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--horizon", type=int, default=8)
-    parser.add_argument("--obs-steps", type=int, default=3)
+    parser.add_argument("--obs-steps", type=int, default=1)
     parser.add_argument("--action-steps", type=int, default=6)
     parser.add_argument("--inference-steps", type=int, default=100)
     parser.add_argument(
@@ -311,7 +315,10 @@ def main() -> None:
             }
             print(f"[GauDP][policy] saving last checkpoint to {args.output / 'last.ckpt'}", flush=True)
             save_started = time.monotonic()
-            _save(args.output / "last.ckpt", policy, optimizer, scheduler, epoch, metrics, args.gaussian)
+            _save(
+                args.output / "last.ckpt", policy, optimizer, scheduler, epoch, metrics,
+                args.gaussian, train_data.camera_order,
+            )
             print(
                 f"[GauDP][policy] saved last checkpoint in "
                 f"{_format_duration(time.monotonic() - save_started)}",
@@ -321,7 +328,10 @@ def main() -> None:
                 best = metrics["val/loss"]
                 print(f"[GauDP][policy] new best val/loss={best:.6f}; saving best checkpoint", flush=True)
                 best_save_started = time.monotonic()
-                _save(args.output / "best.ckpt", policy, optimizer, scheduler, epoch, metrics, args.gaussian)
+                _save(
+                    args.output / "best.ckpt", policy, optimizer, scheduler, epoch, metrics,
+                    args.gaussian, train_data.camera_order,
+                )
                 print(
                     f"[GauDP][policy] saved best checkpoint in "
                     f"{_format_duration(time.monotonic() - best_save_started)}",
