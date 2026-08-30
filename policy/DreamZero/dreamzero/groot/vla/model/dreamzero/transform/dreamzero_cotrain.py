@@ -628,7 +628,27 @@ class DreamTransform(InvertibleModalityTransform):
         return collate(data_split_processed, self.tokenizer, self.num_views, self.embodiment_tag_mapping)
 
     def apply(self, data: dict) -> dict:
-        if not self.training and data["video"].ndim == 5:
+        # Promote a lone sample to a batch of one ONLY when the rest of the
+        # sample is batched too. check_keys_and_batch_size() decides batching
+        # from the video's ndim alone, so promoting the video by itself made a
+        # single sample look batched while state and action kept their
+        # unbatched (T, D) shapes -- apply_batch then sliced their TIME axis as
+        # if it were a batch, and a (4, 43) state reached _prepare_state as
+        # (43,), where np.pad's two-axis pad spec died on a 1-D array.
+        #
+        # The dataset yields single samples in both modes; `training: false` on
+        # the val split is asking for deterministic ordering and no
+        # augmentation, not for different shapes. That is what killed job
+        # 2118411 at its first evaluation, 3.6 h in, before its first
+        # checkpoint. Reproduced as a 2x2 over {train root, val root} x
+        # {training true, false}: the flag is the discriminator and the data is
+        # not -- both roots pass with training=True and both fail with False,
+        # and get_step_data returns a correct (4, 43) in every cell.
+        if (
+            not self.training
+            and data["video"].ndim == 5
+            and getattr(data.get("state"), "ndim", 2) == 3
+        ):
             data["video"] = data["video"][None, ...]
         is_batched, batch_size = self.check_keys_and_batch_size(data)
         if is_batched:
