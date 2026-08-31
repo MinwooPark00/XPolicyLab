@@ -37,6 +37,12 @@ log_every: 10
 save_every: 100
 eval_every: 50
 eval_num_inference_steps: 10
+# Validation-loss estimator: how many held-out samples to average and the seed
+# that fixes their flow-matching noise. See Wan22Trainer.evaluate -- upstream
+# scored one random sample with fresh noise, which is why `eval/val_loss` was
+# unreadable as a trend.
+eval_num_loss_samples: 32
+eval_noise_seed: 12345
 
 # training
 gradient_accumulation_steps: 1

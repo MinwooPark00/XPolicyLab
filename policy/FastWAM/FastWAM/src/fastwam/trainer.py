@@ -44,6 +44,20 @@ class Wan22Trainer:
         self.save_every = int(cfg.save_every)
         self.eval_every = int(cfg.eval_every)
         self.eval_num_inference_steps = int(cfg.eval_num_inference_steps)
+        # How many held-out samples the validation LOSS averages over, and the
+        # seed that fixes its noise. Upstream evaluated one randomly drawn
+        # sample with freshly drawn flow-matching noise, which makes
+        # `eval/val_loss` an n=1 estimate of a quantity whose per-sample
+        # variance is dominated by the sampled timestep -- the curve moved far
+        # more between neighbouring evaluations than it moved over the whole
+        # run. Both knobs below are what make the curve a training signal:
+        # a fixed sample set removes the sampling noise, and a fixed seed makes
+        # every evaluation score the SAME noise/timestep draws, so successive
+        # points differ only by the weights. A loss forward is ~0.05 s/sample
+        # here against a 2.3 s training step, so 32 samples cost well under a
+        # step and the video/action metrics below still run on one sample.
+        self.eval_num_loss_samples = int(cfg.get("eval_num_loss_samples", 32))
+        self.eval_noise_seed = int(cfg.get("eval_noise_seed", 12345))
         self.gradient_accumulation_steps = int(cfg.gradient_accumulation_steps)
         self.max_grad_norm = float(cfg.max_grad_norm)
         self.seed = int(cfg.seed)
@@ -497,15 +511,40 @@ class Wan22Trainer:
         was_dit_training = model.dit.training
         model.eval()
 
-        # eval_index = (self.global_step + self.accelerator.process_index) % len(self.val_dataset)
-        rng = torch.Generator(device="cpu").manual_seed(self.global_step + self.accelerator.process_index)
-        eval_index = torch.randint(0, len(self.val_dataset), (1,), generator=rng).item()
-        sample = self._to_batched_eval_sample(self.val_dataset[eval_index])
+        # 1. validation loss over a FIXED subset with FIXED noise.
+        #
+        # The indices are evenly spaced over the split and identical at every
+        # evaluation, and `fork_rng` + a per-sample seed replays the same
+        # flow-matching noise and timesteps each time, so a change in the curve
+        # is a change in the model. Sharding by rank keeps the cost flat as
+        # GPUs are added; the sum and the count are gathered separately so an
+        # uneven split still averages correctly.
+        n_val = len(self.val_dataset)
+        n_loss = max(1, min(self.eval_num_loss_samples, n_val))
+        span = max(n_loss - 1, 1)
+        eval_indices = [int(round(i * (n_val - 1) / span)) for i in range(n_loss)]
+        rank = self.accelerator.process_index
+        my_indices = eval_indices[rank :: self.accelerator.num_processes] or eval_indices[:1]
 
-        # 1. training loss
-        with self.accelerator.autocast():
-            val_loss, _ = model.training_loss(sample)
-            val_loss = val_loss.float().item()
+        fork_devices = [self.accelerator.device] if torch.cuda.is_available() else []
+        val_loss_sum = 0.0
+        with torch.random.fork_rng(devices=fork_devices, enabled=True):
+            for idx in my_indices:
+                torch.manual_seed(self.eval_noise_seed + idx)
+                if fork_devices:
+                    torch.cuda.manual_seed_all(self.eval_noise_seed + idx)
+                loss_sample = self._to_batched_eval_sample(self.val_dataset[idx])
+                with self.accelerator.autocast():
+                    loss_value, _ = model.training_loss(loss_sample)
+                val_loss_sum += float(loss_value.float().item())
+        val_loss = val_loss_sum / len(my_indices)
+
+        # The video and action metrics below stay on a single sample -- each one
+        # costs a full denoising rollout -- but it is now a FIXED sample rather
+        # than a fresh random draw, so those curves are comparable across steps
+        # for the same reason the loss is.
+        eval_index = my_indices[0]
+        sample = self._to_batched_eval_sample(self.val_dataset[eval_index])
         
         prompt = sample["prompt"][0]
         video0 = sample["video"][0] # Tensor [3, T, H, W] in (-1, 1)
@@ -642,7 +681,8 @@ class Wan22Trainer:
 
         local_metrics = torch.tensor(
             [
-                float(val_loss),
+                float(val_loss_sum),
+                float(len(my_indices)),
                 float(psnr_rollout_vs_gt),
                 float(ssim_rollout_vs_gt),
                 float(psnr_rollout_vs_decode),
@@ -656,21 +696,28 @@ class Wan22Trainer:
             dtype=torch.float32,
         ).unsqueeze(0)
         gathered_metrics = self.accelerator.gather_for_metrics(local_metrics)
-        mean_metrics = gathered_metrics[:, :7].mean(dim=0)
-        action_l2_mean = gathered_metrics[:, 7].mean().item() if action_l2 is not None else None
-        action_l1_mean = gathered_metrics[:, 8].mean().item() if action_l1 is not None else None
+        # Column 0 is this rank's summed loss and column 1 its sample count, so
+        # the validation loss is a true mean over every sample scored anywhere
+        # rather than a mean of per-rank means.
+        val_loss_mean = (
+            gathered_metrics[:, 0].sum() / gathered_metrics[:, 1].sum().clamp(min=1.0)
+        ).item()
+        mean_metrics = gathered_metrics[:, 2:8].mean(dim=0)
+        action_l2_mean = gathered_metrics[:, 8].mean().item() if action_l2 is not None else None
+        action_l1_mean = gathered_metrics[:, 9].mean().item() if action_l1 is not None else None
 
         if was_dit_training:
             self._set_dit_only_train_mode()
 
         result = {
-            "val_loss": float(mean_metrics[0].item()),
-            "psnr_rg": float(mean_metrics[1].item()),
-            "ssim_rg": float(mean_metrics[2].item()),
-            "psnr_rd": float(mean_metrics[3].item()),
-            "ssim_rd": float(mean_metrics[4].item()),
-            "psnr_dg": float(mean_metrics[5].item()),
-            "ssim_dg": float(mean_metrics[6].item()),
+            "val_loss": float(val_loss_mean),
+            "val_loss_n": int(gathered_metrics[:, 1].sum().item()),
+            "psnr_rg": float(mean_metrics[0].item()),
+            "ssim_rg": float(mean_metrics[1].item()),
+            "psnr_rd": float(mean_metrics[2].item()),
+            "ssim_rd": float(mean_metrics[3].item()),
+            "psnr_dg": float(mean_metrics[4].item()),
+            "ssim_dg": float(mean_metrics[5].item()),
             "video_path": video_path,
         }
         if action_l2_mean is not None:
@@ -891,6 +938,10 @@ class Wan22Trainer:
                                 "eval/ssim_rd": float(metrics["ssim_rd"]),
                                 "eval/psnr_dg": float(metrics["psnr_dg"]),
                                 "eval/ssim_dg": float(metrics["ssim_dg"]),
+                                # How many held-out samples the loss averaged.
+                                # Logged so a curve can never again be read as
+                                # if it were a full-split number when it is not.
+                                "eval/val_loss_n": int(metrics["val_loss_n"]),
                             }
                             if "action_l2" in metrics:
                                 eval_payload["eval/action_l2"] = float(metrics["action_l2"])
