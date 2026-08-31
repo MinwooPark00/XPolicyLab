@@ -2189,7 +2189,15 @@ class CausalWanModel(ModelMixin, ConfigMixin):
                     use_reentrant=False,
                 )
             else:
-                x = block(x, **kwargs)
+                # A block returns (hidden_states, updated_kv_cache); the
+                # checkpointed path above unwraps it inside custom_forward, so
+                # this branch has to unwrap it too. Without that, x becomes a
+                # tuple and the NEXT block dies on `x.shape[1]`. The branch is
+                # only reachable when grad is off or checkpointing is
+                # disabled -- never during training, which is why it survived
+                # upstream, and always during evaluation under no_grad.
+                x, updated_kv_cache = block(x, **kwargs)
+                assert updated_kv_cache is None
 
         if clean_x is not None:
             x = x[:, clean_x.shape[1]:]
