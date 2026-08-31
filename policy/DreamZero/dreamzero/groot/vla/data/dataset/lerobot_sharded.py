@@ -1584,8 +1584,22 @@ class ShardedLeRobotMixtureDataset(LeRobotMixtureDataset, IterableDataset):
             dataset.delete_cached_shard()
 
     def cache_next_shard(self):
-        """Cache the next shard in a background thread."""
-        next_dataset_idx, next_shard_idx = self.shards_sample_schedule[self.curr_shard_index + 1]
+        """Cache the next shard in a background thread.
+
+        The prefetch is unconditional in __iter__ -- every shard starts the
+        caching of the one after it -- so on the LAST shard there is nothing
+        left to prefetch and the bare index raised IndexError, killing the
+        iteration one shard before it finished (job 2128005). Upstream never
+        saw this because a training schedule is drawn with replacement to
+        cover max_steps and is never exhausted; a validation schedule walks
+        every shard exactly once and always is. Returning quietly is the whole
+        fix: the caller only needs the next shard to exist, and when it does
+        not, the loop is about to end.
+        """
+        next_index = self.curr_shard_index + 1
+        if next_index >= len(self.shards_sample_schedule):
+            return
+        next_dataset_idx, next_shard_idx = self.shards_sample_schedule[next_index]
         self.datasets[next_dataset_idx].start_cache_shard(next_shard_idx)
 
     def __getitem__(self, index: int) -> dict:
