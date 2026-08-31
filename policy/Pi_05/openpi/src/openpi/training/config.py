@@ -1051,6 +1051,13 @@ _CONFIGS.extend(
         # checkpoints trained before that stopped at 20k.
         batch_size=32,
         num_train_steps=40_000,
+        # The schedule has to span the run. openpi's default decay_steps is
+        # 30 000, which matches its default num_train_steps -- raising only the
+        # step count to 40 000 (2026-08-29) left the cosine bottoming out at 30k
+        # and the last quarter of training crawling at the 2.5e-6 floor. optax's
+        # decay_steps is the *total* length including warmup, so 40 000 is the
+        # run. peak_lr and decay_lr are openpi's own, untouched.
+        lr_schedule=_optimizer.CosineDecaySchedule(decay_steps=40_000),
         save_interval=2000,
         # 16 CPUs per GPU on the partitions these run on (DefCpuPerGPU=16);
         # video decode is the loader's cost and 8 leaves half of them idle.
@@ -1060,10 +1067,16 @@ _CONFIGS.extend(
         # batches of 32 is the same 512.
         val_interval=1000,
         val_batches=16,
-        # Keep only the latest checkpoint. pi0.5 params are ~12 GB each, and the
-        # default (every 5000 steps kept forever) would put fifteen runs over a
-        # terabyte.
-        keep_period=None,
+        # Keep the latest checkpoint (max_to_keep=1 in checkpoints.py) plus
+        # every 10 000th step, which is exactly the set the benchmark evaluates:
+        # 10k/20k/30k/40k, four points per run. keep_period=None kept only the
+        # latest, so a sweep launched after training finished would find one
+        # checkpoint and three deleted directories -- the run having thrown away
+        # three quarters of its own results. pi0.5 params are ~12 GB each, so
+        # this is ~48 GB per run rather than the ~12 GB of keeping only the
+        # last; the openpi default (5000) would be twice that again, for points
+        # nothing measures.
+        keep_period=10_000,
     )
     for task in MHBENCH_TASKS
     for suffix, robot, prompt_index in MHBENCH_TARGETS
@@ -1087,11 +1100,18 @@ _CONFIGS.append(
         ema_decay=None,
         batch_size=32,
         num_train_steps=40_000,
+        # The schedule has to span the run. openpi's default decay_steps is
+        # 30 000, which matches its default num_train_steps -- raising only the
+        # step count to 40 000 (2026-08-29) left the cosine bottoming out at 30k
+        # and the last quarter of training crawling at the 2.5e-6 floor. optax's
+        # decay_steps is the *total* length including warmup, so 40 000 is the
+        # run. peak_lr and decay_lr are openpi's own, untouched.
+        lr_schedule=_optimizer.CosineDecaySchedule(decay_steps=40_000),
         save_interval=2000,
         num_workers=12,
         val_interval=1000,
         val_batches=16,
-        keep_period=None,
+        keep_period=10_000,   # the benchmark's four evaluation points, as above
     )
 )
 
