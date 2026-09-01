@@ -43,6 +43,10 @@ eval_num_inference_steps: 10
 # unreadable as a trend.
 eval_num_loss_samples: 32
 eval_noise_seed: 12345
+# Abort a run whose loss has been non-finite for this many consecutive
+# optimizer steps (0 disables). A nan run is silent otherwise -- it trains to
+# max_steps and writes nan checkpoints.
+max_nonfinite_steps: 20
 
 # training
 gradient_accumulation_steps: 1

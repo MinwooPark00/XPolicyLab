@@ -1,6 +1,7 @@
 import logging
 import json
 import inspect
+import math
 import os
 import re
 from math import ceil
@@ -58,6 +59,10 @@ class Wan22Trainer:
         # step and the video/action metrics below still run on one sample.
         self.eval_num_loss_samples = int(cfg.get("eval_num_loss_samples", 32))
         self.eval_noise_seed = int(cfg.get("eval_noise_seed", 12345))
+        # Consecutive non-finite optimizer steps tolerated before the run is
+        # aborted. 0 disables the check.
+        self.max_nonfinite_steps = int(cfg.get("max_nonfinite_steps", 20))
+        self._nonfinite_streak = 0
         self.gradient_accumulation_steps = int(cfg.gradient_accumulation_steps)
         self.max_grad_norm = float(cfg.max_grad_norm)
         self.seed = int(cfg.seed)
@@ -870,6 +875,22 @@ class Wan22Trainer:
                     global_loss = float(
                         self.accelerator.gather(loss.detach().float().reshape(1)).mean().item()
                     )
+                    # Stop on a run that has gone non-finite instead of burning
+                    # the walltime on it. Job 2129235 trained 60 steps at
+                    # loss=nan and only the log said so; a 40k-step run would
+                    # have spent a day writing nan checkpoints. One nan can be a
+                    # single bad batch, so this waits for a run of them.
+                    if math.isfinite(global_loss):
+                        self._nonfinite_streak = 0
+                    else:
+                        self._nonfinite_streak = getattr(self, "_nonfinite_streak", 0) + 1
+                        if 0 < self.max_nonfinite_steps <= self._nonfinite_streak:
+                            raise RuntimeError(
+                                f"training loss has been non-finite for "
+                                f"{self._nonfinite_streak} consecutive optimizer steps "
+                                f"(step={self.global_step}); aborting. Set "
+                                f"max_nonfinite_steps=0 to disable this check."
+                            )
                     global_loss_metrics = {}
                     for key, value in loss_dict.items():
                         metric_tensor = torch.tensor(float(value), device=loss.device, dtype=torch.float32).reshape(1)
