@@ -333,8 +333,12 @@ class GaussianFrameDataset(_LazyH5Dataset):
                 "extract_gaussian_features.sh instead."
             )
         ranges = _episode_ranges(self.episode_ends)
-        chosen = [ranges[i] for i in self.split_ids(train)]
-        self.indices = [index for start, end in chosen for index in range(start, end)]
+        # Kept, not just consumed: `eval_gaussian.py --dump-recon` picks frames
+        # at fractions through each episode, which needs the episode boundaries
+        # in the same order `indices` concatenates them.
+        self.episode_ids = self.split_ids(train)
+        self.episode_ranges = [ranges[i] for i in self.episode_ids]
+        self.indices = [index for start, end in self.episode_ranges for index in range(start, end)]
 
     def __len__(self) -> int:
         return len(self.indices)

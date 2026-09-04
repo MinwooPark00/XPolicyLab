@@ -294,6 +294,53 @@ bash eval_gaussian.sh cocarry 0 0 \
   checkpoints/mhbench-cocarry-unitree_g1x2_centralized-joint-0/gaussian/best.ckpt
 ```
 
+#### Looking at the reconstruction
+
+That evaluation already renders every validation frame -- it is where `psnr`
+comes from -- and normally keeps only the numbers. `--dump-recon` writes a few
+of those renders out as PNGs:
+
+```bash
+# Only the keyframes: ~4 frames per validation episode, a couple of minutes.
+bash eval_gaussian.sh cocarry 0 0 --dump-only
+
+# The full validation pass, with the keyframes dumped along the way.
+bash eval_gaussian.sh cocarry 0 0 --dump-recon
+```
+
+Each PNG is one frame: rows are the context views in camera order, columns are
+`rgb (gt) | rgb (recon) | depth (gt) | depth (recon)`. Both depth columns use
+the frame's own `near`/`far`, so a scale error in the render is visible rather
+than normalized away. Alongside them, `manifest.jsonl` records each frame's
+episode, fraction and PSNR, and the run prints the five worst by PSNR.
+
+| Argument | Default | Description |
+|---|---|---|
+| `--dump-recon` | off | Write the grids while evaluating. |
+| `--dump-only` | off | Render *only* the keyframes. Implies `--dump-recon`, and reports its scores as `keyframe/*` rather than `val/*`, because they are a few dozen frames and not the split. |
+| `--dump-fractions` | `0,0.25,0.5,0.75` | Where in each episode to dump. |
+| `--dump-dir` | `<output>/recon` | Destination for the PNGs and the manifest. |
+
+Dumping a handful of frames costs nothing in fidelity. NoPoSplat is
+per-timestep feed-forward -- it reads the two ego views of one frame and
+predicts that frame's Gaussians, with no accumulation across time -- so a frame
+that is rendered is rendered in full regardless of which frames were skipped.
+Rendering all ~31k frames of a task would take hours and tens of GB to show the
+same thing 500 times per episode.
+
+Fractions rather than the first N frames, though: every episode starts from the
+same reset pose (identical camera baseline and depth extent across episodes), so
+episode starts alone are close to one frame of information -- and they are the
+frames with no contact and no occlusion, which is what a two-view feed-forward
+reconstruction handles best. The interesting frames are mid-episode.
+
+This is worth looking at at least once per task. MHBench's two ego cameras sit
+about 0.8 m apart with their optical axes ~130 degrees apart -- the robots face
+each other -- so their co-visible region is the space between them, and that is
+much wider than the forward-facing pairs NoPoSplat was trained on. Whether the
+13-channel features the policy consumes come from a sane reconstruction or from
+a collapse outside that region is not something PSNR alone answers.
+
 ### Option B: use the official encoder without fine-tuning
 
 Skip `train_gaussian.sh`. Feature extraction automatically uses the official
