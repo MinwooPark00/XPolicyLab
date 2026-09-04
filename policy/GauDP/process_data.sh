@@ -34,8 +34,8 @@ task_names=("${task}")
 case "${task}" in
   door_passage) task_names+=(doorpassage) ;;
   frame_hang)   task_names+=(framehang) ;;
-  # The handover_easy release was renamed on disk to handover. Keep the
-  # policy/checkpoint task name stable so eval_launch still resolves it.
+  # Legacy long-form callers can still supply the retired task spelling even
+  # though task-first calls canonicalize it in launcher_args.sh.
   handover_easy) task_names+=(handover) ;;
 esac
 

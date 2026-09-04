@@ -10,50 +10,137 @@ from torch import nn
 
 from .core.model.diffusion.conditional_unet1d import ConditionalUnet1D
 from .core.model.gaussian_cnn import GaussianConvEncoder
+from .core.model.vision.crop_randomizer import CropRandomizer
 from .gaussian import build_gaussian_encoder, encode_gaussians, freeze_gaussian_encoder
 from .normalizer import GauDPNormalizer
 from .schema import ACTION_DIM, ACTION_SCHEMA, PROPRIO_DIM, ROBOT_ACTION_DIM, STATE_SCHEMA
 
+IMAGE_SIZE = (240, 320)
+"""The converted/served frame size. `dataset.py` and `model.py` resize to it."""
 
-def _replace_batch_norm(module: nn.Module) -> nn.Module:
+IMAGENET_MEAN = (0.485, 0.456, 0.406)
+IMAGENET_STD = (0.229, 0.224, 0.225)
+
+# Every vision option below defaults to what the already-trained MHBench
+# checkpoints were produced with, so a checkpoint whose recorded `config` predates
+# them still deserializes into the network that wrote it. `train_policy.py`'s
+# argparse defaults carry the *current* recipe; a new run records its choices in
+# the checkpoint and `model.py` serves them back.
+LEGACY_IMAGE_NORM = "symmetric"
+LEGACY_GROUP_NORM_DIVISOR = None
+LEGACY_CROP_SHAPE = None
+
+
+def _replace_batch_norm(module: nn.Module, divisor: int | None = LEGACY_GROUP_NORM_DIVISOR) -> nn.Module:
+    """BatchNorm2d -> GroupNorm, as every Diffusion-Policy vision stack does.
+
+    `divisor` is upstream Policy-Lightning's `num_features // 16`
+    (`MultiImageObsEncoder(use_group_norm=True)`, which DP's `robot_dp.yaml` also
+    sets). `None` keeps this port's original `min(32, num_features)` -- the same
+    parameter shapes but a much finer grouping: 32 groups of 2 channels at
+    ResNet-18's first block where upstream uses 4 groups of 16.
+    """
     for name, child in list(module.named_children()):
         if isinstance(child, nn.BatchNorm2d):
-            groups = min(32, child.num_features)
+            if divisor is None:
+                groups = min(32, child.num_features)
+            else:
+                groups = max(1, child.num_features // divisor)
             while child.num_features % groups:
                 groups -= 1
             setattr(module, name, nn.GroupNorm(groups, child.num_features))
         else:
-            _replace_batch_norm(child)
+            _replace_batch_norm(child, divisor)
     return module
 
 
-class MultiViewObservationEncoder(nn.Module):
-    """Shared ResNet-18 over each fused view plus the pair's 86D joint state."""
+def _normalized_crop_shape(crop_shape) -> tuple[int, int] | None:
+    if crop_shape is None:
+        return None
+    height, width = (int(value) for value in crop_shape)
+    if not 0 < height < IMAGE_SIZE[0] or not 0 < width < IMAGE_SIZE[1]:
+        raise ValueError(
+            f"crop_shape {(height, width)} must be strictly inside the {IMAGE_SIZE} frame"
+        )
+    return (height, width)
 
-    def __init__(self, num_views: int, feature_dim: int = 512) -> None:
+
+class MultiViewObservationEncoder(nn.Module):
+    """Shared ResNet-18 over each fused view plus the pair's 86D joint state.
+
+    The fused view is `GaussianConvEncoder`'s 3-channel output, so this stands in
+    for upstream Policy-Lightning's `MultiImageObsEncoder`: the same
+    resize -> random-crop -> normalize pipeline that encoder applies to each
+    `head_cam_i` key before its ResNet.
+    """
+
+    def __init__(
+        self,
+        num_views: int,
+        feature_dim: int = 512,
+        *,
+        crop_shape: tuple[int, int] | None = LEGACY_CROP_SHAPE,
+        image_norm: str = LEGACY_IMAGE_NORM,
+        group_norm_divisor: int | None = LEGACY_GROUP_NORM_DIVISOR,
+    ) -> None:
         super().__init__()
         try:
             from torchvision.models import resnet18
         except ImportError as error:
             raise ImportError("torchvision is required for GauDP's observation encoder") from error
-        backbone = _replace_batch_norm(resnet18(weights=None))
+        if image_norm not in ("symmetric", "imagenet"):
+            raise ValueError(f"image_norm must be 'symmetric' or 'imagenet', got {image_norm!r}")
+        backbone = _replace_batch_norm(resnet18(weights=None), group_norm_divisor)
         in_features = backbone.fc.in_features
         backbone.fc = nn.Identity()
         self.backbone = backbone
         self.projection = nn.Identity() if feature_dim == in_features else nn.Linear(in_features, feature_dim)
         self.num_views = int(num_views)
         self.feature_dim = int(feature_dim)
+        self.image_norm = str(image_norm)
+        self.crop_shape = _normalized_crop_shape(crop_shape)
+        self.crop = (
+            None
+            if self.crop_shape is None
+            else CropRandomizer(
+                input_shape=(3, *IMAGE_SIZE),
+                crop_height=self.crop_shape[0],
+                crop_width=self.crop_shape[1],
+                num_crops=1,
+                pos_enc=False,
+            )
+        )
+        # Non-persistent: these are constants, and adding them to the state dict
+        # would make every checkpoint written before this commit report a missing
+        # key that `model.py` refuses to load through.
+        self.register_buffer("_norm_mean", torch.tensor(IMAGENET_MEAN).view(1, 3, 1, 1), persistent=False)
+        self.register_buffer("_norm_std", torch.tensor(IMAGENET_STD).view(1, 3, 1, 1), persistent=False)
 
     @property
     def output_dim(self) -> int:
         return self.num_views * self.feature_dim + PROPRIO_DIM
+
+    def _normalize(self, pixels: torch.Tensor) -> torch.Tensor:
+        if self.image_norm == "imagenet":
+            return (pixels - self._norm_mean.to(pixels.dtype)) / self._norm_std.to(pixels.dtype)
+        return (pixels - 0.5) / 0.5
 
     def forward(self, images: torch.Tensor, state: torch.Tensor) -> torch.Tensor:
         if images.ndim != 5 or images.shape[1] != self.num_views:
             raise ValueError(f"expected [B,{self.num_views},3,H,W], got {tuple(images.shape)}")
         batch, views = images.shape[:2]
         pixels = images.reshape(batch * views, *images.shape[2:])
-        pixels = (pixels - 0.5) / 0.5
+        if self.crop is not None:
+            if tuple(pixels.shape[-2:]) != IMAGE_SIZE:
+                raise ValueError(
+                    f"crop_shape {self.crop_shape} was fitted to {IMAGE_SIZE} frames, "
+                    f"but this batch is {tuple(pixels.shape[-2:])}"
+                )
+            # CropRandomizer.forward branches on self.training: a random offset per
+            # (sample, view) while training, the centre crop at eval -- so the
+            # served frame is deterministic and `model.py`'s .eval() is what picks it.
+            pixels = self.crop(pixels)
+        pixels = self._normalize(pixels)
         visual = self.projection(self.backbone(pixels)).reshape(batch, views * self.feature_dim)
         return torch.cat((visual, state), dim=-1)
 
@@ -72,6 +159,9 @@ class GauDPPolicy(nn.Module):
         num_inference_steps: int = 100,
         obs_feature_dim: int = 512,
         down_dims: tuple[int, ...] = (256, 512, 1024),
+        crop_shape: tuple[int, int] | None = LEGACY_CROP_SHAPE,
+        image_norm: str = LEGACY_IMAGE_NORM,
+        group_norm_divisor: int | None = LEGACY_GROUP_NORM_DIVISOR,
         gaussian_encoder: nn.Module | None = None,
         observation_encoder: nn.Module | None = None,
     ) -> None:
@@ -99,8 +189,17 @@ class GauDPPolicy(nn.Module):
             build_gaussian_encoder(self.num_views) if gaussian_encoder is None else gaussian_encoder
         )
         self.gaussian_fusion = GaussianConvEncoder(in_channels=13, pre_fuse=True)
+        self.crop_shape = _normalized_crop_shape(crop_shape)
+        self.image_norm = str(image_norm)
+        self.group_norm_divisor = None if group_norm_divisor is None else int(group_norm_divisor)
         self.obs_encoder = (
-            MultiViewObservationEncoder(self.num_views, obs_feature_dim)
+            MultiViewObservationEncoder(
+                self.num_views,
+                obs_feature_dim,
+                crop_shape=self.crop_shape,
+                image_norm=self.image_norm,
+                group_norm_divisor=self.group_norm_divisor,
+            )
             if observation_encoder is None
             else observation_encoder
         )
@@ -140,6 +239,13 @@ class GauDPPolicy(nn.Module):
             "num_inference_steps": self.num_inference_steps,
             "obs_feature_dim": self.obs_encoder.feature_dim,
             "down_dims": self.down_dims,
+            # Vision settings travel with the checkpoint so evaluation rebuilds the
+            # network that was trained. A checkpoint written before they existed
+            # simply has none of these keys, and the constructor's legacy defaults
+            # then reproduce it exactly.
+            "crop_shape": self.crop_shape,
+            "image_norm": self.image_norm,
+            "group_norm_divisor": self.group_norm_divisor,
         }
 
     def _global_condition(

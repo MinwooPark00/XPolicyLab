@@ -33,6 +33,22 @@ def _format_duration(seconds: float) -> str:
     return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
 
+def _parse_optional_int(value) -> int | None:
+    if value is None or str(value).strip().lower() in ("none", "null", ""):
+        return None
+    return int(value)
+
+
+def _parse_crop_shape(value) -> tuple[int, int] | None:
+    """Accept 'H W', 'HxW', 'H,W' or 'none'."""
+    if value is None or str(value).strip().lower() in ("none", "null", ""):
+        return None
+    parts = [part for part in str(value).replace("x", " ").replace(",", " ").split() if part]
+    if len(parts) != 2:
+        raise ValueError(f"expected two integers or 'none', got {value!r}")
+    return (int(parts[0]), int(parts[1]))
+
+
 def _should_log_batch(completed: int, total: int, interval: int) -> bool:
     return interval > 0 and (completed == 1 or completed == total or completed % interval == 0)
 
@@ -134,6 +150,34 @@ def main() -> None:
     parser.add_argument("--obs-steps", type=int, default=1)
     parser.add_argument("--action-steps", type=int, default=6)
     parser.add_argument("--inference-steps", type=int, default=100)
+    # --- vision recipe -------------------------------------------------------
+    # These defaults are the *current* recipe, not what the first MHBench GauDP
+    # runs used; every value is recorded in the checkpoint so evaluation rebuilds
+    # the same network. `--crop-shape none --image-norm symmetric
+    # --group-norm-divisor none` reproduces those runs exactly.
+    parser.add_argument(
+        "--crop-shape",
+        default="216 288",
+        help="random crop while training / centre crop at eval, as 'H W'; "
+             "'none' disables it. Upstream Policy-Lightning leaves crop_shape "
+             "null, but MHBench's own DP baseline crops to 90%% of the frame and "
+             "its config records why: without it validation loss bottoms early "
+             "and then climbs. GauDP shows the same curve.",
+    )
+    parser.add_argument(
+        "--image-norm",
+        choices=("imagenet", "symmetric"),
+        default="imagenet",
+        help="normalization applied to the fused 3-channel view before the ResNet. "
+             "'imagenet' is upstream's MultiImageObsEncoder(imagenet_norm=True); "
+             "'symmetric' is (x-0.5)/0.5, what this port used before.",
+    )
+    parser.add_argument(
+        "--group-norm-divisor",
+        default="16",
+        help="BatchNorm->GroupNorm grouping as num_features//DIVISOR (upstream "
+             "uses 16); 'none' keeps this port's original min(32, num_features).",
+    )
     parser.add_argument(
         "--log-every",
         type=int,
@@ -155,6 +199,14 @@ def main() -> None:
     args = parser.parse_args()
     if args.log_every < 0:
         parser.error("--log-every must be non-negative")
+    try:
+        args.crop_shape = _parse_crop_shape(args.crop_shape)
+    except ValueError as error:
+        parser.error(f"--crop-shape: {error}")
+    try:
+        args.group_norm_divisor = _parse_optional_int(args.group_norm_divisor)
+    except ValueError as error:
+        parser.error(f"--group-norm-divisor: {error}")
 
     global np, torch, DataLoader
     global GauDPSequenceDataset
@@ -190,6 +242,9 @@ def main() -> None:
         n_obs_steps=args.obs_steps,
         n_action_steps=args.action_steps,
         num_inference_steps=args.inference_steps,
+        crop_shape=args.crop_shape,
+        image_norm=args.image_norm,
+        group_norm_divisor=args.group_norm_divisor,
         # Policy checkpoints deliberately exclude this module. Training uses
         # cached features, while model.py constructs and loads the real
         # NoPoSplat encoder for online benchmark inference.
@@ -219,6 +274,8 @@ def main() -> None:
         f"trainable={trainable_count / 1e6:.1f}M / total={total_count / 1e6:.1f}M "
         f"gaussian_checkpoint={requested_checkpoint} gaussian_features={args.gaussian_features} "
         f"split={train_data.split_source} log_every={args.log_every} "
+        f"crop_shape={args.crop_shape} image_norm={args.image_norm} "
+        f"group_norm_divisor={args.group_norm_divisor} "
         f"val_state_oor={normalization_metrics['normalization/val_state_out_of_range_fraction']:.6f} "
         f"val_action_oor={normalization_metrics['normalization/val_action_out_of_range_fraction']:.6f}",
         flush=True,

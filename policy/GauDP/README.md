@@ -109,6 +109,30 @@ bash train_gaussian.sh cocarry 0 0 \
   --wandb-run-name cocarry-full-seed0
 ```
 
+### Vision recipe for policy training
+
+The observation encoder's image pipeline is configurable, and every setting is
+recorded in the policy checkpoint so `model.py` rebuilds the network that was
+trained. Checkpoints written before these options existed carry none of them and
+deserialize through the legacy defaults, unchanged.
+
+| Argument | Default | Upstream Policy-Lightning | Notes |
+|---|---|---|---|
+| `--crop-shape` | `216 288` | `crop_shape: null` | Random crop while training, centre crop at eval. A deliberate departure from upstream: MHBench's own DP baseline crops to 90% of the frame, and `robot_dp.yaml` records why -- without it validation loss bottoms early and then climbs. GauDP's first MHBench run showed exactly that curve (best at epoch 68, ~2.7x worse by 999). Pass `none` to match upstream. |
+| `--image-norm` | `imagenet` | `imagenet_norm: True` | Restores upstream. This port previously used `(x-0.5)/0.5`; pass `symmetric` for that. |
+| `--group-norm-divisor` | `16` | `num_features // 16` | Restores upstream's `use_group_norm` grouping. This port previously used `min(32, num_features)`; pass `none` for that. |
+
+To reproduce a pre-existing run exactly:
+
+```bash
+bash train.sh handover 0 0 --crop-shape none --image-norm symmetric --group-norm-divisor none
+```
+
+Two upstream settings are deliberately *not* matched, because MHBench fixes them
+for every baseline: `n_obs_steps` (upstream 3, here 1, as `robot_dp.yaml` also
+sets) and `n_action_steps` (upstream 8, here 6). `GaussianConvEncoder`'s
+3-channel output and its terminal ReLU are upstream's design and are unchanged.
+
 The same options can be appended to policy training:
 
 ```bash
@@ -344,7 +368,7 @@ Run the shared sharded evaluator from the MHBench repository root. This is the
 recommended path for a 50-episode result:
 
 ```bash
-baselines/scripts/eval_launch.sh GauDP handover_easy 50 0
+baselines/scripts/eval_launch.sh GauDP handover 50 0
 ```
 
 The arguments are `<policy> <task> <episodes> <seed>`. By default the launcher
@@ -356,22 +380,22 @@ does not use a different GauDP eval implementation.
 Override the shard count when needed (the episode count must divide evenly):
 
 ```bash
-EVAL_SHARDS=10 baselines/scripts/eval_launch.sh GauDP handover_easy 50 0
+EVAL_SHARDS=10 baselines/scripts/eval_launch.sh GauDP handover 50 0
 ```
 
 To queue evaluation only after a policy training job succeeds:
 
 ```bash
 EVAL_DEPENDENCY=afterok:<training-job-id> \
-  baselines/scripts/eval_launch.sh GauDP handover_easy 50 0
+  baselines/scripts/eval_launch.sh GauDP handover 50 0
 ```
 
 The launcher prints the shard-array job ID, aggregation job ID and final result
 path. For this example the outputs are:
 
 ```text
-eval_results/handover_easy/GauDP-centralized-seed0/results.json
-eval_results/handover_easy/GauDP-centralized-seed0/videos/
+eval_results/handover/GauDP-centralized-seed0/results.json
+eval_results/handover/GauDP-centralized-seed0/videos/
 ```
 
 Videos are enabled by default. Use `EVAL_VIDEO=0` to disable them, and inspect

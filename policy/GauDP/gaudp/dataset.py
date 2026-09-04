@@ -25,6 +25,35 @@ _OPENCV_TO_ISAAC_CAMERA = np.asarray(
     dtype=np.float32,
 )
 
+_HANDOVER_DATASET_NAMES = frozenset(("handover", "handover_easy", "handovereasy"))
+
+
+def _canonical_source_path(value: str | Path) -> Path:
+    """Normalize only the retired handover dataset directory spelling.
+
+    Keeping the rest of the resolved path intact means two exports in different
+    workspaces still compare unequal; this does not turn the provenance check
+    into a frame-count-only check.
+    """
+    path = Path(value).expanduser().resolve()
+    if path.name == "lerobot" and path.parent.name in _HANDOVER_DATASET_NAMES:
+        return path.parent.parent / "handover" / path.name
+    return path
+
+
+def _legacy_ee_names(task: str) -> set[str]:
+    names = {task}
+    if task == "handover":
+        names.update(("handover_easy", "handovereasy"))
+    return {
+        filename
+        for name in names
+        for filename in (
+            f"mhbench-{name}-{name}-ee.hdf5",
+            f"{name}-experiment-{name}-ee.hdf5",
+        )
+    }
+
 
 def _episode_ranges(episode_ends: np.ndarray) -> list[tuple[int, int]]:
     starts = np.concatenate(([0], episode_ends[:-1]))
@@ -176,23 +205,18 @@ class GauDPSequenceDataset(_LazyH5Dataset):
             # exactly the new conversion's timeline. Shape and camera order
             # were already checked against the cache above.
             with h5py.File(current, "r") as new:
-                new_source = Path(str(new.attrs.get("source", ""))).resolve()
+                raw_source = Path(str(new.attrs.get("source", ""))).expanduser().resolve()
                 episode_ids = np.asarray(new.get("episode_ids", []), dtype=np.int64)
-            info_path = new_source / "meta" / "info.json"
-            task = new_source.parent.name if new_source.name == "lerobot" else new_source.name
-            # The handover_easy LeRobot folder was renamed to handover without
-            # changing its episodes or images. Policy/checkpoint names remain
-            # handover_easy because that is the benchmark task eval_launch
-            # receives; only provenance lookup follows the dataset rename.
-            if not info_path.is_file() and task == "handover_easy":
-                renamed_source = new_source.parent.parent / "handover" / new_source.name
-                renamed_info = renamed_source / "meta" / "info.json"
-                if renamed_info.is_file():
-                    info_path = renamed_info
-            legacy_names = {
-                f"mhbench-{task}-{task}-ee.hdf5",
-                f"{task}-experiment-{task}-ee.hdf5",
-            }
+            canonical_source = _canonical_source_path(raw_source)
+            raw_info = raw_source / "meta" / "info.json"
+            canonical_info = canonical_source / "meta" / "info.json"
+            info_path = raw_info if raw_info.is_file() else canonical_info
+            task = (
+                canonical_source.parent.name
+                if canonical_source.name == "lerobot"
+                else canonical_source.name
+            )
+            legacy_names = _legacy_ee_names(task)
             try:
                 info = json.loads(info_path.read_text(encoding="utf-8"))
             except (OSError, ValueError):
@@ -220,7 +244,11 @@ class GauDPSequenceDataset(_LazyH5Dataset):
             raise ValueError(
                 "Gaussian cache source has different cameras or episode boundaries; re-extract features"
             )
-        if not old_source or not new_source or Path(old_source).resolve() != Path(new_source).resolve():
+        if (
+            not old_source
+            or not new_source
+            or _canonical_source_path(old_source) != _canonical_source_path(new_source)
+        ):
             raise ValueError(
                 "Gaussian cache and joint dataset were not converted from the same source dataset"
             )

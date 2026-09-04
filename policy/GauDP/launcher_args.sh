@@ -21,8 +21,7 @@ gaudp_task_config() {
     task=$1
     case "${task}" in
         cocarry) scene=cocarry ;;
-        handover) scene=handover ;;
-        handover_easy|handovereasy) task=handover_easy; scene=handover_easy ;;
+        handover|handover_easy|handovereasy) task=handover; scene=handover ;;
         door_passage|doorpassage) task=door_passage; scene=door_passage ;;
         frame_hang|framehang) task=frame_hang; scene=frame_hang ;;
         *) scene=${task} ;;
@@ -122,6 +121,15 @@ gaudp_gaussian_run_dirs() {
         "$(gaudp_run_dir)" \
         "${POLICY_DIR}/checkpoints/${bench}-${ckpt}-${scene}-ee-${seed}" \
         "${POLICY_DIR}/checkpoints/${scene}-experiment-${scene}-ee-${seed}"
+    # The one-arm dataset and its Gaussian cache were produced while the shipped
+    # task was still named `handover_easy`.  New joint-policy runs use the renamed
+    # `handover` task, but the RGB frames and camera geometry behind this cache did
+    # not change, so keep the old artifact discoverable without reverting the new
+    # run/data naming.
+    if [[ "${task}" == "handover" ]]; then
+        printf '%s\n' \
+            "${POLICY_DIR}/checkpoints/${bench}-handover_easy-handover_easy-ee-${seed}"
+    fi
 }
 
 # First existing `gaussian/<name>` across those directories, else empty.

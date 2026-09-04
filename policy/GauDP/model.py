@@ -135,6 +135,17 @@ def _checkpoint_file(root: Path, stage: str, preference: str) -> Path:
     raise FileNotFoundError(f"no {stage} checkpoint found at {preferred} or {fallback}")
 
 
+def _checkpoint_preference(model_cfg: dict) -> str:
+    """Resolve the shared eval override for GauDP's best/last checkpoints."""
+    preference = str(model_cfg.get("checkpoint_num") or model_cfg.get("checkpoint", "best"))
+    if preference not in {"best", "last"}:
+        raise ValueError(
+            "GauDP checkpoint_num/checkpoint must be 'best' or 'last', "
+            f"got {preference!r}"
+        )
+    return preference
+
+
 def _check_checkpoint_contract(payload: dict, policy_path: Path) -> None:
     """Refuse anything that is not a joint-space v2 checkpoint, by name."""
     recorded = str(payload.get("format", ""))
@@ -194,7 +205,7 @@ class Model(ModelTemplate):
             policy_dir=_POLICY_DIR,
             must_exist=True,
         )
-        preference = str(model_cfg.get("checkpoint", "best"))
+        preference = _checkpoint_preference(model_cfg)
         policy_path = _checkpoint_file(root, "policy", preference)
         payload = torch.load(policy_path, map_location="cpu", weights_only=False)
         _check_checkpoint_contract(payload, policy_path)
@@ -257,6 +268,15 @@ class Model(ModelTemplate):
             )
         self.runner = GauDPRunner(self.model.n_obs_steps)
         self._env_indices: list[int] | None = None
+        # The vision recipe is whatever the checkpoint recorded; a checkpoint from
+        # before those keys existed rebuilds through GauDPPolicy's legacy defaults.
+        # `.eval()` above is what makes a configured crop the deterministic centre
+        # crop rather than the training-time random one.
+        print(
+            f"[GauDP][vision] crop_shape={config.get('crop_shape', 'legacy:None')} "
+            f"image_norm={config.get('image_norm', 'legacy:symmetric')} "
+            f"group_norm_divisor={config.get('group_norm_divisor', 'legacy:None')}"
+        )
         print(f"[GauDP] loaded {policy_path} and {gaussian_path} on {self.device}")
 
     def update_obs(self, obs):

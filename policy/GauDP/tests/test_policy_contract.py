@@ -6,7 +6,11 @@ pytest.importorskip("diffusers")
 
 from torch import nn
 
-from XPolicyLab.policy.GauDP.gaudp.policy import GauDPPolicy, policy_checkpoint_payload
+from XPolicyLab.policy.GauDP.gaudp.policy import (
+    GauDPPolicy,
+    MultiViewObservationEncoder,
+    policy_checkpoint_payload,
+)
 from XPolicyLab.policy.GauDP.gaudp.schema import (
     ACTION_DIM,
     ACTION_SCHEMA,
@@ -18,6 +22,7 @@ from XPolicyLab.policy.GauDP.model import (
     _check_checkpoint_contract,
     _clip_enabled,
     _clip_fitted_state,
+    _checkpoint_preference,
     _require_finite,
 )
 
@@ -127,6 +132,13 @@ def test_eval_rejects_non_finite_values():
         _require_finite("predicted action", np.asarray([0.0, np.inf], dtype=np.float32))
 
 
+def test_eval_checkpoint_num_overrides_deploy_preference():
+    assert _checkpoint_preference({"checkpoint": "last"}) == "last"
+    assert _checkpoint_preference({"checkpoint": "last", "checkpoint_num": "best"}) == "best"
+    with pytest.raises(ValueError, match="must be 'best' or 'last'"):
+        _checkpoint_preference({"checkpoint_num": "100"})
+
+
 def test_eval_clamps_joint_state_to_checkpoint_fitted_range():
     low = np.full(PROPRIO_DIM, -0.25, dtype=np.float32)
     high = np.full(PROPRIO_DIM, 0.5, dtype=np.float32)
@@ -139,3 +151,79 @@ def test_eval_clamps_joint_state_to_checkpoint_fitted_range():
     assert not _clip_enabled(None, "obs_clip")
     with pytest.raises(ValueError, match="obs_clip must be"):
         _clip_enabled("training-range-ish", "obs_clip")
+
+
+def _encoder(**kwargs) -> MultiViewObservationEncoder:
+    return MultiViewObservationEncoder(num_views=2, feature_dim=8, **kwargs)
+
+
+def test_crop_is_random_while_training_and_centred_at_eval():
+    encoder = _encoder(crop_shape=(216, 288))
+    images = torch.rand(1, 2, 3, 240, 320)
+    state = torch.zeros(1, PROPRIO_DIM)
+
+    encoder.train()
+    torch.manual_seed(0)
+    first = encoder(images, state)
+    torch.manual_seed(1)
+    second = encoder(images, state)
+    assert not torch.allclose(first, second), "training crops must vary between calls"
+
+    encoder.eval()
+    with torch.no_grad():
+        assert torch.allclose(encoder(images, state), encoder(images, state)), (
+            "the served crop must be deterministic"
+        )
+
+
+def test_encoder_defaults_reproduce_the_pre_crop_network():
+    """Old checkpoints carry no vision keys; the defaults must be what wrote them."""
+    encoder = _encoder()
+    assert encoder.crop is None
+    assert encoder.image_norm == "symmetric"
+    pixels = torch.rand(2, 3, 8, 8)
+    assert torch.allclose(encoder._normalize(pixels), (pixels - 0.5) / 0.5)
+
+
+def test_imagenet_norm_matches_torchvision():
+    torchvision = pytest.importorskip("torchvision")
+    encoder = _encoder(image_norm="imagenet")
+    pixels = torch.rand(2, 3, 8, 8)
+    expected = torchvision.transforms.Normalize(
+        mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
+    )(pixels)
+    assert torch.allclose(encoder._normalize(pixels), expected, atol=1e-6)
+
+
+def test_group_norm_divisor_follows_upstream_when_set():
+    from torch import nn as _nn
+
+    upstream = _encoder(group_norm_divisor=16)
+    legacy = _encoder()
+    first = lambda enc: next(  # noqa: E731
+        m for m in enc.backbone.modules() if isinstance(m, _nn.GroupNorm)
+    )
+    assert first(upstream).num_groups == 64 // 16
+    assert first(legacy).num_groups == 32
+
+
+def test_crop_shape_must_fit_inside_the_frame():
+    with pytest.raises(ValueError):
+        _encoder(crop_shape=(240, 320))
+
+
+def test_vision_settings_round_trip_through_the_checkpoint():
+    policy = GauDPPolicy(
+        num_views=2,
+        num_inference_steps=1,
+        down_dims=(32, 64, 128),
+        crop_shape=(216, 288),
+        image_norm="imagenet",
+        group_norm_divisor=16,
+        gaussian_encoder=TinyGaussian(),
+        observation_encoder=TinyObservation(),
+    )
+    config = policy_checkpoint_payload(policy)["config"]
+    assert config["crop_shape"] == (216, 288)
+    assert config["image_norm"] == "imagenet"
+    assert config["group_norm_divisor"] == 16

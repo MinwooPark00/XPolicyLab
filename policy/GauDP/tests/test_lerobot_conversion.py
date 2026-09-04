@@ -269,6 +269,7 @@ def _write_converted(path, *, source, episode_ends=_EPISODE_ENDS, cameras=_CAMER
     frames = episode_ends[-1]
     with h5py.File(path, "w") as target:
         target.create_dataset("episode_ends", data=np.asarray(episode_ends, dtype=np.int64))
+        target.create_dataset("episode_ids", data=np.arange(len(episode_ends), dtype=np.int64))
         target.create_dataset("state", data=np.zeros((frames, PROPRIO_DIM), np.float32))
         target.create_dataset("action", data=np.zeros((frames, ACTION_DIM), np.float32))
         for index in range(len(cameras)):
@@ -355,6 +356,37 @@ def test_an_ee_era_feature_cache_is_reused_for_the_same_export(tmp_path):
     dataset = _sequence_dataset(new, cache)
     assert dataset.gaussian_checkpoint == "/somewhere/gaussian/best.ckpt"
     assert len(dataset) == 2  # the 95:5 fallback keeps episode 0 for training
+
+
+def test_missing_handover_easy_source_is_verified_against_renamed_export(tmp_path):
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    export = tmp_path / "datasets" / "handover" / "lerobot"
+    (export / "meta").mkdir(parents=True)
+    (export / "meta" / "info.json").write_text(
+        json.dumps({"total_episodes": 2, "total_frames": 4}), encoding="utf-8"
+    )
+    current = _write_converted(
+        data_dir / "mhbench-handover-unitree_g1x2_centralized-joint.hdf5",
+        source=export,
+    )
+    retired = data_dir / "mhbench-handover_easy-handover_easy-ee.hdf5"
+    cache = _write_cache(tmp_path / "features.hdf5", source_data=retired)
+
+    assert len(_sequence_dataset(current, cache)) == 2
+
+
+def test_existing_handover_easy_source_matches_renamed_sibling_export(tmp_path):
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    datasets = tmp_path / "datasets"
+    retired_export = datasets / "handover_easy" / "lerobot"
+    current_export = datasets / "handover" / "lerobot"
+    old = _write_converted(data_dir / "old-ee.hdf5", source=retired_export, joint=False)
+    current = _write_converted(data_dir / "new-joint.hdf5", source=current_export)
+    cache = _write_cache(tmp_path / "features.hdf5", source_data=old)
+
+    assert len(_sequence_dataset(current, cache)) == 2
 
 
 def test_a_feature_cache_from_a_different_export_or_shape_is_refused(tmp_path):
