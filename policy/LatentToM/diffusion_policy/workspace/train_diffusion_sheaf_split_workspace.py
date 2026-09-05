@@ -34,7 +34,10 @@ OmegaConf.register_new_resolver("eval", eval, replace=True)
 
 
 class TrainDiffusionSheafSplitWorkspace(BaseWorkspace):
-    include_keys = ['global_step', 'epoch']
+    # best_val_loss_arm* travel with every checkpoint so a resumed run keeps
+    # comparing against the real best rather than starting from +inf and
+    # overwriting arm*_best_val.ckpt with its first, worse, validation.
+    include_keys = ['global_step', 'epoch', 'best_val_loss_arm1', 'best_val_loss_arm2']
 
     def __init__(self, cfg: OmegaConf, output_dir=None):
         super().__init__(cfg, output_dir=output_dir)
@@ -59,6 +62,8 @@ class TrainDiffusionSheafSplitWorkspace(BaseWorkspace):
             cfg.optimizer, params=self.arm2_model.parameters())
         self.global_step = 0
         self.epoch = 0
+        self.best_val_loss_arm1 = float('inf')
+        self.best_val_loss_arm2 = float('inf')
         self.wandb_launch = True  # set it as False when you debug the code
 
     def confidence_entropy_loss(self, confidence):
@@ -433,6 +438,27 @@ class TrainDiffusionSheafSplitWorkspace(BaseWorkspace):
                         if len(val_losses_sheaf) > 0:
                             val_loss_sheaf = torch.mean(torch.tensor(val_losses_sheaf)).item()
                             step_log['val_loss_sheaf'] = val_loss_sheaf
+
+                    # One best-on-validation checkpoint per arm, overwritten
+                    # whenever that arm's val loss improves. The top-k files
+                    # below rank on train_loss, which only falls, so they are the
+                    # k most recent epochs and say nothing about the held-out
+                    # episodes: the first frame_hang run's val minimum (epoch 50,
+                    # 0.022) had been rotated out by epoch 100 while val climbed
+                    # to 0.064 at 250. Same exclude sets as arm*_latest, so
+                    # model.py loads these the same way.
+                    for arm, other in ((1, 2), (2, 1)):
+                        key = f'val_loss_arm{arm}'
+                        best_attr = f'best_val_loss_arm{arm}'
+                        if key in step_log and step_log[key] < getattr(self, best_attr):
+                            setattr(self, best_attr, step_log[key])
+                            exclude = tuple(list(self.exclude_keys) + [
+                                f'arm{other}_model', f'arm{other}_ema_model', f'optimizer_arm{other}'])
+                            self.save_checkpoint(
+                                path=pathlib.Path(self.output_dir).joinpath('checkpoints', f'arm{arm}_best_val.ckpt'),
+                                tag=f'arm{arm}_best_val', exclude_keys=exclude)
+                            step_log[f'best_val_epoch_arm{arm}'] = self.epoch + 1
+                        step_log[best_attr] = getattr(self, best_attr)
 
                 if ((self.epoch + 1) % cfg.training.sample_every) == 0:
                     with torch.no_grad():
