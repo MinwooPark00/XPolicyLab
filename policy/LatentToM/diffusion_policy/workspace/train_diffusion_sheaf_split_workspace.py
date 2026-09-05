@@ -177,6 +177,16 @@ class TrainDiffusionSheafSplitWorkspace(BaseWorkspace):
             ema_arm2 = hydra.utils.instantiate(
                 cfg.ema,
                 model=self.arm2_ema_model)
+            # EMAModel keeps its own step counter and it is not in the
+            # checkpoint, so a resumed run restarted it at 0 -- where get_decay
+            # returns 0.0 and the first step() overwrites the averaged weights
+            # with the live ones, discarding the average that is what
+            # model.py actually serves. Seed it with the optimizer steps done so
+            # far; global_step counts micro-batches, hence the division.
+            # policy/DP's robotworkspace.py carries the same fix.
+            resumed_optimizer_steps = self.global_step // cfg.training.gradient_accumulate_every
+            ema_arm1.optimization_step = resumed_optimizer_steps
+            ema_arm2.optimization_step = resumed_optimizer_steps
 
         # XPolicyLab adaptation: no in-loop rollout. Upstream's env_runner
         # targets real xArm hardware (diffusion_policy.env_runner.
@@ -315,9 +325,16 @@ class TrainDiffusionSheafSplitWorkspace(BaseWorkspace):
                                 opt.zero_grad()
                                 scheduler.step()
 
-                        if cfg.training.use_ema:
-                            ema_arm1.step(self.arm1_model)
-                            ema_arm2.step(self.arm2_model)
+                            # One EMA update per *optimizer* step. This used to
+                            # sit outside the accumulation branch and run every
+                            # micro-batch, so with gradient_accumulate_every=N
+                            # the average was pulled N times toward weights that
+                            # had not moved (effective decay^N) and EMAModel's
+                            # warm-up counter advanced N times per real step.
+                            # With N=1 this is exactly the old behaviour.
+                            if cfg.training.use_ema:
+                                ema_arm1.step(self.arm1_model)
+                                ema_arm2.step(self.arm2_model)
 
                         raw_loss_arm1_cpu = raw_loss_arm1.item()
                         tepoch.set_postfix(loss=raw_loss_arm1_cpu, refresh=False)
