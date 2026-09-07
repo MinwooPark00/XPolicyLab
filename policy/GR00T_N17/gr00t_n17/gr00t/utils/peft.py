@@ -58,6 +58,40 @@ def _wrap_forward(peft_model, base_model):
     return peft_model
 
 
+def trainable_backbone_modules(model, target_modules) -> list:
+    """Backbone modules that `--tune_visual` / `--tune_llm` asked to train, named
+    so peft will *save* them.
+
+    Making a parameter `requires_grad=True` is only half of it. peft writes
+    `adapter_model.safetensors` from the adapter plus `modules_to_save` and
+    nothing else, so a merely-unfrozen parameter trains for the whole run and
+    is then absent from the checkpoint. That is exactly what happened to the
+    first `--tune_visual` run here: 786,218,112 parameters trainable, 12 h 42 m
+    of training, and 379,261,056 written -- the vision tower silently dropped,
+    and the merge would have folded LoRA onto the *pretrained* vision weights.
+
+    Returned names are full module paths, which is what `modules_to_save`
+    matches on (`key.endswith(target)`). Only maximal modules whose parameters
+    are all trainable are listed, and never one that already contains a LoRA
+    target -- an adapted submodule is handled by the adapter, and wrapping its
+    parent would save the frozen base weights a second time.
+    """
+    adapted = set(target_modules)
+    names = []
+    for name, module in model.named_modules():          # pre-order: parents first
+        if not name.startswith("backbone."):
+            continue
+        if any(name == a or a.startswith(name + ".") for a in adapted):
+            continue
+        params = list(module.parameters(recurse=True))
+        if not params or not all(p.requires_grad for p in params):
+            continue
+        if any(name.startswith(f"{seen}.") for seen in names):
+            continue
+        names.append(name)
+    return names
+
+
 def get_lora_model(model, rank=32, lora_alpha=16, lora_dropout=0.1, action_head_only=True,
                    targets=None):
     targets = targets or os.environ.get("MHBENCH_LORA_TARGETS", "attn")
@@ -88,54 +122,25 @@ def get_lora_model(model, rank=32, lora_alpha=16, lora_dropout=0.1, action_head_
           f"{len(target_modules)} module(s), "
           f"{sum('action_head' in n for n in target_modules)} in the action head")
 
+    # The backbone the model wants trained rides in `modules_to_save` beside the
+    # embodiment banks, which is both what makes it trainable under peft and
+    # what gets it written to the checkpoint.
+    saved_backbone = trainable_backbone_modules(model, target_modules)
+    if saved_backbone:
+        print(f"[peft] modules_to_save also carries {len(saved_backbone)} backbone "
+              f"module(s) the model asked to train: {', '.join(saved_backbone)}")
+
     lora_config = LoraConfig(
         r=rank,
         lora_alpha=lora_alpha,
         target_modules=target_modules,
         lora_dropout=lora_dropout,
         bias="none",
-        modules_to_save=list(EMBODIMENT_MODULES),
+        modules_to_save=list(EMBODIMENT_MODULES) + saved_backbone,
     )
 
     base_model = model
-    # What the model itself asked to train, before peft has an opinion.
-    # `LoraModel._mark_only_adapters_as_trainable` freezes every parameter
-    # whose name lacks the `lora_` prefix, and that silently includes whatever
-    # `--tune_visual` / `--tune_llm` had just unfrozen: the flag would be set,
-    # the wandb tag would read `vision-tuned`, and the vision tower would not
-    # move all run. Restore them after wrapping, because "frozen backbone with
-    # LoRA on it, vision tower trained outright" is exactly pi0.5's
-    # arrangement and it is only expressible if the two settings compose.
-    #
-    # An adapted layer's own weight is *not* restored: peft renames it to
-    # `<name>.base_layer.weight`, which matches nothing here, and a module in
-    # `modules_to_save` becomes `<name>.modules_to_save.default.<param>` beside
-    # a frozen `<name>.original_module.<param>` -- also no match. Only the
-    # parameters peft left untouched come back.
-    # Scoped to the backbone deliberately. The action head's own
-    # tune_projector / tune_diffusion_model / tune_vlln all default to True and
-    # `ActionHead.set_trainable_parameters` starts by unfreezing *everything*,
-    # so an unscoped restore also brings back the DiT's adaLN modulation
-    # (`model.transformer_blocks.*.norm1.linear`, 151 M of 162 M) -- which is
-    # the full DiT tuning this recipe exists to replace, and on its own three
-    # times pi0.5's entire adapter budget. The embodiment banks stay trainable
-    # through `modules_to_save`, which is the part of tune_projector a
-    # NEW_EMBODIMENT run actually needs.
-    pretrained_trainable = {n for n, p in model.named_parameters()
-                            if p.requires_grad and n.startswith("backbone.")}
-
     model = get_peft_model(model, lora_config)
-
-    peft_prefix = "base_model.model."
-    restored = 0
-    for name, param in model.named_parameters():
-        original = name[len(peft_prefix):] if name.startswith(peft_prefix) else name
-        if not param.requires_grad and original in pretrained_trainable:
-            param.requires_grad = True
-            restored += param.numel()
-    if restored:
-        print(f"[peft] restored {restored:,} parameter(s) that the model had marked "
-              f"trainable and peft froze (tune_visual / tune_llm)")
     model.print_trainable_parameters()
 
     model = _wrap_forward(model, base_model)

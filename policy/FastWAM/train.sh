@@ -28,7 +28,13 @@ UTILS_DIR="${ROOT_DIR}/XPolicyLab/utils"
 
 export CUDA_VISIBLE_DEVICES="${gpu_id}"
 export DIFFSYNTH_MODEL_BASE_PATH="${FASTWAM_DIR}/checkpoints"
-export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
+# expandable_segments on one card only: it fights fragmentation on small
+# cards, and it is the one setting every multi-GPU run that died under NCCL
+# ("an illegal memory access", or a silent nan) shared with nothing that
+# worked. An explicit value in the environment is kept either way.
+if [[ "${num_gpus}" -le 1 ]]; then
+    export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
+fi
 export PYTHONPATH="${ROOT_DIR}:${FASTWAM_DIR}:${FASTWAM_DIR}/src:${PYTHONPATH:-}"
 
 action_dim=$(bash "${UTILS_DIR}/get_action_dim.sh" "${ROOT_DIR}" "${env_cfg_type}")
@@ -177,6 +183,8 @@ fi
 #                             copy, so a requeue's `resume=` still wins.
 #   FASTWAM_FREEZE_VIDEO_DIT  1 -> train the action expert only.
 #   FASTWAM_LORA_RANK         >0 -> LoRA on the video expert instead.
+#   FASTWAM_GRAD_CKPT         0/1 -> gradient checkpointing on both experts
+#                             (the mhbench yamls default to on).
 if [[ -n "${FASTWAM_INIT_WEIGHTS:-}" ]]; then
     if [[ ! -f "${FASTWAM_INIT_WEIGHTS}" ]]; then
         echo "[ERROR] FASTWAM_INIT_WEIGHTS is not a file: ${FASTWAM_INIT_WEIGHTS}" >&2
@@ -187,6 +195,16 @@ fi
 if [[ "${FASTWAM_FREEZE_VIDEO_DIT:-0}" == "1" ]]; then
     train_common+=("freeze_video_dit=true")
 fi
+# Gradient checkpointing on both experts. The mhbench task yamls turn it on
+# (it is what fits the 6B-trainable DiT on 48 GB cards); upstream RoboTwin
+# trains with it off. 0 turns it off where memory allows -- worth a large
+# fraction of the step on a 192 GB card. Empty leaves the yaml's own value.
+case "${FASTWAM_GRAD_CKPT:-}" in
+    0) train_common+=("model.mot_checkpoint_mixed_attn=false") ;;
+    1) train_common+=("model.mot_checkpoint_mixed_attn=true") ;;
+    "") ;;
+    *) echo "[ERROR] FASTWAM_GRAD_CKPT must be 0 or 1, got ${FASTWAM_GRAD_CKPT}" >&2; exit 2 ;;
+esac
 if [[ -n "${FASTWAM_LORA_RANK:-}" && "${FASTWAM_LORA_RANK}" != "0" ]]; then
     train_common+=(
         "lora_rank=${FASTWAM_LORA_RANK}"

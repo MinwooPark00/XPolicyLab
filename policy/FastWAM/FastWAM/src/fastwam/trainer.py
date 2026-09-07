@@ -63,6 +63,15 @@ class Wan22Trainer:
         # aborted. 0 disables the check.
         self.max_nonfinite_steps = int(cfg.get("max_nonfinite_steps", 20))
         self._nonfinite_streak = 0
+        # Localise the first non-finite tensor instead of only reporting that
+        # the loss went nan. By the step after a nan every parameter is nan and
+        # the log reads identically whether a batch was bad, the backward
+        # overflowed, or the update did -- so the cause has to be caught in the
+        # step it happens. Off by default: the check reduces every parameter and
+        # every gradient once per micro-batch, which is far too expensive for a
+        # real run and cheap for the dozen steps of a probe.
+        self.debug_nonfinite = bool(cfg.get("debug_nonfinite", False))
+        self._debug_reported = set()
         self.gradient_accumulation_steps = int(cfg.gradient_accumulation_steps)
         self.max_grad_norm = float(cfg.max_grad_norm)
         self.seed = int(cfg.seed)
@@ -834,6 +843,58 @@ class Wan22Trainer:
             state_file,
         )
 
+    @staticmethod
+    def _first_nonfinite(named_tensors):
+        """Name of the first non-finite tensor in the sequence, or None."""
+        for name, tensor in named_tensors:
+            if tensor is None or not torch.is_floating_point(tensor):
+                continue
+            if not torch.isfinite(tensor).all():
+                return name
+        return None
+
+    def _debug_nonfinite(self, stage, sample=None, loss=None):
+        """Report the first non-finite tensor at one point in the step.
+
+        `stage` is where we are looking: "input" before the forward, "loss"
+        after it, "grad" after the backward, "param" after the optimizer step.
+        The first stage to fire is the diagnosis -- a bad batch, an overflowing
+        backward and a poisoned update are three different bugs that produce the
+        same nan loss one step later.
+        """
+        if not self.debug_nonfinite:
+            return
+        found = None
+        if stage == "input" and sample is not None:
+            items = getattr(sample, "items", None)
+            if items is None:
+                return
+            found = self._first_nonfinite(
+                (k, v) for k, v in items() if torch.is_tensor(v)
+            )
+        elif stage == "loss" and loss is not None:
+            found = "loss" if not torch.isfinite(loss.detach()).all() else None
+        elif stage == "grad":
+            found = self._first_nonfinite(
+                (n, p.grad) for n, p in self.model.named_parameters() if p.grad is not None
+            )
+        elif stage == "param":
+            found = self._first_nonfinite(self.model.named_parameters())
+        if found is None:
+            return
+        key = (stage, found)
+        if key in self._debug_reported:
+            return
+        self._debug_reported.add(key)
+        logger.error(
+            "[nonfinite] first non-finite %s at step=%d batch_in_epoch=%d rank=%d: %s",
+            stage,
+            self.global_step,
+            self.batch_in_epoch,
+            self.accelerator.process_index,
+            found,
+        )
+
     def train(self):
         self._set_dit_only_train_mode()
 
@@ -861,13 +922,17 @@ class Wan22Trainer:
             with self.accelerator.accumulate(self.model):
                 train_model = self.model if hasattr(self.model, "training_loss") else self.accelerator.unwrap_model(self.model)
 
+                self._debug_nonfinite("input", sample=sample)
                 with self.accelerator.autocast():
                     loss, loss_dict = train_model.training_loss(sample)
+                self._debug_nonfinite("loss", loss=loss)
                 self.accelerator.backward(loss)
+                self._debug_nonfinite("grad")
 
                 if self.accelerator.sync_gradients:
                     grad_norm = self.accelerator.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
                     self.optimizer.step()
+                    self._debug_nonfinite("param")
                     if not self.accelerator.optimizer_step_was_skipped:
                         self.scheduler.step()
                     self.optimizer.zero_grad(set_to_none=True)

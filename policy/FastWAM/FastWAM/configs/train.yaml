@@ -48,6 +48,11 @@ eval_noise_seed: 12345
 # max_steps and writes nan checkpoints.
 max_nonfinite_steps: 20
 
+# Localise the first non-finite tensor (input / loss / gradient / parameter)
+# instead of only learning that the loss went nan. Reduces every parameter and
+# every gradient once per micro-batch, so this is a probe setting, not a run one.
+debug_nonfinite: false
+
 # training
 gradient_accumulation_steps: 1
 mixed_precision: "bf16" # one of: [no, fp16, bf16]
