@@ -64,7 +64,7 @@ class T5EmbeddingProcessor:
         if self._encoder is None:
             # Add WAN module path (relative to this file)
             script_dir = os.path.dirname(os.path.abspath(__file__))
-            wan_module_path = os.path.join(script_dir, '..', '..', '..', 'bak')
+            wan_module_path = os.path.join(script_dir, '..', '..', '..')
             wan_module_path = os.path.abspath(wan_module_path)
             
             if wan_module_path not in sys.path:

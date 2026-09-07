@@ -11,9 +11,9 @@ from pathlib import Path
 from dataclasses import dataclass
 from typing import List, Optional, Dict, Any, Tuple
 
-BAK_ROOT = str((Path(__file__).parent.parent / "bak").resolve())
-if BAK_ROOT not in sys.path:
-    sys.path.insert(0, BAK_ROOT)
+OLA_SEM_ROOT = str(Path(__file__).resolve().parents[4])
+if OLA_SEM_ROOT not in sys.path:
+    sys.path.append(OLA_SEM_ROOT)
 
 from utils.common import get_t_distribution
 from wan.modules.model import sinusoidal_embedding_1d

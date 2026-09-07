@@ -25,10 +25,10 @@ for model_path in (MODELS_ROOT, POLICY_ROOT):
 
 from models.motus import Motus, MotusConfig
 
-# Add bak path for T5EncoderModel
-BAK_ROOT = str((Path(__file__).parent / "bak").resolve())
-if BAK_ROOT not in sys.path:
-    sys.path.insert(0, BAK_ROOT)
+# Shared vendored Wan package lives at ola_sem/wan
+OLA_SEM_ROOT = str(Path(__file__).resolve().parents[3])
+if OLA_SEM_ROOT not in sys.path:
+    sys.path.append(OLA_SEM_ROOT)
 
 from wan.modules.t5 import T5EncoderModel
 from utils.image_utils import resize_with_padding

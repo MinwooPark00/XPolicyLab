@@ -18,10 +18,9 @@ import re
 from pathlib import Path
 
 # Import WAN's components for consistency
-project_root = Path(__file__).parent.parent
-bak_root = project_root / "bak"
-if str(bak_root.resolve()) not in sys.path:
-    sys.path.insert(0, str(bak_root.resolve()))
+ola_sem_root = Path(__file__).resolve().parents[1]
+if str(ola_sem_root) not in sys.path:
+    sys.path.insert(0, str(ola_sem_root))
 
 from wan.modules.attention import flash_attention
 from wan.modules.model import WanRMSNorm, WanLayerNorm, sinusoidal_embedding_1d, rope_apply
