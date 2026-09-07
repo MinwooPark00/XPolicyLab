@@ -62,11 +62,12 @@ default_instruction: follow the instruction
 text_embedding_cache_dir: null
 serve_text_encoder: false
 # The trainer only ever saw the dataset's frames decoded from H.264 (libx264
-# crf 20 at yuv420p: export_lerobot's imageio quality 6); eval hands the policy
-# the raw render buffer. For this model that gap is large (2026-09-08 probe:
-# commanded 24-step arm displacement 0.13 -> 0.20 at t=0 and 2-3x later in
-# the episode after a round trip; chroma subsampling alone does nothing), so
-# serving passes every observation frame through the same encoder before the
-# crop. 0 turns it off (the raw render, as before 2026-09-08).
-image_codec_crf: 20
+# crf 20 at yuv420p: export_lerobot's imageio quality 6), and a raw render is
+# off-distribution for this model (2026-09-08 probe: commanded 24-step arm
+# displacement 0.13 -> 0.20 at t=0 and 2-3x later in the episode after a
+# round trip). The MHBench env now hands every policy the decoded frame
+# (mhbench_xpolicylab_env.py, MHBENCH_OBS_CODEC), so this stays 0 there; set
+# it (20) only for a harness that serves raw frames -- doing both degrades the
+# frame twice.
+image_codec_crf: 0
 allow_dummy_policy: false
