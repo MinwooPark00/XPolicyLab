@@ -24,7 +24,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from fastwam.datasets.lerobot.processors.fastwam_processor import FastWAMProcessor
-from fastwam.datasets.lerobot.robot_video_dataset import DEFAULT_PROMPT
+from fastwam.datasets.lerobot.robot_video_dataset import DEFAULT_PROMPT, load_cached_text_context
 from fastwam.datasets.lerobot.utils.normalizer import load_dataset_stats_from_json
 
 logger = logging.getLogger(__name__)
@@ -155,9 +155,15 @@ class WorldActionRobotWinPolicy:
         tiled: bool,
         timing_enabled: bool,
         num_video_frames: int,
+        text_embedding_cache_dir: Optional[str] = None,
+        context_len: int = 128,
     ) -> None:
         model_cfg_copy = OmegaConf.create(OmegaConf.to_container(model_cfg, resolve=True))
-        model_cfg_copy.load_text_encoder = True
+        # With a precomputed cache (the one training read) the 11 GB T5 stays
+        # out of the server; every prompt must then be in it.
+        self.text_embedding_cache_dir = None if _is_none_like(text_embedding_cache_dir) else str(text_embedding_cache_dir)
+        self.context_len = int(context_len)
+        model_cfg_copy.load_text_encoder = self.text_embedding_cache_dir is None
 
         self.model = instantiate(model_cfg_copy, model_dtype=model_dtype, device=device)
         self.model.load_checkpoint(checkpoint_path)
@@ -252,6 +258,10 @@ class WorldActionRobotWinPolicy:
             "rand_device": self.rand_device,
             "tiled": self.tiled,
         }
+        if self.text_embedding_cache_dir is not None:
+            context, context_mask = load_cached_text_context(self.text_embedding_cache_dir, prompt, self.context_len)
+            context[~context_mask] = 0.0  # as RobotVideoDataset hands it to training
+            infer_kwargs.update(prompt=None, context=context, context_mask=torch.ones_like(context_mask))
         if "num_video_frames" in inspect.signature(self.model.infer_action).parameters:
             infer_kwargs["num_video_frames"] = int(self._num_video_frames)
         infer_t0 = time.perf_counter() if self.timing_enabled else 0.0
@@ -387,6 +397,8 @@ def get_model(usr_args: Dict[str, Any]):
         tiled=tiled,
         timing_enabled=timing_enabled,
         num_video_frames=(int(cfg.data.train.num_frames) - 1) // int(cfg.data.train.action_video_freq_ratio) + 1,
+        text_embedding_cache_dir=usr_args.get("text_embedding_cache_dir"),
+        context_len=int(cfg.data.train.get("context_len", 128)),
     )
     return policy
 

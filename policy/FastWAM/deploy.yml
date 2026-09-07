@@ -49,5 +49,24 @@ negative_prompt: ""
 rand_device: cpu
 tiled: false
 timing_enabled: false
+# A last-resort sentence, used only when neither the env (mhbench_instruction
+# over the wire) nor the dataset's tasks.jsonl names the task. It never
+# overrides them: `prompt` does. (Until 2026-09-07 the adapter treated this as
+# an override, so every MHBench evaluation ran on "follow the instruction".)
 default_instruction: follow the instruction
+# MHBench serving reads the T5 context the checkpoint trained with from the
+# precomputed cache (data/text_embeds_cache/xpolicylab/<dataset_id>) and loads
+# no text encoder: 12.5 GiB resident instead of 24.7, which is what fits a
+# 24 GB card next to Isaac. Name a cache dir here to override the derived one;
+# `serve_text_encoder: true` forces the live T5 path (needs a 48 GB card).
+text_embedding_cache_dir: null
+serve_text_encoder: false
+# The trainer only ever saw the dataset's frames decoded from H.264 (libx264
+# crf 20 at yuv420p: export_lerobot's imageio quality 6); eval hands the policy
+# the raw render buffer. For this model that gap is large (2026-09-08 probe:
+# commanded 24-step arm displacement 0.13 -> 0.20 at t=0 and 2-3x later in
+# the episode after a round trip; chroma subsampling alone does nothing), so
+# serving passes every observation frame through the same encoder before the
+# crop. 0 turns it off (the raw render, as before 2026-09-08).
+image_codec_crf: 20
 allow_dummy_policy: false

@@ -5,6 +5,7 @@ import time
 import numpy as np
 import traceback
 import torch
+import torch.nn.functional as F
 import torchvision.transforms.functional as transforms_F
 from contextlib import contextmanager
 
@@ -42,6 +43,8 @@ class RobotVideoDataset(torch.utils.data.Dataset):
         max_padding_retry: int = 3,
         concat_multi_camera: str = "horizontal", # "horizontal", "vertical", "robotwin", or None
         override_instruction: Optional[str] = None, # whether to hardcode a specific instruction for all samples, for debugging
+        augment_shift_px: Optional[list] = None, # training only: [dy, dx] max random crop offset / horizontal shift, px
+        augment_color: float = 0.0, # training only: max relative brightness/contrast jitter
     ):
         self.lerobot_dataset = BaseLerobotDataset(
             dataset_dirs=dataset_dirs,
@@ -72,6 +75,8 @@ class RobotVideoDataset(torch.utils.data.Dataset):
         self.max_padding_retry = max_padding_retry
         self.concat_multi_camera = concat_multi_camera
         self.override_instruction = override_instruction
+        self.augment_shift_px = [int(v) for v in augment_shift_px] if (is_training_set and augment_shift_px) else None
+        self.augment_color = float(augment_color) if is_training_set else 0.0
 
         self.resize_transform = ResizeSmallestSideAspectPreserving(
             args={"img_w": self.video_size[1], "img_h": self.video_size[0]},
@@ -191,7 +196,9 @@ class RobotVideoDataset(torch.utils.data.Dataset):
 
         # final resize and normalization
         video = self.resize_transform(video)
-        video = self.crop_transform(video)
+        video = self._augmented_crop(video) if self.augment_shift_px else self.crop_transform(video)
+        if self.augment_color > 0:
+            video = self._color_jitter(video)
         video = self.normalize_transform(video)  # [T_video, C, H, W]
 
         video = video.permute(1, 0, 2, 3) # [C, T_video, H, W], range [-1, 1]
@@ -233,39 +240,36 @@ class RobotVideoDataset(torch.utils.data.Dataset):
         }
         return data
 
+    def _augmented_crop(self, video: torch.Tensor) -> torch.Tensor:
+        """Random crop to video_size, one offset for the whole clip: the vertical
+        offset moves within the frame (center +/- dy), the horizontal one
+        shifts the view with replicate padding (+/- dx). Serving uses the
+        center crop, so the augmentation range is the tolerance the policy is
+        asked to have to where the scene sits in the frame."""
+        dy, dx = self.augment_shift_px
+        H, W = self.video_size
+        h, w = video.shape[-2], video.shape[-1]
+        cy = (h - H) // 2
+        oy = int(np.clip(cy + np.random.randint(-dy, dy + 1), 0, h - H)) if dy > 0 else cy
+        video = video[..., oy:oy + H, :]
+        if dx > 0:
+            ox = int(np.random.randint(-dx, dx + 1))
+            video = F.pad(video, (dx, dx, 0, 0), mode="replicate")[..., dx + ox : dx + ox + w]
+        if w != W:
+            video = self.crop_transform(video)
+        return video
+
+    def _color_jitter(self, video: torch.Tensor) -> torch.Tensor:
+        c = self.augment_color
+        gain = 1.0 + np.random.uniform(-c, c)
+        contrast = 1.0 + np.random.uniform(-c, c)
+        mean = video.mean()
+        return ((video - mean) * contrast + mean * gain).clamp(0.0, 1.0)
+
     def _get_cached_text_context(self, prompt: str):
         if self.text_embedding_cache_dir is None:
             raise ValueError("text_embedding_cache_dir is not set.")
-        cache_dir = self.text_embedding_cache_dir
-        os.makedirs(cache_dir, exist_ok=True)
-        hashed = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
-        cache_path = os.path.join(cache_dir, f"{hashed}.t5_len{self.context_len}.wan22ti2v5b.pt")
-        if not os.path.exists(cache_path):
-            raise FileNotFoundError(
-                f"Missing text embedding cache: {cache_path}. "
-                "Run scripts/precompute_text_embeds.py first."
-            )
-        payload = torch.load(cache_path, map_location="cpu")
-        context = payload["context"]
-        context_mask = payload["mask"].bool()
-        if context.ndim != 2:
-            raise ValueError(
-                f"Cached `context` must be 2D [L, D], got shape {tuple(context.shape)} in {cache_path}"
-            )
-        if context_mask.ndim != 1:
-            raise ValueError(
-                f"Cached `mask` must be 1D [L], got shape {tuple(context_mask.shape)} in {cache_path}"
-            )
-        if context.shape[0] != self.context_len:
-            raise ValueError(
-                f"Cached context_len mismatch: expected {self.context_len}, got {context.shape[0]} in {cache_path}"
-            )
-        if context_mask.shape[0] != self.context_len:
-            raise ValueError(
-                f"Cached mask_len mismatch: expected {self.context_len}, got {context_mask.shape[0]} in {cache_path}"
-            )
-
-        return context, context_mask
+        return load_cached_text_context(self.text_embedding_cache_dir, prompt, self.context_len)
 
     def __getitem__(self, idx):
         try:
@@ -277,3 +281,29 @@ class RobotVideoDataset(torch.utils.data.Dataset):
             random_idx = np.random.randint(len(self))
             data = self._get(random_idx)
         return data
+
+
+def load_cached_text_context(cache_dir: str, prompt: str, context_len: int):
+    """The precomputed T5 context for `prompt` (scripts/precompute_text_embeds.py):
+    `(context [L, D], mask [L] bool)`.  Shared by training and serving so both
+    read the same file."""
+    os.makedirs(cache_dir, exist_ok=True)
+    hashed = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+    cache_path = os.path.join(cache_dir, f"{hashed}.t5_len{context_len}.wan22ti2v5b.pt")
+    if not os.path.exists(cache_path):
+        raise FileNotFoundError(
+            f"Missing text embedding cache: {cache_path}. "
+            "Run scripts/precompute_text_embeds.py first."
+        )
+    payload = torch.load(cache_path, map_location="cpu")
+    context = payload["context"]
+    context_mask = payload["mask"].bool()
+    if context.ndim != 2:
+        raise ValueError(f"Cached `context` must be 2D [L, D], got shape {tuple(context.shape)} in {cache_path}")
+    if context_mask.ndim != 1:
+        raise ValueError(f"Cached `mask` must be 1D [L], got shape {tuple(context_mask.shape)} in {cache_path}")
+    if context.shape[0] != context_len or context_mask.shape[0] != context_len:
+        raise ValueError(
+            f"Cached context_len mismatch: expected {context_len}, got {context.shape[0]}/{context_mask.shape[0]} in {cache_path}"
+        )
+    return context, context_mask
