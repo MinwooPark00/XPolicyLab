@@ -37,6 +37,10 @@ train:
   is_training_set: true
   pretrained_norm_stats: ./data/mhbench/dataset_stats.json
   skip_padding_as_possible: false
+  # Training-only augmentation (off by default): random crop offset [dy, dx]
+  # in pixels around the center crop, and relative brightness/contrast jitter.
+  augment_shift_px: null
+  augment_color: 0.0
   concat_multi_camera: "vertical" # unused with one camera
   processor:
     _target_: fastwam.datasets.lerobot.processors.fastwam_processor.FastWAMProcessor

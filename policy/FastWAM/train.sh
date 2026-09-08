@@ -213,6 +213,20 @@ if [[ -n "${FASTWAM_LORA_RANK:-}" && "${FASTWAM_LORA_RANK}" != "0" ]]; then
     )
 fi
 
+# Training-set image augmentation (robot_video_dataset.py). Named so the
+# values survive `sbatch --export`, which splits on the comma a hydra list
+# needs: FASTWAM_AUGMENT_SHIFT=24x16 -> augment_shift_px=[24,16] (dy x dx).
+if [[ -n "${FASTWAM_AUGMENT_SHIFT:-}" ]]; then
+    if [[ ! "${FASTWAM_AUGMENT_SHIFT}" =~ ^[0-9]+x[0-9]+$ ]]; then
+        echo "[ERROR] FASTWAM_AUGMENT_SHIFT must look like 24x16, got ${FASTWAM_AUGMENT_SHIFT}" >&2
+        exit 2
+    fi
+    train_common+=("data.train.augment_shift_px=[${FASTWAM_AUGMENT_SHIFT%x*},${FASTWAM_AUGMENT_SHIFT#*x}]")
+fi
+if [[ -n "${FASTWAM_AUGMENT_COLOR:-}" ]]; then
+    train_common+=("data.train.augment_color=${FASTWAM_AUGMENT_COLOR}")
+fi
+
 # Anything else, verbatim, as a space-separated list of hydra overrides --
 # probe runs (num_epochs=1 wandb.mode=offline) that must not be named here.
 # shellcheck disable=SC2206

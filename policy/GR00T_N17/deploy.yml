@@ -13,10 +13,19 @@ eval_batch: false
 # Model / checkpoint configuration (local paths relative to policy/GR00T_N17/)
 action_type: joint
 embodiment_tag: NEW_EMBODIMENT
-# decentralized = one policy per robot (two checkpoints, one server);
-# centralized = the single policy driving both. model_dir_robot_a/_robot_b
-# override the first, model_dir the second.
+# decentralized = the shared multitask policy driving both robots (the default;
+# see mhbench_decentralized_style below), or the older pair of per-robot
+# checkpoints in one server; centralized = the single policy emitting both
+# arms' action. model_dir overrides the shared and centralized run directory,
+# model_dir_robot_a/_robot_b the per-robot pair's.
 mhbench_mode: decentralized
+# What `decentralized` means here: `shared` is the benchmark's default -- one
+# multitask policy drives both robots, told apart only by the instruction each
+# agent is given. `per_robot` is the older pair, one checkpoint per (task,
+# robot). eval_policy.sbatch overrides this from the serving hook
+# (MHBENCH_DECENTRALIZED_STYLE); it is spelled out here so a server started
+# from this file alone serves what the benchmark means.
+mhbench_decentralized_style: shared
 # Suffix train.sh gave the run directory (CKPT_TAG): full, scene, ...
 ckpt_tag: null
 # Finetuned step under checkpoints/<ckpt_name>/; null = auto-resolve + checkpoint_num

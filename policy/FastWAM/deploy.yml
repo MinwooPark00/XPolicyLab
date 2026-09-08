@@ -27,6 +27,13 @@ dataset_stats_path: null
 # resolution; empty means the newest step of the untagged run named by
 # ckpt_name/env_cfg_type/seed. checkpoint_num picks a step (EVAL_CKPT_NUM).
 mhbench_mode: null
+# What `decentralized` means here: `shared` is the benchmark's default -- one
+# multitask policy drives both robots, told apart only by the instruction each
+# agent is given. `per_robot` is the older pair, one checkpoint per (task,
+# robot). eval_policy.sbatch overrides this from the serving hook
+# (MHBENCH_DECENTRALIZED_STYLE); it is spelled out here so a server started
+# from this file alone serves what the benchmark means.
+mhbench_decentralized_style: shared
 model_dir: null
 model_dir_robot_a: null
 model_dir_robot_b: null
@@ -49,5 +56,25 @@ negative_prompt: ""
 rand_device: cpu
 tiled: false
 timing_enabled: false
+# A last-resort sentence, used only when neither the env (mhbench_instruction
+# over the wire) nor the dataset's tasks.jsonl names the task. It never
+# overrides them: `prompt` does. (Until 2026-09-07 the adapter treated this as
+# an override, so every MHBench evaluation ran on "follow the instruction".)
 default_instruction: follow the instruction
+# MHBench serving reads the T5 context the checkpoint trained with from the
+# precomputed cache (data/text_embeds_cache/xpolicylab/<dataset_id>) and loads
+# no text encoder: 12.5 GiB resident instead of 24.7, which is what fits a
+# 24 GB card next to Isaac. Name a cache dir here to override the derived one;
+# `serve_text_encoder: true` forces the live T5 path (needs a 48 GB card).
+text_embedding_cache_dir: null
+serve_text_encoder: false
+# The trainer only ever saw the dataset's frames decoded from H.264 (libx264
+# crf 20 at yuv420p: export_lerobot's imageio quality 6), and a raw render is
+# off-distribution for this model (2026-09-08 probe: commanded 24-step arm
+# displacement 0.13 -> 0.20 at t=0 and 2-3x later in the episode after a
+# round trip). The MHBench env now hands every policy the decoded frame
+# (mhbench_xpolicylab_env.py, MHBENCH_OBS_CODEC), so this stays 0 there; set
+# it (20) only for a harness that serves raw frames -- doing both degrades the
+# frame twice.
+image_codec_crf: 0
 allow_dummy_policy: false
