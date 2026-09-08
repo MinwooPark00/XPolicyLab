@@ -10,15 +10,20 @@ Shared conventions — argument meanings, checkpoint naming, split-machine deplo
 
 MHBench drives **two** Unitree G1 humanoids, and neither its observation nor its
 action fits XPolicyLab's generic single-bimanual-robot schema -- so this adapter
-has an `bench_name=mhbench` branch, as ACT, DP and GR00T_N17 do. Three targets
-per task:
+has an `bench_name=mhbench` branch, as ACT, DP and GR00T_N17 do. Targets:
 
 | target | `env_cfg_type` | state | action | cameras | instruction |
 |---|---|---|---|---|---|
+| **multitask (the default)** | `unitree_g1x2_decentralized` | 43 | 35 | that agent's ego view | that agent's |
 | centralized | `unitree_g1x2_centralized` | 86 (both robots' joints) | 70 | `ego_a`, `ego_b` | the pair's |
 | robot_a / robot_b | `unitree_g1x2_decentralized` | 43 | 35 | that robot's ego view | that robot's |
 
-Five tasks x three targets = fifteen runs. The column layout is derived from
+**multitask is the benchmark's setting**: one run over all four tasks and both
+roles, served as the shared policy that tells the two agents apart by the
+instruction alone. It is a single run, not one per task, and it is what
+`train_launch.sh Pi_05` gives you with no further arguments. The other two are
+the older per-task shapes -- four tasks x three targets = twelve runs -- and
+are asked for by naming the task and the mode. The column layout is derived from
 MHBench's own `configs/gr00t/mhbench_keys.py`, so ACT, DP, GR00T and pi0.5 all
 consume the same numbers in the same order and a difference in score is a
 difference between methods.
@@ -49,14 +54,17 @@ requires. `baselines/scripts/norm_stats_pi05.sbatch` does all fifteen on CPU.
 ### Training
 
 ```bash
+# multitask, the default -- one run, all four tasks, both roles
+bash train.sh mhbench multitask unitree_g1x2_decentralized joint <seed> <gpu_id>
 # centralized
 bash train.sh mhbench <task> unitree_g1x2_centralized joint <seed> <gpu_id>
-# decentralized, once per robot
+# decentralized per robot, the older shape
 bash train.sh mhbench <task>_robot_a unitree_g1x2_decentralized joint <seed> <gpu_id>
 ```
 
 The TrainConfig is **derived** from the task and the target
-(`pi05_mhbench_<task>_<centralized|robot_a|robot_b>`), not taken from
+(`pi05_mhbench_multitask_decentralized`, or
+`pi05_mhbench_<task>_<centralized|robot_a|robot_b>`), not taken from
 `OPENPI_TRAIN_CONFIG_NAME`, so a run cannot be trained under one target's config
 and served under another's -- which would silently apply the wrong action width,
 instruction and normalization. For the same reason `--data.repo-id` is not
@@ -82,9 +90,10 @@ sbatch --partition=suma_rtx4090 --qos=base_qos --exclude=cs-gpu-01 \
 `baselines/scripts/eval_pi05.sbatch` is a fork of `eval_groot.sbatch` that keeps
 the episode protocol, step limit and aggregation byte-for-byte -- those are what
 make two baselines comparable -- and changes only the serving side. One server
-holds either the single centralized policy or both decentralized halves
-(`MHBENCH_MODE`); `ckpt_name` is the task, and the per-robot run directories are
-derived from it.
+holds the shared multitask policy (the default: `ckpt_name` is `multitask`), the
+single centralized policy, or both per-robot halves
+(`MHBENCH_DECENTRALIZED_STYLE=per_robot`); in the latter two `ckpt_name` is the
+task and the run directories are derived from it.
 
 `deploy.yml`'s `train_config_name` and `repo_id` are ignored on this path.
 Norm stats come from the checkpoint's own `assets/`, written there at save time.

@@ -28,10 +28,15 @@ repo_id: arx_x5_sim
 # One server drives both humanoids either way.
 #   centralized    a single policy answering with all 70 action dimensions;
 #                  model_dir overrides its run directory.
-#   decentralized  the two independently trained halves in one process;
-#                  model_dir_robot_a / _robot_b override theirs.
-# `ckpt_name` here is the task (cocarry / handover / framehang / doorpassage),
-# not a run directory -- those are derived per robot. `train_config_name` and
+#   decentralized  the benchmark's default: the one shared multitask policy,
+#                  driving both agents off the instruction each is given
+#                  (`ckpt_name: multitask`, model_dir overrides its run
+#                  directory). The older per-robot pair -- two independently
+#                  trained halves in one process, model_dir_robot_a / _robot_b
+#                  -- is what a per-task `ckpt_name` selects instead.
+# `ckpt_name` is `multitask` for the shared policy and the task
+# (cocarry / handover / framehang / doorpassage) for the other two shapes; it is
+# not a run directory, those are derived from it. `train_config_name` and
 # `repo_id` above are ignored: the TrainConfig is derived from the task and the
 # target so a checkpoint cannot be served through another target's config, and
 # norm stats are read from the checkpoint's own assets.

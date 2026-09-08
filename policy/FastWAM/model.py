@@ -234,9 +234,10 @@ class Model(ModelTemplate):
         # What a decentralized checkpoint is: `shared` is one multitask policy
         # driving both agents, told them apart by the instruction each is
         # given; `per_robot` is the older pair, one checkpoint per (task,
-        # robot). eval_policy.sbatch sends whichever the serving hook declares.
+        # robot). eval_policy.sbatch sends whichever the serving hook declares;
+        # a deploy.yml served on its own gets the benchmark's default, shared.
         self._shared = str(
-            self.model_cfg.get("mhbench_decentralized_style") or "per_robot"
+            self.model_cfg.get("mhbench_decentralized_style") or "shared"
         ).strip().lower() == "shared"
         task = str(self.model_cfg.get("ckpt_name") or "").strip()
         if not task:

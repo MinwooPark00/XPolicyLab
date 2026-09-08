@@ -17,6 +17,13 @@ eval_batch: false
 # is unused (HF checkpoint-N dirs resolve to the newest). allow_dummy_policy
 # serves zero actions for the GPU-less wiring check.
 mhbench_mode: null
+# What `decentralized` means here: `shared` is the benchmark's default -- one
+# multitask policy drives both robots, told apart only by the instruction each
+# agent is given. `per_robot` is the older pair, one checkpoint per (task,
+# robot). eval_policy.sbatch overrides this from the serving hook
+# (MHBENCH_DECENTRALIZED_STYLE); it is spelled out here so a server started
+# from this file alone serves what the benchmark means.
+mhbench_decentralized_style: shared
 model_dir: null
 ckpt_tag: null
 checkpoint_num: null

@@ -584,9 +584,9 @@ class Model(ModelTemplate):
         # What "decentralized" means for this checkpoint: `shared` is one
         # multitask policy driving both agents, told them apart by the
         # instruction each is given; `per_robot` is the older pair, one
-        # checkpoint per (task, robot). eval_policy.sbatch sends whichever the
-        # serving hook declares.
-        self._style = str(model_cfg.get("mhbench_decentralized_style") or "per_robot").strip().lower()
+        # checkpoint per (task, robot). eval_policy.sbatch sends whichever the serving hook declares;
+        # a deploy.yml served on its own gets the benchmark's default, shared.
+        self._style = str(model_cfg.get("mhbench_decentralized_style") or "shared").strip().lower()
         if self._style not in ("shared", "per_robot"):
             raise ValueError(
                 f"mhbench_decentralized_style must be 'shared' or 'per_robot', got {self._style!r}"

@@ -28,7 +28,8 @@ exporter), so the two cannot drift apart. Either way one agent sees:
     ``unitree_g1x2_full_body_with_waist_height_nav_cmd`` placement.
   - language: one instruction.
 
-Set MHBENCH_ROBOT before calling train.sh / finetune.sh (default robot_a):
+Set MHBENCH_ROBOT before calling train.sh / finetune.sh (default `shared`,
+the multitask policy both agents run):
 each run only ever needs one config in a process, and
 ``baselines/scripts/train/GR00T_N17.sh`` sets it from the checkpoint name.
 
@@ -57,7 +58,10 @@ import mhbench_modality  # noqa: E402
 from gr00t.configs.data.embodiment_configs import register_modality_config  # noqa: E402
 from gr00t.data.embodiment_tags import EmbodimentTag  # noqa: E402
 
-robot = os.environ.get("MHBENCH_ROBOT", "robot_a")
+# The benchmark's default is the shared multitask policy, so that is what an
+# unset MHBENCH_ROBOT builds: one config whose keys carry no robot prefix.
+# `robot_a`/`robot_b` build the older per-robot pair.
+robot = os.environ.get("MHBENCH_ROBOT", mhbench_keys.SHARED)
 if robot not in ("robot_a", "robot_b", mhbench_keys.SHARED):
     raise ValueError(
         f"MHBENCH_ROBOT must be 'robot_a', 'robot_b' or '{mhbench_keys.SHARED}', got {robot!r}"

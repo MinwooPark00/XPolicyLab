@@ -275,10 +275,11 @@ class Model(ModelTemplate):
             self.expected_action_dim = 35 if self._decentralized else 70
             # What a decentralized checkpoint is: `shared` is one multitask
             # policy driving both agents, told them apart by the instruction
-            # each is given; `per_robot` is the older pair. eval_policy.sbatch
-            # sends whichever the serving hook declares.
+            # each is given; `per_robot` is the older pair.
+            # eval_policy.sbatch sends whichever the serving hook declares; a
+            # deploy.yml served on its own gets the default, shared.
             self._shared = self._decentralized and str(
-                model_cfg.get("mhbench_decentralized_style") or "per_robot"
+                model_cfg.get("mhbench_decentralized_style") or "shared"
             ).strip().lower() == "shared"
             # A fallback instruction, for a deploy.py driving this model outside
             # the eval client: the first sentence of the converted dataset the
