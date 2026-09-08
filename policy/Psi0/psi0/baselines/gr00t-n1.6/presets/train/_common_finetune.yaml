@@ -1,0 +1,18 @@
+launcher: launch_finetune
+runtime:
+  master_port: 29501
+training:
+  save_steps: 10000
+  save_total_limit: 4
+  max_steps: 50000
+  warmup_ratio: 0.05
+  weight_decay: 1.0e-5
+  learning_rate: 1.0e-4
+  global_batch_size: 24
+  dataloader_num_workers: 4
+augmentation:
+  color_jitter:
+    brightness: 0.3
+    contrast: 0.4
+    saturation: 0.5
+    hue: 0.08

@@ -1,0 +1,62 @@
+[build-system]
+requires = [
+  "setuptools>=61.0",
+  "pin-pink",
+  "qpsolvers",
+  "h5py"
+]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "human_plan"
+version = "0.0.1"
+description = "Manipulation from egocentric video"
+readme = "README.md"
+requires-python = ">=3.11,<3.12"
+classifiers = [
+    "Programming Language :: Python :: 3",
+]
+dependencies = [
+    "vila",
+    "lerobot",
+    "datasets==4.1.1",
+    "flash-attn==2.7.4.post1",
+    "deepdiff",
+    "draccus",
+    "h5py",
+    "imageio[ffmpeg]",
+    "jsonlines",
+    "natsort",
+    "pyarrow==23.0.1",
+    "smplx==0.1.28",
+    "termcolor",
+    "wandb==0.16.6",
+]
+
+[project.optional-dependencies]
+train = []
+build = []
+
+[tool.uv]
+no-build-isolation-package = ["flash-attn"]
+
+[tool.uv.sources]
+vila = { path = "./VILA", editable = true }
+lerobot = { git = "https://github.com/huggingface/lerobot.git", rev = "f39652707caed42a7cd5ab36066da5663b9565eb" }
+
+[[tool.uv.dependency-metadata]]
+name = "flash-attn"
+version = "2.7.4.post1"
+requires-dist = ["torch", "einops"]
+
+[[tool.uv.dependency-metadata]]
+name = "lerobot"
+version = "0.1.0"
+requires-python = ">=3.10"
+requires-dist = []
+
+[tool.setuptools.packages.find]
+exclude = ["assets*", "benchmark*", "docs", "dist*", "playground*", "scripts*", "tests*"]
+
+[tool.wheel]
+exclude = ["assets*", "benchmark*", "docs", "dist*", "playground*", "scripts*", "tests*"]

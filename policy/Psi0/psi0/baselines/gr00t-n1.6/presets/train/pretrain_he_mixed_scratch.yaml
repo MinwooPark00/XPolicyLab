@@ -1,0 +1,22 @@
+extends: _common_finetune.yaml
+launcher: mixed_he
+runtime:
+  cuda_visible_devices: "5,6"
+  master_port: 29527
+datasets:
+  g1:
+    path: /hfm/data/HE_RAW_no_static_lerobot_g1
+    mix_ratio: 1.0
+  h1:
+    path: /hfm/data/HE_RAW_no_static_lerobot_h1
+    mix_ratio: 1.0
+model:
+  base_model_path: nvidia/GR00T-N1.6-3B
+training:
+  output_dir: ./checkpoints/pretrain_he_g1_h1_mixed_scratch_gr00t
+  num_gpus: 2
+extra_args:
+  tune_top_llm_layers: 4
+  scratch_gr00t: true
+  override_pretraining_statistics: true
+  use_wandb: false

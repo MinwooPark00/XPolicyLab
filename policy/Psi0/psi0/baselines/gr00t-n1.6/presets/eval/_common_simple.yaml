@@ -1,0 +1,20 @@
+runtime:
+  wait_tries: 1200
+  wait_sleep_s: 0.1
+server:
+  python: /hfm/zhenyu/psi/src/gr00t/.venv/bin/python
+  host: 0.0.0.0
+  device: cuda:0
+  use_sim_policy_wrapper: true
+  strict: true
+eval:
+  host: localhost
+  data_format: lerobot
+  sim_mode: mujoco_isaac
+  camera_profile: left_only
+  headless: true
+  max_episode_steps: 360
+  num_episodes: 10
+  episode_start: 0
+  save_video: true
+  num_workers: 1

@@ -1,0 +1,15 @@
+extends: _common_finetune.yaml
+runtime:
+  cuda_visible_devices: "5,6"
+  master_port: 29512
+model:
+  base_model_path: nvidia/GR00T-N1.6-3B
+dataset:
+  path: /hfm/data/he_lerobot
+  embodiment_tag: G1_UPPER_A16
+  modality_config_path: src/gr00t/gr00t/configs/modality/g1_manip.py
+training:
+  num_gpus: 2
+  output_dir: ./checkpoints/pretrain_manip_h1_a16
+env:
+  DATASET_PATH: /hfm/data/he_lerobot

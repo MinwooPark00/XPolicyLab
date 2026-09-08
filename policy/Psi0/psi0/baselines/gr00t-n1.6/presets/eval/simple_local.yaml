@@ -1,0 +1,8 @@
+extends: _common_simple.yaml
+server:
+  model_path: /hfm/zhenyu/psi/checkpoints/pretrained_mixed_scratch_downstream/checkpoint-50000
+  embodiment_tag: G1_LOCO_DOWNSTREAM
+eval:
+  env_id: simple/G1WholebodyBendPick-v0
+  policy: psi0
+  data_dir: /hfm/data/simple/simple/G1WholebodyBendPick-v0-psi0
