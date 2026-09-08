@@ -5,6 +5,9 @@ task_name: null
 env_cfg: null
 env_cfg_type: null
 seed: 0
+# Must stay false. wan_va_server keeps one global KV / VAE / frame_st_id
+# cache, so one process can serve only one env. Setting this true would
+# call get_action_batch, which raises NotImplementedError.
 eval_batch: false
 protocol: ws
 host: localhost

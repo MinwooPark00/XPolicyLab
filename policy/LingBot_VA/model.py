@@ -430,32 +430,12 @@ class Model(ModelTemplate):
         )
 
     def get_action_batch(self, env_idx_list=None, **kwargs):
-        if self.observation_window is None:
-            raise AssertionError("update_obs or update_obs_batch first!")
-
-        if self.rollout_mode == "receding_horizon":
-            self._soft_reset_inference_state()
-            action_chunk = self._predict_chunk(self.observation_window[0])
-        else:
-            if self._first_observation is None:
-                self._reset_server_with_instruction(self.observation_window[0])
-                self._first_observation = self.observation_window[0]
-            else:
-                self._commit_executed_frames()
-            action_chunk = self._predict_chunk(self._first_observation)
-
-        env_idx_list = env_idx_list or self._latest_env_idx_list
-
-        if self.robot_action_dim_info is None:
-            return [action_chunk for _ in env_idx_list]
-
-        unpacked = unpack_robot_state(
-            action_chunk,
-            self.action_type,
-            self.robot_action_dim_info,
-            source_type="obs",
+        # Required ModelTemplate hook. The previous implementation inferred env0
+        # once and copied that chunk to every env; do not restore that behavior.
+        raise NotImplementedError(
+            "LingBot_VA wan_va_server keeps one global KV/VAE cache and cannot "
+            "evaluate multiple envs in one process. Keep eval_batch: false in deploy.yml."
         )
-        return [unpacked for _ in env_idx_list]
 
     def get_action_per_frame(self):
         return self.action_per_frame
