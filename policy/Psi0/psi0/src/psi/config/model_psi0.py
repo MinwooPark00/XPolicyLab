@@ -137,6 +137,10 @@ class Psi0ModelConfig(ModelConfig):
     lora_dit_alpha: float = 32.0
     lora_dropout: float = 0.0
     tune_dit_full: bool = False
+    # With adapters on the language model its base weights are frozen, so they
+    # can live in bf16 (no per-forward autocast copy of 2B parameters); the
+    # tuned components keep fp32 master weights. False keeps the whole VLM fp32.
+    frozen_vlm_bf16: bool = True
 
     # lora_r: int = 8                          # [TrainingArguments] LoRA r
     # lora_alpha: int= 16                      # [TrainingArguments] LoRA alpha

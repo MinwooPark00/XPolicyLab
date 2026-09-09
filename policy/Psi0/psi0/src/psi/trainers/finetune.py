@@ -443,6 +443,15 @@ class FinetuneTrainer(Trainer):
                 n_lora += p.numel()
             else:
                 p.requires_grad = name in keep
+        if llm_rank > 0 and getattr(cfg, "frozen_vlm_bf16", True):
+            # Frozen base weights need no fp32 master copy. Adapters and tuned
+            # components stay fp32; autocast runs every matmul in bf16 either way.
+            n_cast = 0
+            for name, p in self.model.vlm_model.named_parameters():
+                if not p.requires_grad and p.dtype == torch.float32:
+                    p.data = p.data.to(torch.bfloat16)
+                    n_cast += p.numel()
+            overwatch.info(f"frozen VLM weights cast to bf16: {n_cast:,} parameters")
         if llm_rank > 0:
             # Adapted layers need their input to carry grad under checkpointing;
             # apply_vlm_trainability only did this when a VLM component was tuned.

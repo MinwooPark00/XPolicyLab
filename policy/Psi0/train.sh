@@ -229,6 +229,7 @@ args=(
 [ "${TUNE_VISION}" = 1 ] && args+=(--model.tune-mm-vision --model.tune-mm-mlp)
 [ "${TUNE_DIT_FULL}" = 1 ] && args+=(--model.tune-dit-full)
 [ "${GRAD_CKPT}" = 1 ] && args+=(--model.gradient_checkpointing)
+[ "${PSI0_FROZEN_VLM_BF16:-1}" = 0 ] && args+=(--model.no-frozen-vlm-bf16)
 # PSI0_EXTRA is split on whitespace on purpose: it is the escape hatch for a
 # one-off flag, and anything with a space in it belongs in a named knob above.
 if [ -n "${PSI0_EXTRA:-}" ]; then
