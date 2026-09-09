@@ -27,6 +27,18 @@ ckpt_setting="${bench_name}-${ckpt_name}-${env_cfg_type}-${action_type}"
 # tagged name.
 ckpt_dir="${SCRIPT_DIR}/checkpoints/${ckpt_setting}-${seed}${CKPT_TAG:+-${CKPT_TAG}}"
 
+# The benchmark's shared budget for the policies that read no language: batch
+# 256 for 600 epochs, the same as Diffusion Policy (baselines/scripts/dp_train.sh).
+# An epoch is one pass over every frame -- until 2026-09-09 EpisodicDataset
+# indexed episodes, so `--batch_size` above the split size (50) did nothing and
+# an "epoch" was one optimizer step; 20000 of them were 20000 steps at batch 50.
+BATCH_SIZE=${ACT_BATCH_SIZE:-256}
+NUM_EPOCHS=${ACT_NUM_EPOCHS:-600}
+# Quarters of the run, so the four checkpoints a sweep evaluates are the four
+# written -- the shape GR00T's 10k/20k/30k/40k has.
+SAVE_FREQ=${ACT_SAVE_FREQ:-150}
+LR=${ACT_LR:-1e-4}
+
 python3 imitate_episodes.py \
     --bench_name ${bench_name} \
     --task_name ${ckpt_name} \
@@ -36,9 +48,9 @@ python3 imitate_episodes.py \
     --kl_weight 10 \
     --chunk_size 50 \
     --hidden_dim 512 \
-    --batch_size 128 \
+    --batch_size ${BATCH_SIZE} \
     --dim_feedforward 3200 \
-    --num_epochs 20000 \
-    --lr 1e-4 \
-    --save_freq 1000 \
+    --num_epochs ${NUM_EPOCHS} \
+    --lr ${LR} \
+    --save_freq ${SAVE_FREQ} \
     --seed ${seed}

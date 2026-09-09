@@ -19,24 +19,35 @@ class EpisodicDataset(torch.utils.data.Dataset):
         self.norm_stats = norm_stats
         self.max_action_len = max_action_len
         self.is_sim = None
+        # One sample per frame. This used to be one sample per *episode* with a
+        # random start_ts, which silently capped the batch at the split size (50
+        # here, whatever --batch_size said) and made an "epoch" a single
+        # optimizer step. Indexing frames makes an epoch one pass over the data,
+        # the same unit Diffusion Policy's SequenceSampler counts.
+        self.episode_lens = [self._episode_len(i) for i in self.episode_ids]
+        self.cum_lens = np.cumsum([0] + self.episode_lens)
         self.__getitem__(0)  # initialize self.is_sim
 
+    def _episode_path(self, episode_id):
+        return os.path.join(self.dataset_dir, f"episode_{episode_id}.hdf5")
+
+    def _episode_len(self, episode_id):
+        with h5py.File(self._episode_path(episode_id), "r") as root:
+            return int(root["/action"].shape[0])
+
     def __len__(self):
-        return len(self.episode_ids)
+        return int(self.cum_lens[-1])
 
     def __getitem__(self, index):
-        sample_full_episode = False
+        slot = int(np.searchsorted(self.cum_lens, index, side="right")) - 1
+        episode_id = self.episode_ids[slot]
+        start_ts = int(index - self.cum_lens[slot])
 
-        episode_id = self.episode_ids[index]
-        dataset_path = os.path.join(self.dataset_dir, f"episode_{episode_id}.hdf5")
+        dataset_path = self._episode_path(episode_id)
         with h5py.File(dataset_path, "r") as root:
             is_sim = None
             original_action_shape = root["/action"].shape
             episode_len = original_action_shape[0]
-            if sample_full_episode:
-                start_ts = 0
-            else:
-                start_ts = np.random.choice(episode_len)
             # get observation at start_ts only
             qpos = root["/observations/qpos"][start_ts]
             image_dict = dict()
@@ -171,21 +182,27 @@ def load_data(dataset_dir, num_episodes, camera_names, batch_size_train, batch_s
     # construct dataset and dataloader
     train_dataset = EpisodicDataset(train_indices, dataset_dir, camera_names, norm_stats, max_action_len)
     val_dataset = EpisodicDataset(val_indices, val_dataset_dir_for_val, camera_names, norm_stats, max_action_len)
+    # One __getitem__ opens one hdf5 file, so a batch is `batch_size` Lustre
+    # opens: a single worker cannot feed the batches this trains at. ACT_WORKERS
+    # overrides for a node where it can.
+    num_workers = int(os.environ.get("ACT_WORKERS", 8))
+    loader_kwargs = dict(pin_memory=True, num_workers=num_workers)
+    if num_workers > 0:
+        loader_kwargs.update(prefetch_factor=2, persistent_workers=True)
     train_dataloader = DataLoader(
         train_dataset,
         batch_size=batch_size_train,
         shuffle=True,
-        pin_memory=True,
-        num_workers=1,
-        prefetch_factor=1,
+        # Fixed batch size, so every optimizer step carries the same weight and
+        # steps-per-epoch is exactly len(dataset) // batch_size.
+        drop_last=True,
+        **loader_kwargs,
     )
     val_dataloader = DataLoader(
         val_dataset,
         batch_size=batch_size_val,
         shuffle=True,
-        pin_memory=True,
-        num_workers=1,
-        prefetch_factor=1,
+        **loader_kwargs,
     )
 
     return train_dataloader, val_dataloader, norm_stats, train_dataset.is_sim

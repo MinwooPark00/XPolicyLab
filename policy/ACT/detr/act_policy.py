@@ -137,7 +137,6 @@ class ACT:
         # running with an unnormalized/randomly initialized ACT policy is invalid.
         ckpt_dir = args_override.get("ckpt_dir", "")
         stats_path = os.path.join(ckpt_dir, "dataset_stats.pkl") if ckpt_dir else ""
-        ckpt_path = os.path.join(ckpt_dir, "policy_best.ckpt") if ckpt_dir else ""
         if not ckpt_dir:
             raise ValueError("ACT requires ckpt_dir during evaluation.")
         if not os.path.isdir(ckpt_dir):
@@ -148,17 +147,39 @@ class ACT:
         with open(stats_path, "rb") as f:
             self.stats = pickle.load(f)
 
-        if not os.path.isfile(ckpt_path):
-            # Runs trained before imitate_episodes.py's best-checkpoint save
-            # was restored (it was dead code) only have policy_last.ckpt.
-            last_ckpt_path = os.path.join(ckpt_dir, "policy_last.ckpt")
-            if not os.path.isfile(last_ckpt_path):
-                raise FileNotFoundError(f"ACT policy checkpoint not found: {ckpt_path}")
-            print(f"[ACT] policy_best.ckpt missing under {ckpt_dir}, falling back to policy_last.ckpt")
-            ckpt_path = last_ckpt_path
+        ckpt_path = self._resolve_checkpoint_file(
+            ckpt_dir, args_override.get("checkpoint_num"), args_override.get("seed", 0))
         self.policy.load_state_dict(torch.load(ckpt_path, map_location=self.device))
         
         self.obs_cache = None
+
+    @staticmethod
+    def _resolve_checkpoint_file(ckpt_dir, checkpoint_num, seed):
+        """Which .ckpt to serve -- DP's `checkpoint_num` convention, in epochs.
+
+        imitate_episodes.py writes `policy_epoch_<n>_seed_<s>.ckpt` every
+        save_freq epochs, so the benchmark's per-checkpoint sweep names an epoch
+        (baselines/scripts/eval_sweep.sh). A number that was never written is
+        fatal rather than a silent fall back to the last one, which would score
+        the same weights at every point of the curve.
+        """
+        num = "latest" if checkpoint_num is None else str(checkpoint_num)
+        if num.lower() not in {"", "latest", "none", "best"}:
+            ckpt_path = os.path.join(ckpt_dir, f"policy_epoch_{num}_seed_{seed}.ckpt")
+            if not os.path.isfile(ckpt_path):
+                raise FileNotFoundError(f"ACT checkpoint not found: {ckpt_path}")
+            return ckpt_path
+
+        ckpt_path = os.path.join(ckpt_dir, "policy_best.ckpt")
+        if os.path.isfile(ckpt_path):
+            return ckpt_path
+        # Runs trained before imitate_episodes.py's best-checkpoint save was
+        # restored (it was dead code) only have policy_last.ckpt.
+        last_ckpt_path = os.path.join(ckpt_dir, "policy_last.ckpt")
+        if not os.path.isfile(last_ckpt_path):
+            raise FileNotFoundError(f"ACT policy checkpoint not found: {ckpt_path}")
+        print(f"[ACT] policy_best.ckpt missing under {ckpt_dir}, falling back to policy_last.ckpt")
+        return last_ckpt_path
 
     def pre_process(self, qpos):
         """Normalize input joint positions"""

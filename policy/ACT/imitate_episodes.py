@@ -165,14 +165,10 @@ def train_bc(train_dataloader, val_dataloader, config):
     
     wandb.init(project=os.environ.get("WANDB_PROJECT", "mhbench-act"), name=f"{config['ckpt_setting']}-seed{seed}", config=config)
 
-
-    wandb.init(project=os.environ.get("WANDB_PROJECT", "mhbench-act"), name=f"{config['ckpt_setting']}-seed{seed}", config=config)
-
     policy = make_policy(policy_class, policy_config)
     policy.cuda()
     optimizer = make_optimizer(policy_class, policy)
 
-    train_history = []
     validation_history = []
     min_val_loss = np.inf
     best_ckpt_info = None
@@ -201,6 +197,7 @@ def train_bc(train_dataloader, val_dataloader, config):
         # training
         policy.train()
         optimizer.zero_grad()
+        epoch_dicts = []
         for batch_idx, data in enumerate(train_dataloader):
             forward_dict = forward_pass(data, policy)
             # backward
@@ -208,13 +205,19 @@ def train_bc(train_dataloader, val_dataloader, config):
             loss.backward()
             optimizer.step()
             optimizer.zero_grad()
-            train_history.append(detach_dict(forward_dict))
-        epoch_summary = compute_dict_mean(train_history[(batch_idx + 1) * epoch:(batch_idx + 1) * (epoch + 1)])
+            # Per epoch, not for the whole run: these stay on the GPU, and one
+            # epoch is now hundreds of steps rather than one.
+            epoch_dicts.append(detach_dict(forward_dict))
+        epoch_summary = compute_dict_mean(epoch_dicts)
         summary_string = ""
         for k, v in epoch_summary.items():
             summary_string += f"{k}: {v.item():.3f} "
         print(f"[epoch {epoch}] train: {summary_string}")
-        wandb.log({f"train/{k}": v.item() for k, v in epoch_summary.items()}, step=epoch)
+        train_log = {f"train/{k}": v.item() for k, v in epoch_summary.items()}
+        # The optimizer-step count, so an epoch here compares with the step
+        # budgets the language policies train to.
+        train_log["global_step"] = (epoch + 1) * len(train_dataloader)
+        wandb.log(train_log, step=epoch)
 
         if (epoch + 1) % config['save_freq'] == 0:
             ckpt_path = os.path.join(ckpt_dir, f"policy_epoch_{epoch + 1}_seed_{seed}.ckpt")
