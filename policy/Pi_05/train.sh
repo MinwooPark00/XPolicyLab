@@ -63,7 +63,15 @@ export CUDA_VISIBLE_DEVICES="${gpu_id}"
 # LeRobot loads parquet via HuggingFace datasets, which builds pyarrow mmap cache
 # under HF_DATASETS_CACHE. Keep dataset on shared storage, but use per-host local
 # cache to avoid NFS lock contention when multiple nodes train concurrently.
-LOCAL_CACHE_ROOT="${OPENPI_LOCAL_CACHE_ROOT:-/tmp/openpi-cache-$(hostname)}"
+#
+# The user belongs in the path. `/tmp/openpi-cache-<host>` is the same name for
+# everyone on a shared node, so the first account to train there owns the tree
+# and the next one gets `mkdir -p` succeeding on directories it cannot write:
+# training then dies minutes in, inside HuggingFace's FileLock, with
+# `PermissionError: [Errno 13] .../parquet_default-....lock` (job 2179844 on
+# node47, 2026-09-09). $USER is not always set in a batch environment, so fall
+# back to `id -un`.
+LOCAL_CACHE_ROOT="${OPENPI_LOCAL_CACHE_ROOT:-/tmp/openpi-cache-${USER:-$(id -un)}-$(hostname)}"
 mkdir -p "${LOCAL_CACHE_ROOT}/hf/datasets" "${LOCAL_CACHE_ROOT}/jax"
 export HF_DATASETS_CACHE="${LOCAL_CACHE_ROOT}/hf/datasets"
 export JAX_COMPILATION_CACHE_DIR="${LOCAL_CACHE_ROOT}/jax"
