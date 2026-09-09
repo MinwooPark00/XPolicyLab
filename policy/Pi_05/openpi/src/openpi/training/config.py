@@ -979,7 +979,7 @@ _CONFIGS = [
 ]
 
 # -- MHBench ----------------------------------------------------------------
-# Four tasks x three targets. The pair is one policy driving both robots; the
+# Six tasks x three targets. The pair is one policy driving both robots; the
 # other two are the decentralized halves, trained independently and served side
 # by side. Generated rather than written out fifteen times, because they differ
 # only in the task, the robot and the instruction row. The shared multitask
@@ -990,7 +990,14 @@ _CONFIGS = [
 # batch, same step count. `action_dim` is the real action width -- pi0.5 has no
 # `state_proj`, so the state reaches the model as prompt text and its width is
 # independent of this number.
-MHBENCH_TASKS = ("cocarry", "handover", "framehang", "doorpassage")
+MHBENCH_TASKS = ("cocarry", "handover", "framehang", "pouring", "trashcollection", "tablealign")
+"""The collected tasks, in the order and spelling of `_task_registry.slugs(
+multitask=True)`. openpi is a submodule and cannot import that registry, so this
+is a literal that `scripts/test_eval_contracts.py` cross-checks -- it had gone
+stale twice over: `doorpassage` was retired on 2026-09-07 and generated three
+configs for a task that no longer exists, and the three tasks collected on
+2026-09-08 had none, so `train.sh pouring robot_a` died on an unknown config
+name rather than on anything to do with pouring."""
 
 # (suffix, robot, tasks.parquet row). Row order is mhbench_keys.LANGUAGE_KEYS:
 # the pair's shared instruction, then robot_a's, then robot_b's.
@@ -1001,10 +1008,13 @@ MHBENCH_TARGETS = (
 )
 
 # Measured, not guessed: pi0.5 spells the state out as digits in the prompt, and
-# PaligemmaTokenizer truncates past this with only a logging.warning. Worst case
-# over all four tasks with every value three digits wide is 384 tokens for the
-# 86-dim pair and 217 for a single robot's 43. The pi0.5 default of 200 would
-# cut both. `mhbench_policy_test.py` re-measures and asserts the headroom.
+# PaligemmaTokenizer truncates past this with only a logging.warning -- and it
+# truncates the *tail*, so what a long instruction costs is the end of the state
+# and the "\nAction:" that closes the prompt, not the instruction itself.
+# Worst case over the six collected tasks with every value three digits wide is
+# 391 tokens for the 86-dim pair (TrayService) and 239 for a single robot's 43
+# (TableAlign). The pi0.5 default of 200 would cut both. `scripts/
+# test_eval_contracts.py` re-measures every sentence against these numbers.
 MHBENCH_MAX_TOKEN_LEN = {None: 400, "robot_a": 256, "robot_b": 256}
 
 
