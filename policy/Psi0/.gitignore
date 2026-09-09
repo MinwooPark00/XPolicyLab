@@ -1,0 +1,17 @@
+data/
+
+# Upstream's physical-teleoperation CAD: 242 MB of STL meshes and rig assets for
+# building and driving a real G1. MHBench is a simulator, nothing here opens
+# them, and committing them would put a quarter of a gigabyte into every clone
+# of this fork. psi0/UPSTREAM.md names the commit to fetch them back from.
+psi0/real/assets/
+psi0/real/teleop/
+
+# Git LFS pointers, not content: the clone used GIT_LFS_SKIP_SMUDGE=1, so these
+# 50 files came down as 130-byte stubs and committing them makes `git push`
+# reject the whole branch ("missing or corrupt local objects"). They are the
+# H-RDT baseline's precomputed RoboTwin2 language embeddings -- a different
+# benchmark, inside a baseline Psi0 vendors, that nothing here loads. Fetch them
+# with `git lfs pull` from the upstream commit if H-RDT is ever wanted.
+psi0/src/h_rdt/inference/*/utils/lang_embeddings/
+psi0/src/h_rdt/inference/*/*/utils/lang_embeddings/

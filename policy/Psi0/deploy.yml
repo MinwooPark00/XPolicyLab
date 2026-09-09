@@ -1,0 +1,48 @@
+# Basic experiment configuration
+policy_name: Psi0
+protocol: ws
+host: localhost
+port: 6000
+bench_name: null
+task_name: null
+ckpt_name: null
+env_cfg_type: null
+seed: null
+gpu_id: null
+action_type: joint
+eval_batch: false
+
+# --- MHBench (bench_name=mhbench) -----------------------------------------
+# Psi0 reads one head camera and answers with one robot's 36 dimensions, so
+# `decentralized` is the only mode it has: one policy per agent, and -- in the
+# benchmark's shape -- one *shared* set of weights queried once per agent with
+# that agent's own camera, joints and sentence (`ckpt_name: multitask`).
+# `centralized` (one policy, 70 dimensions, two views) is a different model and
+# the adapter says so rather than inventing one.
+mhbench_mode: decentralized
+mhbench_decentralized_style: shared
+
+# Which run directory, and which step inside it. `ckpt_tag` is the suffix
+# train.sh gave the run dir when CKPT_TAG was set; `checkpoint_num` picks a
+# ckpt_<step>, null / "last" the newest.
+ckpt_tag: null
+checkpoint_num: last
+model_dir: null
+model_dir_robot_a: null
+model_dir_robot_b: null
+
+# How much of the chunk to execute before re-observing. null takes the
+# checkpoint's own action_exec_horizon (30 = 0.6 s at 50 Hz).
+exec_horizon: 30
+
+# Flow-matching steps per call. null takes the config's eval_diffusion_steps,
+# which upstream's own server hardcodes to 10.
+num_inference_steps: 10
+
+# Hard overrides for the sentence each agent is given. null lets the wire win,
+# which is what makes the shared policy do four different tasks.
+prompt_robot_a: null
+prompt_robot_b: null
+
+# uv-managed env inside the vendored checkout; read by setup_eval_policy_server.sh.
+policy_uv_env_path: psi0

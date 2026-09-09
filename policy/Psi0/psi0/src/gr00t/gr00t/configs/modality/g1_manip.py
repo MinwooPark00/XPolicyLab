@@ -1,0 +1,80 @@
+import json
+import os
+from pathlib import Path
+
+from gr00t.configs.data.embodiment_configs import register_modality_config
+from gr00t.data.embodiment_tags import EmbodimentTag
+from gr00t.data.types import (
+    ActionConfig,
+    ActionFormat,
+    ActionRepresentation,
+    ActionType,
+    ModalityConfig,
+)
+
+
+DATASET_PATH = os.environ.get("DATASET_PATH")
+if not DATASET_PATH:
+    raise RuntimeError("DATASET_PATH must be set to load SIMPLE modality.json")
+META_PATH = Path(DATASET_PATH) / "meta" / "modality.json"
+if not META_PATH.exists():
+    raise RuntimeError(f"Missing modality.json at {META_PATH}")
+try:
+    with META_PATH.open("r") as f:
+        MODALITY_META = json.load(f)
+except Exception as exc:
+    raise RuntimeError(f"Failed to load modality.json at {META_PATH}") from exc
+
+EXPECTED_STATE_KEYS = [
+    "left_hand",
+    "right_hand",
+    "left_arm",
+    "right_arm",
+]
+EXPECTED_ACTION_KEYS = [
+    "left_hand",
+    "right_hand",
+    "left_arm",
+    "right_arm",
+]
+
+state_keys = list(MODALITY_META.get("state", {}).keys())
+action_keys = list(MODALITY_META.get("action", {}).keys())
+if set(state_keys) != set(EXPECTED_STATE_KEYS):
+    raise RuntimeError(f"modality.json state keys mismatch: {state_keys}")
+if set(action_keys) != set(EXPECTED_ACTION_KEYS):
+    raise RuntimeError(f"modality.json action keys mismatch: {action_keys}")
+
+# Horizon is a training choice, not the action dimension.
+ACTION_HORIZON = int(os.environ.get("ACTION_HORIZON", "16"))
+if ACTION_HORIZON <= 0:
+    raise RuntimeError(f"ACTION_HORIZON must be > 0, got {ACTION_HORIZON}")
+
+g1_locomanip_config = {
+    "video": ModalityConfig(
+        delta_indices=[0],
+        modality_keys=["rs_view"],
+    ),
+    "state": ModalityConfig(
+        delta_indices=[0],
+        modality_keys=state_keys,
+    ),
+    "action": ModalityConfig(
+        delta_indices=list(range(0, ACTION_HORIZON)),
+        modality_keys=action_keys,
+        action_configs=[
+            ActionConfig(
+                rep=ActionRepresentation.ABSOLUTE,
+                type=ActionType.NON_EEF,
+                format=ActionFormat.DEFAULT,
+            )
+            for _ in action_keys
+        ],
+    ),
+    "language": ModalityConfig(
+        delta_indices=[0],
+        modality_keys=["annotation.human.task_description"],
+    ),
+}
+
+register_modality_config(g1_locomanip_config, embodiment_tag=EmbodimentTag.G1_UPPER_A16)
