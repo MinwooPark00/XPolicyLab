@@ -990,7 +990,7 @@ _CONFIGS = [
 # batch, same step count. `action_dim` is the real action width -- pi0.5 has no
 # `state_proj`, so the state reaches the model as prompt text and its width is
 # independent of this number.
-MHBENCH_TASKS = ("cocarry", "handover", "framehang", "pouring", "trashcollection", "tablealign")
+MHBENCH_TASKS = ("cocarry", "handover", "framehang", "pouring", "copouring", "trashcollection", "cartservice", "tablealign")
 """The collected tasks, in the order and spelling of `_task_registry.slugs(
 multitask=True)`. openpi is a submodule and cannot import that registry, so this
 is a literal that `scripts/test_eval_contracts.py` cross-checks -- it had gone

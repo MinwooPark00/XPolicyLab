@@ -130,6 +130,25 @@ def get_lora_model(model, rank=32, lora_alpha=16, lora_dropout=0.1, action_head_
         print(f"[peft] modules_to_save also carries {len(saved_backbone)} backbone "
               f"module(s) the model asked to train: {', '.join(saved_backbone)}")
 
+    # pi0.5 adapts its two Gemmas at different ranks: 16/16 on the 2B language
+    # model, 32/32 on the 300M action expert (openpi gemma.py, gemma_2b_lora /
+    # gemma_300m_lora). `rank`/`lora_alpha` above are the action head's; these
+    # two put the backbone's adapters at their own numbers. peft matches the
+    # pattern keys with re.fullmatch, so the full module names are the keys.
+    rank_pattern, alpha_pattern = {}, {}
+    backbone_rank = int(os.environ.get("MHBENCH_LORA_BACKBONE_RANK", "0") or 0)
+    backbone_alpha = os.environ.get("MHBENCH_LORA_BACKBONE_ALPHA", "")
+    backbone_targets = [n for n in target_modules if n.startswith("backbone.")]
+    if backbone_targets and (backbone_rank or backbone_alpha):
+        for name in backbone_targets:
+            if backbone_rank:
+                rank_pattern[name] = backbone_rank
+            if backbone_alpha:
+                alpha_pattern[name] = float(backbone_alpha)
+        print(f"[peft] backbone adapters at rank {backbone_rank or rank} / alpha "
+              f"{backbone_alpha or lora_alpha} ({len(backbone_targets)} modules); "
+              f"action head at rank {rank} / alpha {lora_alpha}")
+
     lora_config = LoraConfig(
         r=rank,
         lora_alpha=lora_alpha,
@@ -137,6 +156,8 @@ def get_lora_model(model, rank=32, lora_alpha=16, lora_dropout=0.1, action_head_
         lora_dropout=lora_dropout,
         bias="none",
         modules_to_save=list(EMBODIMENT_MODULES) + saved_backbone,
+        rank_pattern=rank_pattern,
+        alpha_pattern=alpha_pattern,
     )
 
     base_model = model
