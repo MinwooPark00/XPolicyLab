@@ -18,7 +18,11 @@
 set -euo pipefail
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
-HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# sbatch runs a spool copy of this file, so BASH_SOURCE points at
+# /var/spool/slurmd/... -- the checkout is SLURM_SUBMIT_DIR (or GAUDP_HOME when
+# the job is submitted from somewhere else).
+HERE=${GAUDP_HOME:-${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}}
+[ -f "$HERE/train_ab.py" ] || { echo "no train_ab.py in $HERE -- set GAUDP_HOME" >&2; exit 2; }
 ARM=${1:-S02}
 EPOCHS=${2:-150}
 : "${GAUDP_DATA:?set GAUDP_DATA to the joint hdf5}"

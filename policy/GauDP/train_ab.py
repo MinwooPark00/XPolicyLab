@@ -196,6 +196,8 @@ def main():
     ap.add_argument("--action-steps", type=int, default=6)
     ap.add_argument("--inference-steps", type=int, default=100)
     ap.add_argument("--save-every", type=int, default=10)
+    ap.add_argument("--snapshot-every", type=int, default=0,
+                    help="also keep ep<N>.ckpt every N epochs (0 = off)")
     ap.add_argument("--full-probe-every", type=int, default=10)
     ap.add_argument("--max-batches", type=int, default=0, help="smoke test: cap train/val batches per epoch")
     ap.add_argument("--wandb-mode", default="online")
@@ -344,6 +346,10 @@ def main():
             print(line, flush=True)
             if (epoch + 1) % args.save_every == 0 or epoch == args.epochs - 1:
                 save(args.output / "last.ckpt", metrics, epoch)
+            # retained snapshots: last.ckpt is overwritten, so picking the epoch
+            # count by rollout needs copies that survive to the end of the run.
+            if args.snapshot_every and (epoch + 1) % args.snapshot_every == 0:
+                save(args.output / f"ep{epoch + 1:04d}.ckpt", metrics, epoch)
             score = metrics.get(best_key, math.inf)
             if score < best:
                 best = score
