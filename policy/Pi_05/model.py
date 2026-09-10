@@ -409,6 +409,24 @@ class Model(ModelTemplate):
     def reset_obsrvationwindows(self):
         self.reset()
 
+    def seed(self, seed: int) -> None:
+        """Restart every openpi policy's JAX sampling key at `seed`.
+
+        The server's `seed_episode` reseeds torch, which JAX never reads:
+        openpi's `Policy.infer` splits `self._rng` once per call, starting from
+        `key(0)`, so without this an episode's noise depends on how many calls
+        came before it in this process.
+        """
+        import jax
+
+        policies = list(getattr(self, "_mhbench_policies", {}).values()) or [getattr(self, "policy", None)]
+        seen: set[int] = set()
+        for policy in policies:
+            if policy is None or id(policy) in seen or not hasattr(policy, "_rng"):
+                continue
+            seen.add(id(policy))
+            policy._rng = jax.random.key(seed)
+
 
 def encode_obs(observation, action_type, robot_action_dim_info):
     if "images" in observation and "state" in observation:

@@ -10,6 +10,9 @@ import traceback
 from client_server.tcp.model_server import ModelServer
 
 
+_SEEDING = False   # set by seed_server() before main()
+
+
 def _default_protocol() -> str:
     """Default to the websocket policy protocol."""
     return "ws"
@@ -30,6 +33,7 @@ def main(deploy_cfg):
     # Instantiate model
     model_class_func = eval_function_decorator(f"XPolicyLab.policy.{policy_name}.model", "Model")
     model = model_class_func(deploy_cfg)
+    attach_episode_seeding(model, _SEEDING)
 
     if protocol == "ws":
         try:
@@ -163,35 +167,29 @@ def parse_args_and_config():
     _require_non_empty("port")
     return cfg
 
-def seed_server(deploy_cfg):
-    """Seed this process's RNGs from `seed`, when asked to.
 
-    Nothing here seeds anything by default, and that is worth stating because
-    the eval CLI's `--seed` looks like it covers the whole run and does not:
-    it seeds the *client* -- the scene randomization and the client's own
-    `random`/`numpy`/`torch` -- while the sampling that turns an observation
-    into an action happens over here. Diffusion Policy draws its initial
-    trajectory from the global generator (`conditional_sample`, generator=None)
-    and the flow-matching baselines draw noise the same way, so two evaluations
-    of one checkpoint on one seed do not produce the same actions.
+def _seed_server_enabled() -> bool:
+    """`XPOLICYLAB_SEED_SERVER`: on unless set to 0/false/no/off.
 
-    Turning this on changes the numbers a policy produces, which is why it is
-    opt-in rather than a fix applied to everyone's results at once:
-
-        XPOLICYLAB_SEED_SERVER=1
-
-    What it buys is an exact A/B. A change to the rollout loop or the render
-    schedule is supposed to leave the executed actions alone, and without a
-    reproducible server the only way to check that is statistical -- which at
-    fifty episodes cannot see a difference smaller than the run-to-run spread.
+    The eval CLI's `--seed` seeds the *client* -- the scene randomization and
+    the client's own `random`/`numpy`/`torch` -- while the sampling that turns
+    an observation into an action happens over here: Diffusion Policy draws its
+    initial trajectory from the global generator (`conditional_sample`,
+    generator=None), the flow-matching baselines draw their noise the same way,
+    and pi0.5 walks one JAX key from `key(0)`. Left unseeded, two evaluations of
+    one checkpoint on one seed do not produce the same actions (MHBench's
+    docs/eval.md 6 has the measurement). So the server seeds itself at start
+    and again at every `seed_episode` the client sends, which makes an
+    episode's noise a function of its seed alone -- not of the shard it ran
+    in, the episodes before it, or a crash in between. Opt out with
+    `XPOLICYLAB_SEED_SERVER=0` to get the pre-2026-09-09 behaviour back.
     """
-    if not os.environ.get("XPOLICYLAB_SEED_SERVER"):
-        return
-    seed = deploy_cfg.get("seed")
-    if seed is None:
-        print("[server] XPOLICYLAB_SEED_SERVER set but no seed in the config -- not seeding")
-        return
-    seed = int(seed)
+    value = os.environ.get("XPOLICYLAB_SEED_SERVER", "1").strip().lower()
+    return value not in ("0", "false", "no", "off")
+
+
+def seed_rngs(seed: int) -> None:
+    """Seed python, numpy and torch (CPU and every CUDA device) with `seed`."""
     import random
 
     random.seed(seed)
@@ -209,10 +207,67 @@ def seed_server(deploy_cfg):
             torch.cuda.manual_seed_all(seed)
     except ImportError:
         pass
-    print(f"[server] RNGs seeded with {seed} (XPOLICYLAB_SEED_SERVER)")
+
+
+def seed_server(deploy_cfg) -> bool:
+    """Seed this process's RNGs once at start, and pin cuDNN to one algorithm.
+
+    `eval_seed` is the evaluation's own seed when the runner passes one; `seed`
+    is otherwise the checkpoint's training seed (it names the run directory,
+    utils/checkpoint_resolver.py), which is fine as a fallback but not what an
+    evaluation means by its seed. Returns whether seeding is on.
+    """
+    if not _seed_server_enabled():
+        print("[server] RNGs not seeded (XPOLICYLAB_SEED_SERVER=0)")
+        return False
+    seed = deploy_cfg.get("eval_seed", deploy_cfg.get("seed"))
+    if seed is None:
+        print("[server] no seed/eval_seed in the config -- seeding from 0")
+        seed = 0
+    seed = int(seed)
+    seed_rngs(seed)
+    try:
+        import torch
+
+        # Autotuned cuDNN picks a different convolution algorithm from one
+        # process to the next; pinned, two servers given the same inputs and
+        # the same seed run the same arithmetic.
+        torch.backends.cudnn.benchmark = False
+        torch.backends.cudnn.deterministic = True
+    except ImportError:
+        pass
+    print(f"[server] RNGs seeded with {seed}; cudnn.benchmark=False, cudnn.deterministic=True (XPOLICYLAB_SEED_SERVER)")
+    return True
+
+
+def attach_episode_seeding(model, enabled: bool):
+    """Give the model a `seed_episode(obs)` RPC the eval client calls per episode.
+
+    Attached here rather than written into every adapter: the ws server
+    dispatches any public method name to the model (`_handle_call`), so one
+    bound function covers all of them. The payload is `{"seed": int}`. When
+    seeding is on it reseeds python/numpy/torch and, if the adapter defines
+    `seed(int)`, hands the seed to it too -- Pi_05 restarts its JAX key there,
+    since torch's generators cannot reach JAX. The reply says whether anything
+    was seeded, and the client records that per episode.
+    """
+    def seed_episode(obs=None):
+        if not isinstance(obs, dict) or "seed" not in obs:
+            raise ValueError("seed_episode expects {'seed': int}")
+        seed = int(obs["seed"])
+        if not enabled:
+            return {"seeded": False, "seed": seed}
+        seed_rngs(seed)
+        hook = getattr(model, "seed", None)
+        if callable(hook):
+            hook(seed)
+        return {"seeded": True, "seed": seed}
+
+    model.seed_episode = seed_episode
+    return model
 
 
 if __name__ == "__main__":
     deploy_cfg = parse_args_and_config()
-    seed_server(deploy_cfg)
+    _SEEDING = seed_server(deploy_cfg)
     main(deploy_cfg)
