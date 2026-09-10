@@ -181,9 +181,11 @@ def run(config: Config):
         # merge it in: callers label a run by what it is (robot, centralized or
         # decentralized, lora or full) without touching this file.
         env_tags = [t.strip() for t in os.environ.get("WANDB_TAGS", "").split(",") if t.strip()]
+        # WANDB_NAME (the benchmark's short display name, e.g. multitask-train) over
+        # the experiment name; the run id is WANDB_RUN_ID either way.
         wandb.init(
             project=config.training.wandb_project,
-            name=experiment_name,
+            name=os.environ.get("WANDB_NAME") or experiment_name,
             config=config_dict,
             tags=[config.data.mode, *env_tags],
         )

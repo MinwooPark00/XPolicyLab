@@ -72,7 +72,7 @@ def init_wandb(config: _config.TrainConfig, *, resuming: bool, log_code: bool = 
         wandb.init(id=run_id, resume="must", project=_wandb_project(config))
     else:
         wandb.init(
-            name=config.exp_name,
+            name=os.environ.get("WANDB_NAME") or config.exp_name,   # a caller's display name, if given
             config=dataclasses.asdict(config),
             project=_wandb_project(config),
         )
