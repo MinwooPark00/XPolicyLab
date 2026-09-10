@@ -1,0 +1,230 @@
+# @package _global_
+
+defaults:
+  - dreamzero/base_48_wan_fine_aug_relative
+  - _self_
+
+max_state_dim: 45
+max_action_dim: 80
+use_global_metadata: false
+relative_action: false
+max_chunk_size: 2
+pad_to_max_chunks: true
+dataset_shard_sampling_rate: 1.0
+mixture_dataset_cls: groot.vla.data.dataset.lerobot_sharded.ShardedLeRobotMixtureDataset.from_mixture_spec
+single_dataset_cls: groot.vla.data.dataset.lerobot_sharded.ShardedLeRobotSubLangSingleActionChunkDatasetDROID
+
+g1_sonic_neck_data_root: ${oc.env:PSI_HOME}/data/g1_neck_0617/g1
+g1_sonic_neck_val_data_root: ${oc.env:PSI_HOME}/data/mobile_pick_place_0709_psix_val/g1
+
+modality_config_psix_g1_sonic_neck:
+  video:
+    _target_: groot.vla.data.dataset.ModalityConfig
+    delta_indices: [0, 4, 8, 12, 16, 20, 24, 28, 32]
+    eval_delta_indices: [0]
+    modality_keys:
+      - video.egocentric
+  state:
+    _target_: groot.vla.data.dataset.ModalityConfig
+    delta_indices: [0]
+    modality_keys:
+      - state.joint_positions
+  action:
+    _target_: groot.vla.data.dataset.ModalityConfig
+    delta_indices: [0, 1, 2, 3, 4, 5, 6, 7,
+                    8, 9, 10, 11, 12, 13, 14, 15,
+                    16, 17, 18, 19, 20, 21, 22, 23,
+                    24, 25, 26, 27, 28, 29, 30, 31]
+    modality_keys:
+      - action.hand_joints
+      - action.body_token
+      - action.neck
+  language:
+    _target_: groot.vla.data.dataset.ModalityConfig
+    delta_indices: [0]
+    modality_keys:
+      - annotation.human_instruction
+
+transform_psix_g1_sonic_neck:
+  _target_: groot.vla.data.transform.ComposedModalityTransform
+  transforms:
+    - _target_: groot.vla.data.transform.VideoToTensor
+      apply_to: ${modality_config_psix_g1_sonic_neck.video.modality_keys}
+    - _target_: groot.vla.data.transform.VideoCrop
+      apply_to: ${modality_config_psix_g1_sonic_neck.video.modality_keys}
+      scale: 0.95
+      mode: random
+    - _target_: groot.vla.data.transform.VideoResize
+      apply_to: ${modality_config_psix_g1_sonic_neck.video.modality_keys}
+      height: ${image_resolution_height}
+      width: ${image_resolution_width}
+      interpolation: linear
+    - _target_: groot.vla.data.transform.VideoColorJitter
+      apply_to: ${modality_config_psix_g1_sonic_neck.video.modality_keys}
+      brightness: 0.3
+      contrast: 0.4
+      saturation: 0.5
+      hue: 0.08
+    - _target_: groot.vla.data.transform.VideoToNumpy
+      apply_to: ${modality_config_psix_g1_sonic_neck.video.modality_keys}
+
+    - _target_: groot.vla.data.transform.StateActionToTensor
+      apply_to: ${modality_config_psix_g1_sonic_neck.state.modality_keys}
+    - _target_: groot.vla.data.transform.StateActionTransform
+      apply_to: ${modality_config_psix_g1_sonic_neck.state.modality_keys}
+      normalization_modes:
+        state.joint_positions: min_max
+
+    - _target_: groot.vla.data.transform.StateActionToTensor
+      apply_to: ${modality_config_psix_g1_sonic_neck.action.modality_keys}
+    - _target_: groot.vla.data.transform.StateActionTransform
+      apply_to: ${modality_config_psix_g1_sonic_neck.action.modality_keys}
+      normalization_modes:
+        action.hand_joints: min_max
+        action.body_token: min_max
+        action.neck: min_max
+
+    - _target_: groot.vla.data.transform.ConcatTransform
+      video_concat_order: ${modality_config_psix_g1_sonic_neck.video.modality_keys}
+      state_concat_order: ${modality_config_psix_g1_sonic_neck.state.modality_keys}
+      action_concat_order: ${modality_config_psix_g1_sonic_neck.action.modality_keys}
+
+    - _target_: groot.vla.data.transform.PadToMaxChunkSize
+      enabled: ${pad_to_max_chunks}
+      max_chunk_size: ${max_chunk_size}
+
+    - ${model_specific_transform}
+
+# Val transform: identical to train, but PadToMaxChunkSize is DISABLED. The denoise
+# val uses the model's causal inference (lazy_joint_video_action -> _forward_inference),
+# which asserts action_register_length == num_action_per_block + num_state_per_block
+# (== a SINGLE chunk). Multi-chunk (max_chunk_size=2 + padding) breaks it, so val loads
+# single-chunk samples (val_dataset dataset_kwargs max_chunk_size=1, no chunk padding).
+transform_psix_g1_sonic_neck_val:
+  _target_: groot.vla.data.transform.ComposedModalityTransform
+  transforms:
+    - _target_: groot.vla.data.transform.VideoToTensor
+      apply_to: ${modality_config_psix_g1_sonic_neck.video.modality_keys}
+    - _target_: groot.vla.data.transform.VideoCrop
+      apply_to: ${modality_config_psix_g1_sonic_neck.video.modality_keys}
+      scale: 0.95
+      mode: random
+    - _target_: groot.vla.data.transform.VideoResize
+      apply_to: ${modality_config_psix_g1_sonic_neck.video.modality_keys}
+      height: ${image_resolution_height}
+      width: ${image_resolution_width}
+      interpolation: linear
+    - _target_: groot.vla.data.transform.VideoColorJitter
+      apply_to: ${modality_config_psix_g1_sonic_neck.video.modality_keys}
+      brightness: 0.3
+      contrast: 0.4
+      saturation: 0.5
+      hue: 0.08
+    - _target_: groot.vla.data.transform.VideoToNumpy
+      apply_to: ${modality_config_psix_g1_sonic_neck.video.modality_keys}
+
+    - _target_: groot.vla.data.transform.StateActionToTensor
+      apply_to: ${modality_config_psix_g1_sonic_neck.state.modality_keys}
+    - _target_: groot.vla.data.transform.StateActionTransform
+      apply_to: ${modality_config_psix_g1_sonic_neck.state.modality_keys}
+      normalization_modes:
+        state.joint_positions: min_max
+
+    - _target_: groot.vla.data.transform.StateActionToTensor
+      apply_to: ${modality_config_psix_g1_sonic_neck.action.modality_keys}
+    - _target_: groot.vla.data.transform.StateActionTransform
+      apply_to: ${modality_config_psix_g1_sonic_neck.action.modality_keys}
+      normalization_modes:
+        action.hand_joints: min_max
+        action.body_token: min_max
+        action.neck: min_max
+
+    - _target_: groot.vla.data.transform.ConcatTransform
+      video_concat_order: ${modality_config_psix_g1_sonic_neck.video.modality_keys}
+      state_concat_order: ${modality_config_psix_g1_sonic_neck.state.modality_keys}
+      action_concat_order: ${modality_config_psix_g1_sonic_neck.action.modality_keys}
+
+    - _target_: groot.vla.data.transform.PadToMaxChunkSize
+      enabled: false
+      max_chunk_size: 1
+
+    - ${model_specific_transform}
+
+modality_configs:
+  psix_g1_sonic_neck: ${modality_config_psix_g1_sonic_neck}
+
+transforms:
+  psix_g1_sonic_neck: ${transform_psix_g1_sonic_neck}
+
+transforms_val:
+  psix_g1_sonic_neck: ${transform_psix_g1_sonic_neck_val}
+
+metadata_versions:
+  psix_g1_sonic_neck: '0618'
+
+fps:
+  psix_g1_sonic_neck: 30
+
+train_dataset:
+  _target_: ${mixture_dataset_cls}
+  _convert_: object
+  mixture_spec:
+    - dataset_path:
+        psix_g1_sonic_neck:
+          - ${g1_sonic_neck_data_root}
+      dataset_weight: 1.0
+      distribute_weights: true
+
+  dataset_class: ${single_dataset_cls}
+  all_modality_configs: ${modality_configs}
+  all_transforms: ${transforms}
+  metadata_versions: ${metadata_versions}
+  fps: ${fps}
+  dataset_kwargs:
+    video_backend: decord
+    use_global_metadata: ${use_global_metadata}
+    max_chunk_size: ${max_chunk_size}
+    relative_action: ${relative_action}
+    num_latent_per_block: ${num_frame_per_block}
+    action_steps_per_chunk: ${num_action_per_block}
+    allow_padding_at_end: ${allow_padding_at_end}
+  mixture_kwargs:
+    training: true
+    balance_dataset_weights: false
+    seed: 42
+    shard_sampling_rate: ${dataset_shard_sampling_rate}
+
+# Validation set. Used by the eval callback for denoise hand-L1 / action-L1 + pred video.
+# NOTE: training=true on purpose. DreamTransform treats training=false as the
+# server single-obs inference path (adds a batch dim to *video only* then goes
+# apply_batch), which mis-indexes state/action into 1-D and crashes a batched
+# dataloader. We want the exact same apply_single layout as train (incl. GT
+# action), just on the val split and without gradients, so we keep training=true.
+val_dataset:
+  _target_: ${mixture_dataset_cls}
+  _convert_: object
+  mixture_spec:
+    - dataset_path:
+        psix_g1_sonic_neck:
+          - ${g1_sonic_neck_val_data_root}
+      dataset_weight: 1.0
+      distribute_weights: true
+
+  dataset_class: ${single_dataset_cls}
+  all_modality_configs: ${modality_configs}
+  all_transforms: ${transforms_val}   # PadToMaxChunkSize disabled -> single chunk
+  metadata_versions: ${metadata_versions}
+  fps: ${fps}
+  dataset_kwargs:
+    video_backend: decord
+    use_global_metadata: ${use_global_metadata}
+    max_chunk_size: 1                  # causal denoise inference is single-chunk
+    relative_action: ${relative_action}
+    num_latent_per_block: ${num_frame_per_block}
+    action_steps_per_chunk: ${num_action_per_block}
+    allow_padding_at_end: ${allow_padding_at_end}
+  mixture_kwargs:
+    training: true
+    balance_dataset_weights: false
+    seed: 42
+    shard_sampling_rate: ${dataset_shard_sampling_rate}
