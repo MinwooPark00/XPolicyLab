@@ -1,5 +1,6 @@
 import pytest
 import numpy as np
+from pathlib import Path
 
 torch = pytest.importorskip("torch")
 pytest.importorskip("diffusers")
@@ -25,6 +26,7 @@ from XPolicyLab.policy.GauDP.model import (
     _checkpoint_preference,
     _require_finite,
 )
+from XPolicyLab.policy.GauDP.train_policy import _validate_resume_payload
 
 
 class TinyGaussian(nn.Module):
@@ -125,6 +127,31 @@ def test_checkpoint_round_trips_the_joint_contract_and_rejects_v1(tmp_path):
         _check_checkpoint_contract({**payload, "state_dim": 42, "action_dim": 44}, path)
     with pytest.raises(ValueError, match="centralized GR00T ordering"):
         _check_checkpoint_contract({**payload, "action_schema": ACTION_SCHEMA[::-1]}, path)
+
+
+def test_resume_contract_accepts_matching_training_state_and_rejects_schedule_change():
+    policy = _policy()
+    contract = policy_checkpoint_payload(policy)
+    gaussian = Path("/tmp/gaussian.ckpt")
+    checkpoint = Path("/tmp/last.ckpt")
+    payload = {
+        **contract,
+        "camera_order": ["ego_a", "ego_b"],
+        "gaussian_checkpoint": str(gaussian),
+        "optimizer_state": {},
+        "scheduler_state": {"T_max": 1000},
+        "epoch": 658,
+        "metrics": {"val/loss": 0.1},
+    }
+    assert _validate_resume_payload(
+        payload, contract, checkpoint, gaussian, ["ego_a", "ego_b"], 1000
+    ) == 659
+
+    payload["scheduler_state"]["T_max"] = 300
+    with pytest.raises(ValueError, match="300-epoch LR schedule"):
+        _validate_resume_payload(
+            payload, contract, checkpoint, gaussian, ["ego_a", "ego_b"], 1000
+        )
 
 
 def test_eval_rejects_non_finite_values():

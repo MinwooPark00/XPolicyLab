@@ -114,11 +114,56 @@ def _accumulate(sums: dict[str, float], metrics: dict[str, float]) -> None:
         sums[key] = sums.get(key, 0.0) + float(value)
 
 
+def _validate_resume_payload(
+    payload: dict,
+    expected_contract: dict,
+    checkpoint: Path,
+    gaussian_checkpoint: Path,
+    camera_order: list[str],
+    epochs: int,
+) -> int:
+    """Validate a policy checkpoint and return the next zero-based epoch."""
+    for key in ("format", "config", "state_dim", "action_dim", "state_schema", "action_schema"):
+        if payload.get(key) != expected_contract.get(key):
+            raise ValueError(
+                f"resume checkpoint {checkpoint} has incompatible {key}: "
+                f"{payload.get(key)!r} != {expected_contract.get(key)!r}"
+            )
+    if list(payload.get("camera_order", ())) != list(camera_order):
+        raise ValueError(
+            f"resume checkpoint {checkpoint} uses cameras {payload.get('camera_order')!r}, "
+            f"but the dataset uses {camera_order!r}"
+        )
+    recorded_gaussian = Path(str(payload.get("gaussian_checkpoint", ""))).expanduser().resolve()
+    if recorded_gaussian != gaussian_checkpoint.expanduser().resolve():
+        raise ValueError(
+            f"resume checkpoint {checkpoint} uses Gaussian checkpoint {recorded_gaussian}, "
+            f"but this run requested {gaussian_checkpoint.expanduser().resolve()}"
+        )
+    for key in ("state_dict", "optimizer_state", "scheduler_state", "epoch", "metrics"):
+        if key not in payload:
+            raise ValueError(f"resume checkpoint {checkpoint} is missing {key}")
+    scheduler_epochs = int(payload["scheduler_state"].get("T_max", -1))
+    if scheduler_epochs != epochs:
+        raise ValueError(
+            f"resume checkpoint {checkpoint} used a {scheduler_epochs}-epoch LR schedule, "
+            f"but --epochs is {epochs}"
+        )
+    next_epoch = int(payload["epoch"]) + 1
+    if not 0 < next_epoch < epochs:
+        raise ValueError(
+            f"resume checkpoint {checkpoint} would start at epoch {next_epoch + 1}, "
+            f"outside a {epochs}-epoch run"
+        )
+    return next_epoch
+
+
 def _save(
     path: Path, policy: GauDPPolicy, optimizer, scheduler, epoch, metrics,
     gaussian_checkpoint: Path, camera_order: list[str],
 ):
     path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(f"{path.suffix}.tmp")
     torch.save(
         policy_checkpoint_payload(
             policy,
@@ -131,8 +176,9 @@ def _save(
             gaussian_checkpoint=str(gaussian_checkpoint.expanduser().resolve()),
             camera_order=list(camera_order),
         ),
-        path,
+        temporary,
     )
+    os.replace(temporary, path)
 
 
 def main() -> None:
@@ -195,6 +241,12 @@ def main() -> None:
     parser.add_argument("--wandb-run-name", default=None)
     parser.add_argument("--wandb-group", default=None)
     parser.add_argument("--wandb-tags", default="", help="comma-separated W&B tags")
+    parser.add_argument(
+        "--resume",
+        type=Path,
+        default=None,
+        help="resume model, optimizer, scheduler, and epoch from a policy checkpoint",
+    )
     parser.add_argument("--debug", action="store_true", help="run one train and validation batch")
     args = parser.parse_args()
     if args.log_every < 0:
@@ -281,9 +333,47 @@ def main() -> None:
         flush=True,
     )
 
-    best = math.inf
     epochs = 1 if args.debug else args.epochs
+    best = math.inf
+    start_epoch = 0
     global_step = 0
+    if args.resume is not None:
+        resume_path = args.resume.expanduser().resolve()
+        if not resume_path.is_file():
+            raise FileNotFoundError(f"resume checkpoint not found: {resume_path}")
+        payload = torch.load(str(resume_path), map_location="cpu", weights_only=False, mmap=True)
+        expected_contract = policy_checkpoint_payload(policy)
+        start_epoch = _validate_resume_payload(
+            payload,
+            expected_contract,
+            resume_path,
+            requested_checkpoint,
+            train_data.camera_order,
+            epochs,
+        )
+        policy.load_state_dict(payload["state_dict"], strict=True)
+        optimizer.load_state_dict(payload["optimizer_state"])
+        scheduler.load_state_dict(payload["scheduler_state"])
+        global_step = start_epoch * train_batches
+        best = float(payload["metrics"].get("val/loss", math.inf))
+        del payload, expected_contract
+
+        # `last.ckpt` only contains its own validation loss. Preserve the
+        # historical best threshold so resumed training cannot replace a good
+        # best.ckpt with the first (worse) post-resume epoch.
+        best_path = args.output / "best.ckpt"
+        if best_path.is_file() and best_path.resolve() != resume_path:
+            best_payload = torch.load(
+                str(best_path), map_location="cpu", weights_only=False, mmap=True
+            )
+            best = min(best, float(best_payload.get("metrics", {}).get("val/loss", math.inf)))
+            del best_payload
+        print(
+            f"[GauDP][policy] resumed from {resume_path} at epoch={start_epoch + 1}/{epochs} "
+            f"global_step={global_step} lr={scheduler.get_last_lr()[0]:.8g} "
+            f"best_val_loss={best:.8g}",
+            flush=True,
+        )
     run_name = args.wandb_run_name or f"{args.output.parent.name}-policy"
     with ExperimentLogger(
         args.output,
@@ -295,7 +385,7 @@ def main() -> None:
         wandb_group=args.wandb_group,
         wandb_tags=parse_wandb_tags(args.wandb_tags),
     ) as logger:
-        for epoch in range(epochs):
+        for epoch in range(start_epoch, epochs):
             epoch_started = time.monotonic()
             if device.type == "cuda":
                 torch.cuda.reset_peak_memory_stats(device)
