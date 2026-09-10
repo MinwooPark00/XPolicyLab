@@ -76,6 +76,19 @@ fi
 
 mkdir -p "${output_dir}"
 
+# Optimiser knobs, under the GR00T_ prefix the MHBench launcher forwards by
+# name; unset ones leave examples/finetune.sh at its stock numbers.
+[[ -n "${GR00T_LR:-}" ]]            && export LEARNING_RATE="${GR00T_LR}"
+[[ -n "${GR00T_MIN_LR:-}" ]]        && export MIN_LR="${GR00T_MIN_LR}"
+[[ -n "${GR00T_LR_SCHEDULER:-}" ]]  && export LR_SCHEDULER_TYPE="${GR00T_LR_SCHEDULER}"
+[[ -n "${GR00T_WARMUP_STEPS:-}" ]]  && export WARMUP_STEPS="${GR00T_WARMUP_STEPS}"
+[[ -n "${GR00T_WARMUP_RATIO:-}" ]]  && export WARMUP_RATIO="${GR00T_WARMUP_RATIO}"
+[[ -n "${GR00T_WEIGHT_DECAY:-}" ]]  && export WEIGHT_DECAY="${GR00T_WEIGHT_DECAY}"
+[[ -n "${GR00T_ADAM_BETA1:-}" ]]    && export ADAM_BETA1="${GR00T_ADAM_BETA1}"
+[[ -n "${GR00T_ADAM_BETA2:-}" ]]    && export ADAM_BETA2="${GR00T_ADAM_BETA2}"
+[[ -n "${GR00T_ADAM_EPS:-}" ]]      && export ADAM_EPSILON="${GR00T_ADAM_EPS}"
+[[ -n "${GR00T_MAX_GRAD_NORM:-}" ]] && export MAX_GRAD_NORM="${GR00T_MAX_GRAD_NORM}"
+
 MAX_STEPS="${MAX_STEPS:-100000}"
 SAVE_STEPS="${SAVE_STEPS:-1000}"
 GLOBAL_BATCH_SIZE="${GLOBAL_BATCH_SIZE:-640}"
@@ -94,6 +107,8 @@ echo "[GR00T_N17] global_batch_size=${GLOBAL_BATCH_SIZE}"
 echo "[GR00T_N17] per_gpu_batch_size=$((GLOBAL_BATCH_SIZE / NUM_GPUS))"
 echo "[GR00T_N17] max_steps=${MAX_STEPS}"
 echo "[GR00T_N17] save_steps=${SAVE_STEPS}"
+echo "[GR00T_N17] lr=${LEARNING_RATE:-1e-4} min_lr=${MIN_LR:-none} scheduler=${LR_SCHEDULER_TYPE:-cosine} warmup_steps=${WARMUP_STEPS:-0} warmup_ratio=${WARMUP_RATIO:-0.05} wd=${WEIGHT_DECAY:-1e-5} betas=${ADAM_BETA1:-0.9}/${ADAM_BETA2:-0.999}"
+echo "[GR00T_N17] lora: rank=${LORA_RANK:-0} alpha=${LORA_ALPHA:-16} dropout=${LORA_DROPOUT:-0.1} full_model=${LORA_FULL_MODEL:-0} targets=${MHBENCH_LORA_TARGETS:-attn} backbone_rank=${MHBENCH_LORA_BACKBONE_RANK:-same} backbone_alpha=${MHBENCH_LORA_BACKBONE_ALPHA:-same} tune_visual=${TUNE_VISUAL:-0} tune_llm=${TUNE_LLM:-0}"
 
 cd "${GR00T_ROOT}"
 source .venv/bin/activate

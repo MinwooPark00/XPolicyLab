@@ -220,6 +220,16 @@ def run(config: Config):
         lr_scheduler_type=config.training.lr_scheduler_type,
         weight_decay=config.training.weight_decay,
         warmup_ratio=config.training.warmup_ratio,
+        # > 0 overrides warmup_ratio inside HF; the warning above already says so.
+        warmup_steps=config.training.warmup_steps,
+        lr_scheduler_kwargs=(
+            {"min_lr": config.training.min_lr}
+            if config.training.min_lr is not None and "min_lr" in config.training.lr_scheduler_type
+            else {}
+        ),
+        adam_beta1=config.training.adam_beta1,
+        adam_beta2=config.training.adam_beta2,
+        adam_epsilon=config.training.adam_epsilon,
         max_grad_norm=config.training.max_grad_norm,
         logging_steps=config.training.logging_steps,
         save_steps=config.training.save_steps,

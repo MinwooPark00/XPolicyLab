@@ -48,6 +48,17 @@ def init_logging():
     logger.handlers[0].setFormatter(formatter)
 
 
+def _wandb_project(config: _config.TrainConfig) -> str:
+    """WANDB_PROJECT wins over the TrainConfig's project_name.
+
+    MHBench's training hook (baselines/scripts/train/Pi_05.sh) names the project
+    per benchmark round -- CoHuB_Pi05 today -- and log_eval_to_wandb.py looks
+    the run up under that same name, so the config's literal is only the
+    fallback for a run launched outside the hook.
+    """
+    return os.environ.get("WANDB_PROJECT") or config.project_name
+
+
 def init_wandb(config: _config.TrainConfig, *, resuming: bool, log_code: bool = False, enabled: bool = True):
     if not enabled:
         wandb.init(mode="disabled")
@@ -58,12 +69,12 @@ def init_wandb(config: _config.TrainConfig, *, resuming: bool, log_code: bool = 
         raise FileNotFoundError(f"Checkpoint directory {ckpt_dir} does not exist.")
     if resuming:
         run_id = (ckpt_dir / "wandb_id.txt").read_text().strip()
-        wandb.init(id=run_id, resume="must", project=config.project_name)
+        wandb.init(id=run_id, resume="must", project=_wandb_project(config))
     else:
         wandb.init(
             name=config.exp_name,
             config=dataclasses.asdict(config),
-            project=config.project_name,
+            project=_wandb_project(config),
         )
         (ckpt_dir / "wandb_id.txt").write_text(wandb.run.id)
 

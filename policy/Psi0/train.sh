@@ -98,6 +98,27 @@ EVAL_STEPS="${PSI0_EVAL_STEPS:-1000}"
 EVAL_BATCHES="${PSI0_EVAL_BATCHES:-20}"
 LR="${PSI0_LR:-1e-4}"
 WARMUP="${PSI0_WARMUP_STEPS:-1000}"
+# The rest of the optimiser, defaulting to the paper's numbers. MHBench's
+# training hook sets pi0.5's instead (2.5e-5 -> 2.5e-6 cosine, 0.9/0.95,
+# wd 1e-10) so the three VLA baselines share one schedule.
+WEIGHT_DECAY="${PSI0_WEIGHT_DECAY:-1e-6}"
+BETA1="${PSI0_BETA1:-0.95}"
+BETA2="${PSI0_BETA2:-0.999}"
+EPS="${PSI0_EPS:-1e-8}"
+MIN_LR="${PSI0_MIN_LR:-}"
+LR_SCHEDULER="${PSI0_LR_SCHEDULER:-$([ -n "${MIN_LR}" ] && echo cosine_with_min_lr || echo cosine)}"
+# LoRA in pi0.5's shape (psi/utils/lora.py): rank 0 leaves that part as the
+# paper trains it. PSI0_TUNE_VISION=1 trains the vision tower and projector in
+# full, which is what pi0.5 does with SigLIP; PSI0_GRAD_CKPT=1 checkpoints the
+# VLM's activations.
+LORA_LLM_RANK="${PSI0_LORA_LLM_RANK:-0}"
+LORA_LLM_ALPHA="${PSI0_LORA_LLM_ALPHA:-16}"
+LORA_DIT_RANK="${PSI0_LORA_DIT_RANK:-0}"
+LORA_DIT_ALPHA="${PSI0_LORA_DIT_ALPHA:-32}"
+LORA_DROPOUT="${PSI0_LORA_DROPOUT:-0}"
+TUNE_VISION="${PSI0_TUNE_VISION:-0}"
+TUNE_DIT_FULL="${PSI0_TUNE_DIT_FULL:-0}"
+GRAD_CKPT="${PSI0_GRAD_CKPT:-0}"
 
 # Fixed, so the run directory is the same on every launch and a requeue resumes.
 TIMESTAMP="${PSI0_TIMESTAMP:-mhbench}"
@@ -144,9 +165,10 @@ args=(
   --train.validation_steps="${EVAL_STEPS}"
   --train.val_num_batches="${EVAL_BATCHES}"
   --train.max_grad_norm=1.0
-  --train.lr_scheduler_type=cosine
-  --train.lr_scheduler_kwargs.weight_decay=1e-6
-  --train.lr_scheduler_kwargs.betas 0.95 0.999
+  --train.lr_scheduler_type="${LR_SCHEDULER}"
+  --train.lr_scheduler_kwargs.weight_decay="${WEIGHT_DECAY}"
+  --train.lr_scheduler_kwargs.betas "${BETA1}" "${BETA2}"
+  --train.lr_scheduler_kwargs.eps="${EPS}"
   --log.report_to=wandb
   --wandb.project="${WANDB_PROJECT}"
   --wandb.entity="${WANDB_ENTITY}"
@@ -187,12 +209,27 @@ args=(
   --model.odim=36
   --model.view_feature_dim=2048
   --model.no-tune-vlm
+  # One learning rate for every group, as pi0.5 has one; the paper's per-group
+  # values only matter when the VLM trains in full, which it never does here.
+  --model.lang_backbone_lr="${LR}"
+  --model.vision_tower_lr="${LR}"
+  --model.mm_projector_lr="${LR}"
+  --model.lora_llm_rank="${LORA_LLM_RANK}"
+  --model.lora_llm_alpha="${LORA_LLM_ALPHA}"
+  --model.lora_dit_rank="${LORA_DIT_RANK}"
+  --model.lora_dit_alpha="${LORA_DIT_ALPHA}"
+  --model.lora_dropout="${LORA_DROPOUT}"
   --model.no-use_film
   --model.no-combined_temb
   --model.rtc
   --model.max-delay=8
   "${resume_args[@]}"
 )
+[ -n "${MIN_LR}" ] && args+=(--train.scheduler_specific_kwargs.min_lr="${MIN_LR}")
+[ "${TUNE_VISION}" = 1 ] && args+=(--model.tune-mm-vision --model.tune-mm-mlp)
+[ "${TUNE_DIT_FULL}" = 1 ] && args+=(--model.tune-dit-full)
+[ "${GRAD_CKPT}" = 1 ] && args+=(--model.gradient_checkpointing)
+[ "${PSI0_FROZEN_VLM_BF16:-1}" = 0 ] && args+=(--model.no-frozen-vlm-bf16)
 # PSI0_EXTRA is split on whitespace on purpose: it is the escape hatch for a
 # one-off flag, and anything with a space in it belongs in a named knob above.
 if [ -n "${PSI0_EXTRA:-}" ]; then
@@ -203,6 +240,8 @@ fi
 echo "[Psi0] run dir : ${run_root}/${TRAIN_NAME}/${ckpt_setting}.b${GLOBAL_BATCH_SIZE}.gpus${NUM_GPUS}.${TIMESTAMP}"
 echo "[Psi0] batch   : ${MICRO_BATCH} x ${GRAD_ACCUM} accum x ${NUM_GPUS} gpu = ${GLOBAL_BATCH_SIZE}"
 echo "[Psi0] steps   : ${MAX_STEPS} (save every ${SAVE_STEPS}, validate every ${EVAL_STEPS})"
+echo "[Psi0] optim   : lr=${LR} min_lr=${MIN_LR:-none} sched=${LR_SCHEDULER} warmup=${WARMUP} wd=${WEIGHT_DECAY} betas=${BETA1}/${BETA2} eps=${EPS}"
+echo "[Psi0] lora    : llm r=${LORA_LLM_RANK} a=${LORA_LLM_ALPHA}; dit r=${LORA_DIT_RANK} a=${LORA_DIT_ALPHA}; dropout=${LORA_DROPOUT}; tune_vision=${TUNE_VISION} tune_dit_full=${TUNE_DIT_FULL} grad_ckpt=${GRAD_CKPT}"
 echo "[Psi0] wandb   : ${WANDB_ENTITY}/${WANDB_PROJECT} id=${WANDB_RUN_ID}"
 echo "[Psi0] data    : ${data_root}/${data_id} (+ ${val_repo})"
 

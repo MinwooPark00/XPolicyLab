@@ -38,6 +38,10 @@ class TrainingConfig:
     warmup_ratio: float = 0.05
     warmup_steps: int = 0  # this will override warmup_ratio
     max_grad_norm: float = 1.0
+    min_lr: Optional[float] = None  # floor for lr_scheduler_type=cosine_with_min_lr
+    adam_beta1: float = 0.9
+    adam_beta2: float = 0.999
+    adam_epsilon: float = 1e-8
 
     # Optimizer choice (huggingface TrainingArguments.optim)
     # Options include: 'adamw_torch', 'adamw_torch_fused', 'paged_adamw_32bit',

@@ -127,10 +127,35 @@ directory is the same on every launch and a requeued job resumes rather than
 starting over; the serving hook and `model.py` find the run inside by its
 `run_config.json`.
 
+### LoRA, in pi0.5's shape (MHBench's CoHuB round)
+
+`psi/utils/lora.py` puts adapters on the Qwen3-VL text layers (q/k/v/o + gate/up/down)
+and on the MM-DiT blocks (every attention projection of both streams, both
+feed-forwards), injected in place with `peft.inject_adapter_in_model` so the
+module tree keeps its names. What still trains outright: the vision tower and
+merger when `PSI0_TUNE_VISION=1` (pi0.5 trains SigLIP), and the header's
+obs_proj / action_proj_in / action_proj_out / time embedding; the adaLN
+modulation linears stay frozen. A LoRA checkpoint is an ordinary `model.safetensors`
+holding `base_layer` + `lora_A/lora_B` per adapted Linear; `Psi0Model.from_pretrained`
+merges them on load (`merge_lora_state_dict`), so serving is unchanged.
+
+```bash
+PSI0_LORA_LLM_RANK=16 PSI0_LORA_LLM_ALPHA=16 PSI0_LORA_DIT_RANK=32 PSI0_LORA_DIT_ALPHA=32 \
+PSI0_TUNE_VISION=1 PSI0_GRAD_CKPT=1 PSI0_LR=2.5e-5 PSI0_MIN_LR=2.5e-6 PSI0_WARMUP_STEPS=1000 \
+PSI0_WEIGHT_DECAY=1e-10 PSI0_BETA1=0.9 PSI0_BETA2=0.95 \
+  bash train.sh mhbench multitask unitree_g1x2_decentralized joint 0 0
+```
+
+Measured on the real weights: 452.9 M trainable of 2.66 B -- 17.4 M LLM adapters,
+10.0 M DiT adapters, 306 M vision tower, 101 M merger, 18.5 M header projections.
+
 Knobs: `PSI0_TIER` (pro6000 | a6000 | a100), `PSI0_MICRO_BATCH` (per device;
 the accumulation that makes the global batch is derived), `MAX_STEPS`,
 `SAVE_STEPS`, `PSI0_LR`, `PSI0_WARMUP_STEPS`, `PSI0_EVAL_STEPS`,
-`PSI0_EVAL_BATCHES`, `PSI0_RESUME`, `PSI0_TIMESTAMP`, `PSI0_EXTRA`, `CKPT_TAG`.
+`PSI0_EVAL_BATCHES`, `PSI0_RESUME`, `PSI0_TIMESTAMP`, `PSI0_EXTRA`, `CKPT_TAG`;
+the optimiser (`PSI0_MIN_LR`, `PSI0_LR_SCHEDULER`, `PSI0_WEIGHT_DECAY`, `PSI0_BETA1/2`,
+`PSI0_EPS`) and LoRA (`PSI0_LORA_LLM_RANK/ALPHA`, `PSI0_LORA_DIT_RANK/ALPHA`,
+`PSI0_LORA_DROPOUT`, `PSI0_TUNE_VISION`, `PSI0_TUNE_DIT_FULL`, `PSI0_GRAD_CKPT`).
 
 `PSI0_PRINT_ONLY=1 bash train.sh mhbench multitask unitree_g1x2_decentralized joint 0 0`
 prints the exact `torchrun` line without launching it.

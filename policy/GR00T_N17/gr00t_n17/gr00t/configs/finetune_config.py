@@ -178,6 +178,27 @@ class FinetuneConfig:
     warmup_ratio: float = 0.05
     """Proportion of total training steps used for learning rate warm-up."""
 
+    warmup_steps: int = 0
+    """Warm-up length in steps; > 0 overrides warmup_ratio (HF TrainingArguments semantics)."""
+
+    lr_scheduler_type: str = "cosine"
+    """HF scheduler name; `cosine_with_min_lr` honours min_lr below."""
+
+    min_lr: float | None = None
+    """Floor of a cosine_with_min_lr schedule (absolute learning rate)."""
+
+    adam_beta1: float = 0.9
+    """AdamW beta1."""
+
+    adam_beta2: float = 0.999
+    """AdamW beta2 (openpi's pi0.5 runs 0.95)."""
+
+    adam_epsilon: float = 1e-8
+    """AdamW epsilon."""
+
+    max_grad_norm: float = 1.0
+    """Gradient clipping norm."""
+
     shard_size: int = 2**10
     """Size of the shard to use for the dataset during preloading."""
 

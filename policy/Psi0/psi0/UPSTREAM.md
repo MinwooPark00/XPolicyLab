@@ -32,6 +32,16 @@ push protection blocks the whole branch over it, and vendoring somebody's
 credential is wrong whether or not a scanner objects. The call reads
 `HF_TOKEN` from the environment like every other one.
 
+`src/psi/utils/lora.py` (new), `src/psi/trainers/finetune.py::apply_lora`,
+`src/psi/config/model_psi0.py` (`lora_*`, `tune_dit_full`) and
+`src/psi/models/psi0.py::from_pretrained` (merge on load) -- LoRA in pi0.5's
+shape for the MHBench comparison; off by default (rank 0), so the paper's
+recipe is unchanged.
+
+`src/psi/data/` and `scripts/data/` were missing from the vendored tree -- the
+adapter's `.gitignore` said `data/` unanchored -- and are restored from the
+commit above (2026-09-10).
+
 Nothing else is modified. Everything MHBench-specific lives in the adapter one
 directory up.
 

@@ -24,6 +24,19 @@ LORA_RANK="${LORA_RANK:-0}"
 LORA_ALPHA="${LORA_ALPHA:-16}"
 LORA_DROPOUT="${LORA_DROPOUT:-0.1}"
 LORA_FULL_MODEL="${LORA_FULL_MODEL:-0}"
+# The stock recipe's optimiser numbers, now overridable so a run can match
+# another baseline's schedule (MHBench sets pi0.5's: 2.5e-5 peak, 1000 warm-up
+# steps, cosine to 2.5e-6, AdamW 0.9/0.95, wd 1e-10).
+LEARNING_RATE="${LEARNING_RATE:-1e-4}"
+WEIGHT_DECAY="${WEIGHT_DECAY:-1e-5}"
+WARMUP_RATIO="${WARMUP_RATIO:-0.05}"
+WARMUP_STEPS="${WARMUP_STEPS:-0}"
+LR_SCHEDULER_TYPE="${LR_SCHEDULER_TYPE:-cosine}"
+MIN_LR="${MIN_LR:-}"
+ADAM_BETA1="${ADAM_BETA1:-0.9}"
+ADAM_BETA2="${ADAM_BETA2:-0.999}"
+ADAM_EPSILON="${ADAM_EPSILON:-1e-8}"
+MAX_GRAD_NORM="${MAX_GRAD_NORM:-1.0}"
 BASE_MODEL_PATH=""
 DATASET_PATH=""
 MODALITY_CONFIG_PATH=""
@@ -126,9 +139,15 @@ LAUNCH_CMD=(
     --save_steps "$SAVE_STEPS"
     --save_total_limit 5
     --max_steps "$MAX_STEPS"
-    --warmup_ratio 0.05
-    --weight_decay 1e-5
-    --learning_rate 1e-4
+    --warmup_ratio "$WARMUP_RATIO"
+    --warmup_steps "$WARMUP_STEPS"
+    --lr_scheduler_type "$LR_SCHEDULER_TYPE"
+    --weight_decay "$WEIGHT_DECAY"
+    --learning_rate "$LEARNING_RATE"
+    --adam_beta1 "$ADAM_BETA1"
+    --adam_beta2 "$ADAM_BETA2"
+    --adam_epsilon "$ADAM_EPSILON"
+    --max_grad_norm "$MAX_GRAD_NORM"
     "${WANDB_FLAG[@]}"
     --global_batch_size "$GLOBAL_BATCH_SIZE"
     --gradient_accumulation_steps "$GRAD_ACCUM"
@@ -154,6 +173,9 @@ if [ -n "$WANDB_PROJECT" ]; then
     LAUNCH_CMD+=(--wandb_project "$WANDB_PROJECT")
 fi
 
+if [ -n "$MIN_LR" ]; then
+    LAUNCH_CMD+=(--min_lr "$MIN_LR")
+fi
 if [ "$TUNE_LLM" = "1" ]; then
     LAUNCH_CMD+=(--tune_llm)
 fi

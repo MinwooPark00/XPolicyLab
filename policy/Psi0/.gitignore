@@ -1,4 +1,7 @@
-data/
+# Only this adapter's data/ (the linked datasets). Unanchored, `data/` also
+# swallowed psi0/src/psi/data -- the package every trainer imports -- so the
+# vendored checkout could not train until it was restored (2026-09-10).
+/data/
 
 # Upstream's physical-teleoperation CAD: 242 MB of STL meshes and rig assets for
 # building and driving a real G1. MHBench is a simulator, nothing here opens

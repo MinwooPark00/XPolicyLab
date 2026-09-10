@@ -1641,6 +1641,10 @@ class Psi0Model(nn.Module):
         if not os.path.exists(file_path):
             raise ValueError(f"Checkpoint file {file_path} does not exist.")
         state_dict = load_file(file_path, device="cpu")
+        # A LoRA run (psi/utils/lora.py) saved base_layer + lora_A/lora_B per
+        # adapted Linear; serving wants the plain weight, so fold them first.
+        from psi.utils.lora import alpha_for_config, merge_lora_state_dict
+        state_dict = merge_lora_state_dict(state_dict, alpha_for_config(launch_config.model))
 
         # init empty vlm backbone from config only (skip loading base pretrained weights)
         vlm_config = AutoConfig.from_pretrained(QWEN3VL_VARIANT)

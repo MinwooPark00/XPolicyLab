@@ -399,9 +399,74 @@ class FinetuneTrainer(Trainer):
             self.model.config.hidden_size = vlm_model.config.text_config.hidden_size
 
         self.apply_vlm_trainability()
+        self.apply_lora()
 
         num_parameters = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
         overwatch.info(f"Model has {num_parameters:,} trainable parameters")
+
+    def apply_lora(self) -> None:
+        """LoRA on the language model and/or the action expert (psi/utils/lora.py).
+
+        Runs after `apply_vlm_trainability`, so the VLM's requires_grad already
+        says which of its components train in full (tune_mm_vision / tune_mm_mlp
+        for pi0.5's shape: the vision tower and the projector). peft freezes
+        every non-adapter parameter as it injects, so what should still train
+        outright is written down first and restored afterwards.
+        """
+        cfg = self.model_cfg
+        llm_rank = int(getattr(cfg, "lora_llm_rank", 0) or 0)
+        dit_rank = int(getattr(cfg, "lora_dit_rank", 0) or 0)
+        if llm_rank <= 0 and dit_rank <= 0:
+            return
+        from psi.utils.lora import HEADER_FULL, inject_lora, is_lora_param
+
+        # The action header: full when its blocks carry no adapters, else only
+        # the projections and the time embedding (plus everything if asked).
+        for name, p in self.model.action_header.named_parameters():
+            full_name = f"action_header.{name}"
+            if dit_rank <= 0 or cfg.tune_dit_full:
+                p.requires_grad = True
+            else:
+                p.requires_grad = full_name.startswith(HEADER_FULL)
+        keep = {n for n, p in self.model.named_parameters() if p.requires_grad}
+
+        counts = inject_lora(
+            self.model,
+            llm_rank=llm_rank, llm_alpha=cfg.lora_llm_alpha,
+            dit_rank=dit_rank, dit_alpha=cfg.lora_dit_alpha,
+            dropout=cfg.lora_dropout,
+        )
+        n_lora = 0
+        for name, p in self.model.named_parameters():
+            if is_lora_param(name):
+                p.requires_grad = True
+                n_lora += p.numel()
+            else:
+                p.requires_grad = name in keep
+        if llm_rank > 0 and getattr(cfg, "frozen_vlm_bf16", True):
+            # Frozen base weights need no fp32 master copy. Adapters and tuned
+            # components stay fp32; autocast runs every matmul in bf16 either way.
+            n_cast = 0
+            for name, p in self.model.vlm_model.named_parameters():
+                if not p.requires_grad and p.dtype == torch.float32:
+                    p.data = p.data.to(torch.bfloat16)
+                    n_cast += p.numel()
+            overwatch.info(f"frozen VLM weights cast to bf16: {n_cast:,} parameters")
+        if llm_rank > 0:
+            # Adapted layers need their input to carry grad under checkpointing;
+            # apply_vlm_trainability only did this when a VLM component was tuned.
+            if cfg.gradient_checkpointing and not self.vlm_trainable_components():
+                self.model.vlm_model.gradient_checkpointing_enable(
+                    gradient_checkpointing_kwargs={"use_reentrant": False})
+                self.model.vlm_model.enable_input_require_grads()
+                self.model.vlm_model.config.use_cache = False
+                if hasattr(self.model.vlm_model.config, "text_config"):
+                    self.model.vlm_model.config.text_config.use_cache = False
+        overwatch.info(
+            f"LoRA: language model r={llm_rank} a={cfg.lora_llm_alpha} on {counts['llm']} Linear(s); "
+            f"action expert r={dit_rank} a={cfg.lora_dit_alpha} on {counts['dit']} Linear(s); "
+            f"dropout={cfg.lora_dropout}; {n_lora:,} adapter parameters; "
+            f"header full={dit_rank <= 0 or cfg.tune_dit_full}")
 
     def apply_vlm_trainability(self) -> set[str]:
         """Freeze/unfreeze the VLM per component; returns the tuned components."""

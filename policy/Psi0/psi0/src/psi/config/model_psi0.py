@@ -126,6 +126,22 @@ class Psi0ModelConfig(ModelConfig):
     min_pixels: int = 16 * 28 * 28   # [DataArguments] Min image pixels for image
 
 
+    # LoRA in pi0.5's shape (psi/utils/lora.py). Rank 0 = that part trains as
+    # before: the language model per tune_mm_llm / tune_vlm, the action header
+    # in full. With lora_dit_rank > 0 the header's blocks carry adapters and only
+    # the projections / time embedding still train outright, unless
+    # tune_dit_full keeps the whole header trainable beside the adapters.
+    lora_llm_rank: int = 0
+    lora_llm_alpha: float = 16.0
+    lora_dit_rank: int = 0
+    lora_dit_alpha: float = 32.0
+    lora_dropout: float = 0.0
+    tune_dit_full: bool = False
+    # With adapters on the language model its base weights are frozen, so they
+    # can live in bf16 (no per-forward autocast copy of 2B parameters); the
+    # tuned components keep fp32 master weights. False keeps the whole VLM fp32.
+    frozen_vlm_bf16: bool = True
+
     # lora_r: int = 8                          # [TrainingArguments] LoRA r
     # lora_alpha: int= 16                      # [TrainingArguments] LoRA alpha
     # lora_dropout: float = 0.0                 # [TrainingArguments] LoRA dropout

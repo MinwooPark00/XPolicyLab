@@ -120,6 +120,13 @@ if __name__ == "__main__":
     config.training.max_steps = ft_config.max_steps
     config.training.weight_decay = ft_config.weight_decay
     config.training.warmup_ratio = ft_config.warmup_ratio
+    config.training.warmup_steps = ft_config.warmup_steps
+    config.training.lr_scheduler_type = ft_config.lr_scheduler_type
+    config.training.min_lr = ft_config.min_lr
+    config.training.adam_beta1 = ft_config.adam_beta1
+    config.training.adam_beta2 = ft_config.adam_beta2
+    config.training.adam_epsilon = ft_config.adam_epsilon
+    config.training.max_grad_norm = ft_config.max_grad_norm
     config.training.wandb_project = ft_config.wandb_project
     config.training.eval_strategy = ft_config.eval_strategy
     config.training.eval_steps = ft_config.eval_steps
