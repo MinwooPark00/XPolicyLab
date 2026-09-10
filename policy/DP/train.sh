@@ -18,8 +18,12 @@ gpu_id=${6}
 DEBUG=False
 
 addition_info=train
-exp_name=${ckpt_name}-robot_dp-${addition_info}
-run_dir="data/outputs/${exp_name}_seed${seed}"
+# DP_RUN_NAME (a benchmark runner's choice) names the run, its wandb id and
+# its Hydra output directory, so an evaluation can resume the run by id later
+# and a relaunch lands in the same directory. Without it, XPolicyLab's own
+# timestamped naming applies.
+exp_name=${DP_RUN_NAME:-${ckpt_name}-robot_dp-${addition_info}}
+run_dir="data/outputs/${DP_RUN_NAME:-${exp_name}_seed${seed}}"
 
 echo -e "\033[33mgpu id (to use): ${gpu_id}\033[0m"
 
@@ -84,6 +88,14 @@ fi
 # network can score a near-zero training loss without learning the task.
 # DP_RUN_TAG keeps a run's checkpoints out of an existing run's directory.
 OVERRIDES=()
+if [ -n "${DP_RUN_NAME:-}" ]; then
+    OVERRIDES+=("logging.name=${DP_RUN_NAME}" "logging.id=${DP_RUN_NAME}" "logging.resume=allow" "hydra.run.dir=${run_dir}")
+fi
+[ -n "${DP_WANDB_PROJECT:-}" ] && OVERRIDES+=("logging.project=${DP_WANDB_PROJECT}")
+[ -n "${DP_WANDB_ENTITY:-}" ]  && OVERRIDES+=("+logging.entity=${DP_WANDB_ENTITY}")
+[ -n "${DP_WANDB_TAGS:-}" ]    && OVERRIDES+=("logging.tags=${DP_WANDB_TAGS}")
+[ -n "${DP_GRAD_CLIP:-}" ]     && OVERRIDES+=("training.max_grad_norm=${DP_GRAD_CLIP}")
+[ -n "${DP_ACCUM:-}" ]         && OVERRIDES+=("training.gradient_accumulate_every=${DP_ACCUM}")
 [ -n "${DP_HORIZON:-}" ]        && OVERRIDES+=("horizon=${DP_HORIZON}")
 [ -n "${DP_N_OBS_STEPS:-}" ]    && OVERRIDES+=("n_obs_steps=${DP_N_OBS_STEPS}")
 [ -n "${DP_N_ACTION_STEPS:-}" ] && OVERRIDES+=("n_action_steps=${DP_N_ACTION_STEPS}")
@@ -107,20 +119,28 @@ OVERRIDES=()
 if [ -n "${DP_CROP_SHAPE:-}" ]; then
     OVERRIDES+=("policy.obs_encoder.crop_shape=[${DP_CROP_SHAPE%x*},${DP_CROP_SHAPE#*x}]")
 fi
+[ -n "${DP_EXTRA:-}" ]         && OVERRIDES+=(${DP_EXTRA})   # any further Hydra override, space-separated
 [ ${#OVERRIDES[@]} -gt 0 ] && echo -e "\033[33m[INFO] overrides: ${OVERRIDES[*]}\033[0m"
 
-python train.py --config-name="${alg_name}.yaml" \
-                bench_name="${bench_name}" \
-                task.name="${ckpt_name}" \
-                "task.shape_meta.action.shape=[${action_dim}]" \
-                "task.shape_meta.obs.agent_pos.shape=[${state_dim}]" \
-                "${EXTRA_CAMERA_ARGS[@]}" \
-                task.dataset.zarr_path="${zarr_path}" \
-                "${val_override[@]}" \
-                training.debug=$DEBUG \
-                training.seed=${seed} \
-                training.device="cuda:0" \
-                exp_name=${exp_name} \
-                logging.mode=${wandb_mode} \
-                setting=${env_cfg_type} \
-                ${OVERRIDES[@]+"${OVERRIDES[@]}"}
+CMD=("${DP_PYTHON:-python}" train.py --config-name="${alg_name}.yaml"
+                bench_name="${bench_name}"
+                task.name="${ckpt_name}"
+                "task.shape_meta.action.shape=[${action_dim}]"
+                "task.shape_meta.obs.agent_pos.shape=[${state_dim}]"
+                "${EXTRA_CAMERA_ARGS[@]}"
+                task.dataset.zarr_path="${zarr_path}"
+                "${val_override[@]}"
+                training.debug=$DEBUG
+                training.seed=${seed}
+                training.device="cuda:0"
+                exp_name=${exp_name}
+                logging.mode=${wandb_mode}
+                setting=${env_cfg_type}
+                ${OVERRIDES[@]+"${OVERRIDES[@]}"})
+# DP_DRY_RUN=1 prints the exact command instead of running it (what MHBench's
+# test_train_runner.sh checks the runner's environment against).
+if [ "${DP_DRY_RUN:-0}" = 1 ]; then
+    printf 'cd %q &&' "$(pwd)"; printf ' %q' "${CMD[@]}"; printf '\n'
+    exit 0
+fi
+exec "${CMD[@]}"

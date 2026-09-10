@@ -6,6 +6,7 @@ import dataclasses
 import difflib
 import json
 import logging
+import os
 import pathlib
 from typing import Any, Literal, Protocol, TypeAlias
 
@@ -1035,6 +1036,53 @@ def _mhbench_lora_model(robot: str | None) -> pi0_config.Pi0Config:
     )
 
 
+def _mhbench_env(name: str, default, cast):
+    raw = os.environ.get(name)
+    return default if raw in (None, "") else cast(raw)
+
+
+def _mhbench_multitask_train_kwargs() -> dict:
+    """The shared run's budget, schedule and optimiser, each overridable from
+    the environment as ``PI05_*`` -- so ``baselines/recipes/<round>/Pi_05.yaml``
+    sets them the way GR00T's and Psi0's recipes set theirs, instead of this
+    file being edited per round. The defaults are the values the CoHuB round
+    trained with (openpi's own AdamW and cosine numbers, batch 32, 40k steps).
+
+    optax's decay_steps is the *total* schedule length including warm-up, so
+    it follows the step count unless PI05_DECAY_STEPS says otherwise: raising
+    only the step count once (2026-08-29) left the cosine bottoming out at 30k
+    and the last quarter crawling at the floor.
+
+    The LoRA ranks are deliberately not here. They are the parameter shapes
+    (gemma_2b_lora r16/a16, gemma_300m_lora r32/a32 in models/gemma.py), and a
+    policy server rebuilds the model from this config with whatever
+    environment *it* has, so a rank set only at training time would be a
+    checkpoint the server cannot load.
+    """
+    steps = _mhbench_env("PI05_NUM_TRAIN_STEPS", 40_000, int)
+    return dict(
+        batch_size=_mhbench_env("PI05_BATCH_SIZE", 32, int),
+        num_train_steps=steps,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=_mhbench_env("PI05_WARMUP_STEPS", 1_000, int),
+            peak_lr=_mhbench_env("PI05_PEAK_LR", 2.5e-5, float),
+            decay_steps=_mhbench_env("PI05_DECAY_STEPS", steps, int),
+            decay_lr=_mhbench_env("PI05_DECAY_LR", 2.5e-6, float),
+        ),
+        optimizer=_optimizer.AdamW(
+            b1=_mhbench_env("PI05_ADAM_B1", 0.9, float),
+            b2=_mhbench_env("PI05_ADAM_B2", 0.95, float),
+            eps=_mhbench_env("PI05_ADAM_EPS", 1e-8, float),
+            weight_decay=_mhbench_env("PI05_WEIGHT_DECAY", 1e-10, float),
+            clip_gradient_norm=_mhbench_env("PI05_CLIP_GRAD_NORM", 1.0, float),
+        ),
+        save_interval=_mhbench_env("PI05_SAVE_INTERVAL", 2_000, int),
+        keep_period=_mhbench_env("PI05_KEEP_PERIOD", 10_000, int),
+        val_interval=_mhbench_env("PI05_VAL_INTERVAL", 1_000, int),
+        val_batches=_mhbench_env("PI05_VAL_BATCHES", 16, int),
+    )
+
+
 _CONFIGS.extend(
     TrainConfig(
         name=f"pi05_mhbench_{task}_{suffix}",
@@ -1108,20 +1156,10 @@ _CONFIGS.append(
         ),
         freeze_filter=_mhbench_lora_model("robot_a").get_freeze_filter(),
         ema_decay=None,
-        batch_size=32,
-        num_train_steps=40_000,
-        # The schedule has to span the run. openpi's default decay_steps is
-        # 30 000, which matches its default num_train_steps -- raising only the
-        # step count to 40 000 (2026-08-29) left the cosine bottoming out at 30k
-        # and the last quarter of training crawling at the 2.5e-6 floor. optax's
-        # decay_steps is the *total* length including warmup, so 40 000 is the
-        # run. peak_lr and decay_lr are openpi's own, untouched.
-        lr_schedule=_optimizer.CosineDecaySchedule(decay_steps=40_000),
-        save_interval=2000,
         num_workers=12,
-        val_interval=1000,
-        val_batches=16,
-        keep_period=10_000,   # the benchmark's four evaluation points, as above
+        # batch, steps, schedule, optimiser, checkpoint cadence: the PI05_*
+        # environment, defaulting to the CoHuB round's values.
+        **_mhbench_multitask_train_kwargs(),
     )
 )
 
