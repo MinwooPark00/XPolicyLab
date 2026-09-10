@@ -34,6 +34,8 @@ task_names=("${task}")
 case "${task}" in
   door_passage) task_names+=(doorpassage) ;;
   frame_hang)   task_names+=(framehang) ;;
+  doorpassage)  task_names+=(door_passage) ;;
+  framehang)    task_names+=(frame_hang) ;;
   # Legacy long-form callers can still supply the retired task spelling even
   # though task-first calls canonicalize it in launcher_args.sh.
   handover_easy) task_names+=(handover) ;;

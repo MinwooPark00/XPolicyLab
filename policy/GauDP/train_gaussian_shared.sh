@@ -2,7 +2,7 @@
 # One NoPoSplat encoder for every task, instead of one per task.
 #
 #   bash train_gaussian_shared.sh [seed] [gpu] [task...] [-- extra args]
-#   bash train_gaussian_shared.sh 0 0 cocarry handover door_passage frame_hang
+#   bash train_gaussian_shared.sh 0 0 cocarry handover framehang pouring
 #
 # The encoder reads RGB, depth and camera geometry only -- no state, no action
 # -- so nothing about it is task-specific, and a shared one means a new task
@@ -12,10 +12,10 @@
 #
 # Measured on handover alone (31.5k frames): val PSNR 23.24 after one epoch,
 # 26.18 at epoch 15, and best.ckpt tracks it exactly (min val/loss and max
-# val/psnr agree). The four-task set is 156k frames, so an epoch is ~5x longer
-# and the same exposure arrives around epoch 3; the default 20 with early
-# stopping leaves room for the extra scene diversity to need more than that
-# without spending it when it does not.
+# val/psnr agree). The benchmark's eight tasks are ~8x that, so one epoch here
+# already carries more exposure than a per-task epoch and the same quality
+# arrives within the first few; baselines/configs/GauDP.yaml sets the budget
+# (GAUDP_SHARED_EPOCHS) and early stopping ends it when diversity stops paying.
 set -euo pipefail
 
 POLICY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -30,7 +30,7 @@ while (( $# )); do
     if [[ "$1" == "--" ]]; then shift; extra=("$@"); break; fi
     tasks+=("$1"); shift
 done
-[[ ${#tasks[@]} -gt 0 ]] || tasks=(cocarry handover door_passage frame_hang)
+[[ ${#tasks[@]} -gt 0 ]] || tasks=(cocarry handover framehang pouring copouring trashcollection cartservice tablealign)
 
 bench=${GAUDP_BENCH:-mhbench}
 action_type=$GAUDP_ACTION_TYPE

@@ -13,6 +13,11 @@
 #
 # `scene` stays the plain task name (cocarry, handover, ...) because the
 # pre-joint Gaussian runs were filed under it -- see gaudp_gaussian_run_dirs.
+#
+# The compact spelling is the canonical one: baselines/common.sh's mh_task_word
+# yields `framehang`, mh_ckpt_name puts that in the run-dir name, and
+# eval/GauDP.sh resolves the checkpoint by it. Training under `frame_hang`
+# would write a directory evaluation never looks in.
 
 GAUDP_ACTION_TYPE=joint
 GAUDP_DEFAULT_ENV_CFG=unitree_g1x2_centralized
@@ -22,8 +27,8 @@ gaudp_task_config() {
     case "${task}" in
         cocarry) scene=cocarry ;;
         handover|handover_easy|handovereasy) task=handover; scene=handover ;;
-        door_passage|doorpassage) task=door_passage; scene=door_passage ;;
-        frame_hang|framehang) task=frame_hang; scene=frame_hang ;;
+        door_passage|doorpassage) task=doorpassage; scene=doorpassage ;;
+        frame_hang|framehang) task=framehang; scene=framehang ;;
         *) scene=${task} ;;
     esac
     env_cfg=${GAUDP_ENV_CFG:-${GAUDP_DEFAULT_ENV_CFG}}
