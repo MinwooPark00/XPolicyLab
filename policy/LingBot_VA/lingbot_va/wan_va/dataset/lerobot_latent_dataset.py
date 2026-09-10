@@ -40,17 +40,25 @@ def construct_lerobot(
 def construct_lerobot_multi_processor(config, 
                                       num_init_worker=8,
                                       ):
-    datasets_out_lst = []
     construct_func = partial(
         construct_lerobot,
         config=config,
     )
     repo_list = recursive_find_file(config.dataset_path, 'info.json')
     repo_list = [v.split('/meta/info.json')[0] for v in repo_list]
-    with Pool(num_init_worker) as pool:
-        datasets_out_lst = pool.map(construct_func, repo_list)
-                
-    return datasets_out_lst
+
+    # This runs from the trainer, after the model is on the GPU, so the pool
+    # forks a process that already holds a CUDA context -- which hangs. There
+    # is nothing to parallelise when the dataset path holds one LeRobot tree
+    # (MHBench's does), so build it in-process; `dataset_init_workers` on the
+    # config asks for a pool back when there are many.
+    workers = int(getattr(config, 'dataset_init_workers', num_init_worker) or 1)
+    workers = min(workers, len(repo_list))
+    if workers <= 1:
+        return [construct_func(repo_id) for repo_id in repo_list]
+
+    with Pool(workers) as pool:
+        return pool.map(construct_func, repo_list)
 
 def get_relative_pose(pose):
     if torch.is_tensor(pose):

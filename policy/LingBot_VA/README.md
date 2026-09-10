@@ -85,6 +85,41 @@ Environment variables used by the adapter scripts:
 | `LINGBOT_VA_TARGET_FPS` | Target sampling fps for latents (default `10`). |
 | `LINGBOT_VA_VA_HOST` / `LINGBOT_VA_VA_PORT` | Point evaluation at an already-running wan_va backend instead of auto-launching one. |
 
+## MHBench
+
+MHBench (`bench_name=mhbench`) drives this adapter through its own runners
+rather than the scripts above; what differs is collected here, and the full
+recipe with its one-off setup is in the benchmark's
+`baselines/scripts/README.md`, section *LingBot_VA*.
+
+- **Action.** 35D -- 31 joint targets, the pelvis height and the base velocity
+  -- not the 30D dual-arm layout. Both projections are
+  reinitialised from a base prepared once by
+  `baselines/scripts/prepare_lingbot_init_ckpt.py`; everything else transfers.
+- **Cameras.** One ego view per agent (`observation.images.ego`) at 224x320,
+  not three RoboTwin views at 256 square. Both sides of the canvas must be a
+  multiple of 32 so the VAE's stride-16 grid stays even under 2x2 patching.
+- **Cadence.** The recording is 50 fps and latents are sampled at 10, so a
+  latent frame spans 20 actions (`LINGBOT_ACTION_PER_FRAME=20`).
+- **Normalisation.** `meta/lingbot_norm_stat.json`, computed from the training
+  split by `process_data.py --layout mhbench` and copied next to every
+  checkpoint. The config refuses to run against the placeholder.
+- **Budget.** Global batch 32 (the benchmark's) but 10,000 steps rather than
+  its 40,000: a sample here is a whole episode rather than an action chunk, so
+  the shared budget would be 1.28M episode-samples -- 67 days on one 3090,
+  measured. 32 x 10,000 is upstream's own post-training budget.
+- **Arm.** LoRA r32 on every block projection with the two action projections
+  trained in full (`LINGBOT_LORA_RANK`, 0 for upstream's full fine-tune). The
+  adapters are folded into the base weights on save, so a checkpoint is keyed
+  exactly like a full fine-tune and the server needs no LoRA support.
+- **Two agents, one policy.** `wan_va_server` keeps one rollout *session* per
+  agent -- its own KV cache, VAE streaming cache, video history and
+  instruction -- selected by a `session` field in the request. A client that
+  sends none gets the previous single-rollout behaviour unchanged.
+- **Resuming.** `save_checkpoint` also writes `training_state.pt` (optimizer
+  moments, step counter, adapters), which upstream left commented out; without
+  it a requeued job restarts at step 0.
+
 ## Notes
 
 - **Latent pipeline is mandatory:** do not point training at a plain LeRobot dataset without `latents/` and `empty_emb.pt`; run Data Processing first.

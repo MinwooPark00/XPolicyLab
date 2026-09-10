@@ -40,8 +40,18 @@ from utils import (
 
 class VA_Server:
 
+    # One rollout's state. The transformer already keys its KV cache by name
+    # and the VAE's streaming cache lives in a thin wrapper, so a second
+    # concurrent rollout costs a second cache and nothing else -- which is what
+    # MHBench's shared decentralized policy needs: one set of weights driving
+    # two agents, each with its own history and its own instruction.
+    SESSION_STATE = ('cache_name', 'frame_st_id', 'init_latent', 'prompt_embeds',
+                     'negative_prompt_embeds', 'streaming_vae', 'exp_save_root')
+
     def __init__(self, job_config):
         self.cache_name = 'pos'
+        self._sessions = {}
+        self._active_session = None
         self.job_config = job_config
         self.save_root = job_config.save_root
         self.dtype = job_config.param_dtype
@@ -603,8 +613,46 @@ class VA_Server:
         torch.cuda.empty_cache()
         self.frame_st_id += latent_model_input.shape[2]
 
+    def _select_session(self, name):
+        """Swap the active rollout's state in, stashing whatever was live."""
+        if name == self._active_session:
+            return
+        self._stash_session()
+        state = self._sessions.get(name)
+        if state is None:
+            state = {
+                'cache_name': f'pos_{name}',
+                'frame_st_id': 0,
+                'init_latent': None,
+                'prompt_embeds': None,
+                'negative_prompt_embeds': None,
+                'streaming_vae': WanVAEStreamingWrapper(self.vae),
+                'exp_save_root': self.save_root,
+            }
+            self._sessions[name] = state
+            logger.info(f"New rollout session '{name}' (cache {state['cache_name']})")
+        for key, value in state.items():
+            setattr(self, key, value)
+        self._active_session = name
+
+    def _stash_session(self):
+        if self._active_session is None:
+            return
+        self._sessions[self._active_session] = {
+            key: getattr(self, key, None) for key in self.SESSION_STATE
+        }
+
     @torch.no_grad()
     def infer(self, obs):
+        # `session` names the rollout; a client that sends none keeps the old
+        # single-rollout behaviour exactly.
+        self._select_session(str(obs.get('session', 'default')))
+        try:
+            return self._infer_request(obs)
+        finally:
+            self._stash_session()
+
+    def _infer_request(self, obs):
         reset = obs.get('reset', False)
         prompt = obs.get('prompt', None)
         compute_kv_cache = obs.get('compute_kv_cache', False)

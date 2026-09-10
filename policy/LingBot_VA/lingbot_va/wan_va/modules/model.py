@@ -28,8 +28,18 @@ from functools import partial
 
 try:
     from flash_attn_interface import flash_attn_func
-except:
-    from flash_attn import flash_attn_func
+except ImportError:
+    try:
+        from flash_attn import flash_attn_func
+    except ImportError:
+        # Only attn_mode="flashattn" calls it. Training runs on flex attention
+        # and the MHBench server on torch SDPA, so an environment without
+        # flash-attn (a source build against this torch) is a working one --
+        # fail where it is used rather than on import.
+        def flash_attn_func(*args, **kwargs):  # noqa: D401
+            raise ImportError(
+                "attn_mode='flashattn' needs flash-attn installed; "
+                "use attn_mode='torch' or 'flex' instead")
 
 __all__ = ['WanTransformer3DModel']
 
