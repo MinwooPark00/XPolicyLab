@@ -1,23 +1,15 @@
-def eval_one_episode(TASK_ENV, model_client):
+"""Rollout loop for LingBot_VA.
 
-    model_client.call(func_name="reset") # reset policy
+Unlike the current-frame policies, this one consumes every executed frame: the
+closed loop feeds the frames the robot actually passed through back into the
+server as the next chunk's KV cache (`_mhbench_commit`, the official RoboTwin
+eval's compute_kv_cache step), so an observation skipped here is a gap in the
+model's own video history. OBS_STRIDE = 1 keeps the shared loop rendering each
+step -- the same choice DP and ACT make for their frame windows.
+"""
 
-    while not TASK_ENV.is_episode_end(): # Check whether the episode ends
-        obs = TASK_ENV.get_obs() # Get Observation
-        model_client.call(func_name="update_obs", obs=obs)  # Update Observation
-        actions = model_client.call(func_name="get_action") # Get Action according to observation chunk
+from XPolicyLab.utils.rollout import bind
 
-        for action_idx, action in enumerate(actions):
-            TASK_ENV.take_action(action)
+OBS_STRIDE = 1
 
-            if TASK_ENV.is_episode_end() or action_idx + 1 == len(actions):
-                break
-
-            obs = TASK_ENV.get_obs()
-            model_client.call(func_name="update_obs", obs=obs)
-
-def eval_one_episode_batch(TASK_ENV, model_client):
-    raise NotImplementedError(
-        "LingBot_VA wan_va_server keeps one global KV/VAE cache and cannot "
-        "evaluate multiple envs in one process. Keep eval_batch: false in deploy.yml."
-    )
+eval_one_episode, eval_one_episode_batch = bind(OBS_STRIDE)

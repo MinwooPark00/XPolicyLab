@@ -42,14 +42,31 @@ def load_transformer(
     transformer_path,
     torch_dtype,
     torch_device,
+    output_loading_info=False,
     **kwargs
 ):
-    model = WanTransformer3DModel.from_pretrained(
+    """`output_loading_info=True` also returns diffusers' missing/unexpected keys.
+
+    The MHBench base has its three action-width tensors removed on purpose, so
+    the caller needs to see which keys the checkpoint did not supply -- both to
+    confirm it is exactly those three, and because a checkpoint with missing
+    keys must be loaded with `low_cpu_mem_usage=False`: the default meta-device
+    load leaves anything absent from the file as a tensor with no data, and the
+    first `.to(device)` raises "Cannot copy out of meta tensor".
+    """
+    out = WanTransformer3DModel.from_pretrained(
         transformer_path,
         torch_dtype=torch_dtype,
+        output_loading_info=output_loading_info,
         **kwargs
     )
-    return model.to(torch_device)
+    if output_loading_info:
+        model, info = out
+        # Deliberately NOT moved: a key the file does not carry is still a meta
+        # tensor here, and `.to()` on one raises. The caller materialises those
+        # (Module.to_empty + reset_parameters) and moves the model itself.
+        return model, info
+    return out.to(torch_device)
 
 
 def patchify(x, patch_size):

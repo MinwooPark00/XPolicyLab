@@ -1,5 +1,7 @@
 import os
+import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -19,12 +21,65 @@ from XPolicyLab.utils.process_data import (
     unpack_robot_state,
 )
 
+from .prepare_merged_ckpt import build_merged_ckpt
 from .lingbot_va.evaluation.robotwin.websocket_client_policy import WebsocketClientPolicy
 from .lingbot_va.wan_va.configs import VA_CONFIGS
 
 DEFAULT_VA_SERVER_HOST = "127.0.0.1"
 DEFAULT_VA_SERVER_PORT = 10001
 DEFAULT_CONFIG_NAME = "robotwin30_train"
+
+# ---------------------------------------------------------------------------
+# MHBench
+#
+# Two Unitree G1s, one shared multitask policy: the same weights drive both
+# agents and only the instruction tells them apart. LingBot-VA rolls out
+# autoregressively, so each agent needs its own KV cache and its own video
+# history -- the server keys those by `session` (wan_va_server.SESSION_STATE),
+# and this adapter drives one session per agent through the same protocol the
+# official RoboTwin eval uses (reset(prompt) -> infer -> compute_kv_cache).
+#
+# Camera slots are historical: the env sends ego_a as cam_left_wrist and ego_b
+# as cam_right_wrist (mhbench_xpolicylab_env.py's _VISION_SLOT), which is how
+# every mhbench adapter reads them.
+# ---------------------------------------------------------------------------
+MHBENCH_CAMERA_SLOT = {"robot_a": "cam_left_wrist", "robot_b": "cam_right_wrist"}
+MHBENCH_AGENTS = ("robot_a", "robot_b")
+MHBENCH_CONFIG_NAME = "mhbench"
+MHBENCH_ACTION_DIM = 35
+
+
+def _is_none_like(value: Any) -> bool:
+    if value is None:
+        return True
+    return isinstance(value, str) and value.strip().lower() in {"", "none", "null"}
+
+
+def _pack_single_robot_action(flat_action: np.ndarray) -> dict:
+    """One robot's 35D action -> MHBenchTaskEnv.take_action's
+    {joint_targets, height, base_vel} (the mhbench_keys.ACTION_KEYS layout)."""
+    flat_action = np.asarray(flat_action, dtype=np.float32)
+    assert flat_action.shape[-1] == MHBENCH_ACTION_DIM, \
+        f"expected 35D per-robot action, got {flat_action.shape}"
+    return {
+        "joint_targets": flat_action[0:31],
+        "height": flat_action[31:32],
+        "base_vel": flat_action[32:35],
+    }
+
+
+class _Rollout:
+    """One agent's client-side half of the closed loop."""
+
+    def __init__(self):
+        self.reset()
+
+    def reset(self):
+        self.first_obs = None
+        self.skip_leading = True
+        self.latest_raw_chunk = None
+        self.exec_buffer = []
+        self.last_exec_steps = 0
 
 # 30-dim LingBot layout -> 14-dim RoboDojo joint.
 JOINT_CONTROL_INDICES = np.array([
@@ -119,7 +174,10 @@ class Model(ModelTemplate):
             "Cover the blocks from left to right, remember their colors, then uncover them in the order: red, green, and blue."
         )
 
+        self._mhbench = str(self.model_cfg.get("bench_name") or "") == "mhbench"
         config_name = self.model_cfg.get("config_name", DEFAULT_CONFIG_NAME)
+        if self._mhbench and (_is_none_like(config_name) or str(config_name).startswith("robotwin")):
+            config_name = MHBENCH_CONFIG_NAME
         self.job_config = VA_CONFIGS[config_name]
         self.obs_cam_keys = list(self.job_config.obs_cam_keys)
         self.action_dim = int(self.job_config.action_dim)
@@ -138,6 +196,7 @@ class Model(ModelTemplate):
         self.observation_window: list[dict[str, Any]] | None = None
         self._latest_env_idx_list: list[int] = [0]
         self._skip_leading_chunk_on_next_action = True
+        self._backend: subprocess.Popen | None = None
         self._first_observation: dict[str, Any] | None = None
         self._latest_raw_action_chunk: np.ndarray | None = None
         self._exec_obs_buffer: list[dict[str, Any]] = []
@@ -169,6 +228,9 @@ class Model(ModelTemplate):
         print(f"[LingBot_VA] save_imagined_video={self.save_imagined_video}, "
               f"model_cfg keys={list(self.model_cfg.keys())[:10]}", flush=True)
 
+        if self._mhbench:
+            self._init_mhbench()
+        self._maybe_launch_backend()
         self._ws = self._connect_client()
         print(
             f"[LingBot_VA] keyframe_stride={self._resolve_keyframe_stride()}, "
@@ -176,6 +238,177 @@ class Model(ModelTemplate):
             f"initial_action_skip={self._resolve_initial_action_skip()}",
             flush=True,
         )
+
+    # ------------------------------------------------------------------
+    # MHBench
+    # ------------------------------------------------------------------
+
+    def _init_mhbench(self):
+        env_cfg_type = str(self.model_cfg.get("env_cfg_type") or "")
+        if env_cfg_type and env_cfg_type not in ("unitree_g1x2_decentralized",):
+            raise ValueError(
+                "LingBot_VA serves MHBench decentralized only (one shared policy per "
+                f"agent); got env_cfg_type={env_cfg_type!r}. There is no 70D centralized "
+                "checkpoint for this model.")
+        style = str(self.model_cfg.get("mhbench_decentralized_style") or "shared")
+        if style != "shared":
+            raise ValueError(
+                f"LingBot_VA has only the shared multitask checkpoint; got style={style!r}")
+        if int(self.job_config.action_dim) != MHBENCH_ACTION_DIM:
+            raise ValueError(
+                f"config {self.job_config.__name__} has action_dim="
+                f"{self.job_config.action_dim}, MHBench needs {MHBENCH_ACTION_DIM}")
+        if getattr(self.job_config, "norm_stat_source", None) == "":
+            raise ValueError(
+                "no action normalisation: the checkpoint's lingbot_norm_stat.json was "
+                "not found. serve/LingBot_VA.sh exports LINGBOT_NORM_STAT from the "
+                "checkpoint directory; a checkpoint copied without it needs the value "
+                "from the dataset it was trained on.")
+        self.action_dim = MHBENCH_ACTION_DIM
+        self._rollouts = {agent: _Rollout() for agent in MHBENCH_AGENTS}
+        self._last_encoded: dict[str, dict] | None = None
+        print(f"[LingBot_VA][mhbench] shared multitask policy, sessions="
+              f"{list(MHBENCH_AGENTS)}, action_per_frame={self.action_per_frame}",
+              flush=True)
+
+    def _maybe_launch_backend(self):
+        """Start the wan_va backend if nothing is answering on its port.
+
+        MHBench's runner starts one policy server per job and knows nothing
+        about LingBot's second process, so the adapter brings it up itself --
+        the same thing eval.sh does outside the runner.
+        """
+        if not self._mhbench or os.environ.get("LINGBOT_VA_NO_AUTOLAUNCH") == "1":
+            return
+        import socket
+
+        def answering():
+            with socket.socket() as sock:
+                sock.settimeout(1.0)
+                return sock.connect_ex((self.va_server_host, self.va_server_port)) == 0
+
+        if answering():
+            print("[LingBot_VA][mhbench] wan_va backend already up", flush=True)
+            return
+
+        checkpoint = self.model_cfg.get("model_dir") or self.model_cfg.get("checkpoint_path")
+        if _is_none_like(checkpoint):
+            raise ValueError("no checkpoint to serve: set model_dir in the deploy overrides")
+        base = self.model_cfg.get("base_model_path") or os.environ.get("LINGBOT_VA_BASE_MODEL_PATH")
+        if _is_none_like(base):
+            raise ValueError(
+                "no base_model_path: the served transformer needs the base vae/"
+                "text_encoder/tokenizer beside it (LINGBOT_VA_BASE_MODEL_PATH)")
+        # One merged dir per server process: eval shards run concurrently and
+        # a shared .merged_ckpt would have them relinking each other's.
+        merged = str(build_merged_ckpt(
+            str(checkpoint), str(base),
+            Path(os.environ.get("TMPDIR", "/tmp")) / f"lingbot_merged_{os.getpid()}"))
+
+        env = dict(os.environ)
+        env["LINGBOT_VA_BASE_MODEL_PATH"] = merged
+        env.setdefault("MASTER_ADDR", "127.0.0.1")
+        env.setdefault("MASTER_PORT", str(self.va_server_port + 1000))
+        cmd = [sys.executable, "-m", "wan_va.wan_va_server",
+               "--config-name", MHBENCH_CONFIG_NAME,
+               "--port", str(self.va_server_port),
+               "--save_root", str(Path(self.model_cfg.get("result_dir", "./results/LingBot_VA")) / "wan_va")]
+        print(f"[LingBot_VA][mhbench] launching backend: {' '.join(cmd)}", flush=True)
+        self._backend = subprocess.Popen(cmd, cwd=str(_CUR_DIR / "lingbot_va"), env=env)
+
+        deadline = time.time() + float(os.environ.get("LINGBOT_VA_BACKEND_TIMEOUT_S", 1800))
+        while time.time() < deadline:
+            if self._backend.poll() is not None:
+                raise RuntimeError(
+                    f"wan_va backend exited with {self._backend.returncode} before serving")
+            if answering():
+                print("[LingBot_VA][mhbench] backend is up", flush=True)
+                return
+            time.sleep(2.0)
+        raise TimeoutError("wan_va backend did not open its port in time")
+
+    def _encode_mhbench(self, obs: dict) -> dict[str, dict]:
+        """One env observation -> one encoded observation per agent."""
+        vision = obs["vision"]
+        wire = dict(obs.get("mhbench_instruction") or {})
+        encoded = {}
+        for agent in MHBENCH_AGENTS:
+            slot = MHBENCH_CAMERA_SLOT[agent]
+            if slot not in vision:
+                raise KeyError(f"observation has no {slot} view for {agent}")
+            frame = vision[slot]
+            frame = frame["color"] if isinstance(frame, dict) else frame
+            sentence = wire.get(agent) or self._prompt_override or self.default_prompt
+            encoded[agent] = {
+                "observation.images.ego": ensure_hwc_uint8(frame),
+                "task": sentence,
+            }
+        return encoded
+
+    def _mhbench_predict(self, agent: str) -> np.ndarray:
+        """One agent's next chunk, driving its own server session."""
+        roll = self._rollouts[agent]
+        observation = self._last_encoded[agent]
+
+        if roll.first_obs is None:
+            self._ws.infer({"session": agent, "reset": True, "prompt": observation["task"]})
+            print(f"[LingBot_VA][mhbench] {agent} instruction: {observation['task']!r}",
+                  flush=True)
+            roll.first_obs = observation
+            roll.skip_leading = True
+        else:
+            self._mhbench_commit(agent)
+
+        payload = self._to_engine_obs(roll.first_obs)
+        payload["session"] = agent
+        result = self._ws.infer(payload)
+        roll.latest_raw_chunk = np.asarray(result["action"])
+
+        chunk = self._format_action_chunk(result["action"])
+        if chunk.shape[1] != MHBENCH_ACTION_DIM:
+            raise ValueError(f"{agent}: server returned {chunk.shape[1]}D actions, "
+                             f"expected {MHBENCH_ACTION_DIM}")
+        if roll.skip_leading:
+            skip = self._resolve_initial_action_skip()
+            if skip >= chunk.shape[0]:
+                raise ValueError(f"{agent}: initial skip {skip} >= chunk {chunk.shape[0]}")
+            chunk = chunk[skip:]
+            roll.skip_leading = False
+        chunk = self._maybe_truncate_action_chunk(chunk)
+        roll.last_exec_steps = int(chunk.shape[0])
+        roll.exec_buffer = []
+        return chunk
+
+    def _mhbench_commit(self, agent: str):
+        """Feed the frames actually executed back into the agent's KV cache."""
+        roll = self._rollouts[agent]
+        if roll.latest_raw_chunk is None:
+            return
+        stride = self._resolve_keyframe_stride()
+        exec_steps = roll.last_exec_steps or len(roll.exec_buffer)
+        usable = min(len(roll.exec_buffer), max(exec_steps - 1, 0))
+        key_frames = [roll.exec_buffer[i] for i in range(stride - 1, usable, stride)]
+        if len(key_frames) < exec_steps // stride and self._last_encoded is not None:
+            key_frames.append(self._last_encoded[agent])
+        if not key_frames:
+            key_frames = list(roll.exec_buffer)
+        if not key_frames:
+            return
+        payload = self._to_engine_obs_batch(key_frames, state=roll.latest_raw_chunk)
+        payload["session"] = agent
+        payload["compute_kv_cache"] = True
+        self._ws.infer(payload)
+
+    def _mhbench_chunks(self) -> list[dict]:
+        if self._last_encoded is None:
+            raise ValueError("No observation is available. Call update_obs() before get_action().")
+        chunks = {agent: self._mhbench_predict(agent) for agent in MHBENCH_AGENTS}
+        steps = min(chunk.shape[0] for chunk in chunks.values())
+        return [
+            {"mhbench_raw_action": {
+                agent: _pack_single_robot_action(chunks[agent][t]) for agent in MHBENCH_AGENTS}}
+            for t in range(steps)
+        ]
 
     def _connect_client(self) -> WebsocketClientPolicy:
         return WebsocketClientPolicy(
@@ -376,6 +609,13 @@ class Model(ModelTemplate):
         return dict(action=self._predict_chunk(observation))
 
     def update_obs(self, obs):
+        if self._mhbench:
+            encoded = self._encode_mhbench(obs)
+            if self._last_encoded is not None:
+                for agent in MHBENCH_AGENTS:
+                    self._rollouts[agent].exec_buffer.append(encoded[agent])
+            self._last_encoded = encoded
+            return
         self.update_obs_batch([obs])
 
     def update_obs_batch(self, obs_list):
@@ -405,6 +645,8 @@ class Model(ModelTemplate):
         self._chunk_seq = 0
 
     def get_action(self, **kwargs):
+        if self._mhbench:
+            return self._mhbench_chunks()
         if self.observation_window is None:
             raise AssertionError("update_obs or update_obs_batch first!")
 
@@ -444,6 +686,13 @@ class Model(ModelTemplate):
         return self._resolve_keyframe_stride()
 
     def reset(self, checkpoint_path=None) -> None:
+        if self._mhbench:
+            # Sessions are re-reset with the episode's instruction on the next
+            # get_action; nothing to say to the server here.
+            for roll in self._rollouts.values():
+                roll.reset()
+            self._last_encoded = None
+            return
         if checkpoint_path is not None:
             print(
                 "[WARN] checkpoint_path reload is not supported in websocket bridge mode; "
@@ -458,3 +707,21 @@ class Model(ModelTemplate):
         self._latest_raw_action_chunk = None
         self._exec_obs_buffer = []
         self._chunk_seq = 0
+
+    def close(self) -> None:
+        """Stop the backend this adapter started, if it started one."""
+        if getattr(self, "_backend", None) is None:
+            return
+        if self._backend.poll() is None:
+            self._backend.terminate()
+            try:
+                self._backend.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                self._backend.kill()
+        self._backend = None
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass

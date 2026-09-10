@@ -33,6 +33,7 @@ from einops import rearrange
 from modules.utils import (
     load_transformer,
 )
+from modules.lora import apply_lora, merged_state_dict
 from utils import (
     init_logger, 
     logger, 
@@ -46,22 +47,40 @@ from utils import (
 from dataset import MultiLatentLeRobotDataset
 import gc
 
+# Reinitialised because MHBench's action is 35D and the pretrained one is 30D;
+# baselines/scripts/prepare_lingbot_init_ckpt.py drops exactly these.
+ACTION_WIDTH_KEYS = {
+    "action_embedder.weight",
+    "action_embedder.bias",
+    "action_proj_out.weight",
+    "action_proj_out.bias",
+}
+
 
 class Trainer:
     def __init__(self, config):
+        # Telemetry must not be able to end a multi-day run: a wandb outage, an
+        # expired key or a compute node without egress logs a warning and the
+        # training carries on. `enable_wandb` then reads False everywhere below.
         if config.enable_wandb and config.rank == 0:
-            wandb.login(host=os.environ['WANDB_BASE_URL'], key=os.environ['WANDB_API_KEY'])
-            self.wandb = wandb
-            self.wandb.init(
-                entity=os.environ["WANDB_TEAM_NAME"],
-                project=os.getenv("WANDB_PROJECT", "va_robotwin"),
-                # dir=log_dir,
-                config=config,
-                mode="online",
-                name='test_lln'
-                # name=os.path.basename(os.path.normpath(job_config.job.dump_folder))
-            )
-            logger.info("WandB logging enabled")
+            try:
+                if os.environ.get("WANDB_BASE_URL") and os.environ.get("WANDB_API_KEY"):
+                    wandb.login(host=os.environ["WANDB_BASE_URL"],
+                                key=os.environ["WANDB_API_KEY"])
+                self.wandb = wandb
+                self.wandb.init(
+                    entity=os.environ.get("WANDB_TEAM_NAME") or None,
+                    project=os.getenv("WANDB_PROJECT", "va_robotwin"),
+                    config=config,
+                    mode="online",
+                    name=os.environ.get("WANDB_NAME") or None,
+                    id=os.environ.get("WANDB_RUN_ID") or None,
+                    resume="allow",
+                )
+                logger.info("WandB logging enabled")
+            except Exception as exc:
+                logger.warning(f"WandB disabled: {exc}")
+                config.enable_wandb = False
         self.step = 0
         self.config = config
         self.device = torch.device(f"cuda:{config.local_rank}")
@@ -74,34 +93,103 @@ class Trainer:
         # Load and shard transformer with FSDP
         logger.info("Loading transformer...")
 
-        if hasattr(config, 'resume_from') and config.resume_from:
-            transformer_path = os.path.join(config.resume_from, 'transformer')
-            if config.rank == 0:
-                logger.info(f"Resuming from checkpoint: {transformer_path}")
-        else:
-            transformer_path = os.path.join(config.wan22_pretrained_model_name_or_path, 'transformer')
+        self.save_dir = Path(config.save_root) / "checkpoints"
+        self.save_dir.mkdir(parents=True, exist_ok=True)
+        self.lora_rank = int(getattr(config, 'lora_rank', 0) or 0)
+        if self.lora_rank and config.world_size > 1:
+            raise ValueError(
+                "the LoRA arm is the single-card arm; use lora_rank=0 for a sharded "
+                "full fine-tune, or run it on one GPU")
+        # Full fine-tuning needs FSDP even on one card (16 bytes/param of
+        # optimizer state); the LoRA arm keeps the frozen base in bf16 and
+        # trains ~80M parameters, which fits without sharding.
+        self.use_fsdp = not self.lora_rank
 
-        self.transformer = load_transformer(
+        if getattr(config, 'norm_stat_source', None) == "":
+            raise ValueError(
+                "no action normalisation: set LINGBOT_NORM_STAT, or point "
+                "LINGBOT_VA_DATASET_PATH at a dataset whose meta/ holds "
+                "lingbot_norm_stat.json (prepare_lingbot_latents.sbatch writes it). "
+                "Training against the placeholder quantiles would learn the wrong scale.")
+
+        base_dir = config.wan22_pretrained_model_name_or_path
+        self.resume_state_path = self._resolve_resume_state(config)
+        if self.lora_rank:
+            # The base never moves under LoRA: the adapters carry the delta and
+            # are restored from the training state, so resuming reloads the base.
+            transformer_path = os.path.join(base_dir, 'transformer')
+        else:
+            resume_ckpt = self._latest_checkpoint() if self.resume_state_path else None
+            transformer_path = os.path.join(resume_ckpt or base_dir, 'transformer')
+        if config.rank == 0:
+            logger.info(f"Transformer weights: {transformer_path}")
+
+        self.transformer, loading_info = load_transformer(
             transformer_path,
-            torch_dtype=torch.float32,
+            torch_dtype=torch.bfloat16 if self.lora_rank else torch.float32,
             torch_device='cpu',
-            attn_mode="flex"
+            attn_mode="flex",
+            output_loading_info=True,
         )
+        missing = set(loading_info.get("missing_keys") or ())
+        unexpected = set(loading_info.get("unexpected_keys") or ())
+        if not missing <= ACTION_WIDTH_KEYS:
+            raise ValueError(
+                f"{transformer_path} is not the base this expects: missing "
+                f"{sorted(missing - ACTION_WIDTH_KEYS)} beyond the action projections. "
+                f"Rebuild it with baselines/scripts/prepare_lingbot_init_ckpt.py.")
+        # lingbot-va-base ships a stock-Wan `patch_embedding` Conv3d next to the
+        # `patch_embedding_mlp` Linear this model actually uses, so unexpected
+        # keys are the release's, not a mismatch. Say what they were and go on.
+        if unexpected and config.rank == 0:
+            logger.info(f"checkpoint carries {len(unexpected)} unused key(s): {sorted(unexpected)}")
+        # diffusers loads on the meta device (low_cpu_mem_usage cannot be
+        # turned off while _keep_in_fp32_modules is set), so a key the file
+        # does not carry stays a tensor with no data and the first .to(device)
+        # raises. Give the two action projections real storage and the
+        # initialisation nn.Linear would have given them.
+        for module_path in sorted({k.rsplit(".", 1)[0] for k in missing}):
+            module = self.transformer.get_submodule(module_path)
+            module.to_empty(device="cpu")
+            module.reset_parameters()
+            if config.rank == 0:
+                logger.info(f"reinitialised {module_path}: {tuple(module.weight.shape)}")
+        # load_transformer leaves the model where from_pretrained put it (CPU)
+        # so the meta parameters above could be materialised first.
+        self.transformer = self.transformer.to('cpu')
+
+        if self.lora_rank:
+            n_train, n_lora = apply_lora(
+                self.transformer,
+                rank=self.lora_rank,
+                alpha=getattr(config, 'lora_alpha', 16),
+                dropout=getattr(config, 'lora_dropout', 0.0),
+                train_action_projections=True,
+                train_action_condition=getattr(config, 'train_action_condition', False),
+            )
+            if config.rank == 0:
+                total = sum(p.numel() for p in self.transformer.parameters())
+                logger.info(f"LoRA r{self.lora_rank}: {n_lora/1e6:.1f}M adapter, "
+                            f"{n_train/1e6:.1f}M trainable of {total/1e6:.0f}M")
+        else:
+            self.transformer.requires_grad_(True)
 
         logger.info("Setting up activation checkpointing ...")
         apply_ac(self.transformer)
 
-        logger.info("Setting up FSDP...")
-        shard_fn = shard_model
-        self.transformer = _configure_model(
-            model=self.transformer,
-            shard_fn=shard_fn,
-            param_dtype=self.dtype,
-            device=self.device,
-            eval_mode=False,
-        )
+        if self.use_fsdp:
+            logger.info("Setting up FSDP...")
+            self.transformer = _configure_model(
+                model=self.transformer,
+                shard_fn=shard_model,
+                param_dtype=self.dtype,
+                device=self.device,
+                eval_mode=False,
+            )
+            self.transformer.requires_grad_(True)
+        else:
+            self.transformer.to(self.device)
         self.transformer.train()
-        self.transformer.requires_grad_(True)
 
         # Optimizer
         self.optimizer = torch.optim.AdamW(
@@ -140,13 +228,11 @@ class Trainer:
         self.train_scheduler_action = FlowMatchScheduler(shift=self.config.action_snr_shift, sigma_min=0.0, extra_one_step=True)
         self.train_scheduler_action.set_timesteps(1000, training=True)
 
-        self.save_dir = Path(config.save_root) / "checkpoints"
-        self.save_dir.mkdir(parents=True, exist_ok=True)
-
         self.gradient_accumulation_steps = getattr(config, 'gradient_accumulation_steps', 1)
         self.train_loader_iter = None
-        # if hasattr(config, 'resume_from') and config.resume_from:
-        #     self._load_training_state(config.resume_from)
+        self._checked_adapter_grads = False
+        if self.resume_state_path is not None:
+            self._load_training_state(self.resume_state_path)
     
     def _get_next_batch(self):
         """Get next batch from iterator, reset if epoch is finished."""
@@ -301,10 +387,8 @@ class Trainer:
         
         should_sync = (batch_idx + 1) % self.gradient_accumulation_steps == 0
         
-        if not should_sync:
-            self.transformer.set_requires_gradient_sync(False)
-        else:
-            self.transformer.set_requires_gradient_sync(True)
+        if hasattr(self.transformer, 'set_requires_gradient_sync'):
+            self.transformer.set_requires_gradient_sync(should_sync)
 
         output = self.transformer(input_dict, train_mode=True)
         latent_loss, action_loss = self.compute_loss(input_dict, output)
@@ -314,6 +398,22 @@ class Trainer:
 
         losses = {'latent_loss': latent_loss.detach(), 'action_loss': action_loss.detach()}
         
+        # Activation checkpointing under a frozen base is the one way this can
+        # train on nothing at all: a reentrant wrapper whose inputs need no
+        # gradient never runs its backward, and the adapters inside it stay at
+        # their initialisation while the loss falls on the video stream alone.
+        # Check once, on the first backward, rather than after two days.
+        if self.lora_rank and not self._checked_adapter_grads:
+            self._checked_adapter_grads = True
+            reached = sum(1 for name, p in self.transformer.named_parameters()
+                          if p.requires_grad and '.lora_B' in name and p.grad is not None)
+            if reached == 0:
+                raise RuntimeError(
+                    "no adapter received a gradient on the first backward -- the "
+                    "activation-checkpoint wrapper is not passing one through. "
+                    "Training would leave the LoRA at its initialisation.")
+            logger.info(f"gradients reach {reached} adapters")
+
         # Only update weights after accumulating gradients
         if should_sync:
             total_norm = torch.nn.utils.clip_grad_norm_(self.transformer.parameters(), 2.0)
@@ -328,54 +428,104 @@ class Trainer:
 
         return losses
 
-    def save_checkpoint(self,):
-        """Save model checkpoint in the same format as pretrained model."""
-        try:
-            state_dict = get_model_state_dict(
-                self.transformer,
-                options=StateDictOptions(full_state_dict=True, cpu_offload=True),
-            )
-            state_dict_bf16 = {k: v.to(torch.bfloat16) for k, v in state_dict.items()}
-            # optim_state = get_optimizer_state_dict(
-            #         self.transformer, self.optimizer,
-            #         options=StateDictOptions(full_state_dict=True, cpu_offload=True),
-            #     )
+    def _latest_checkpoint(self):
+        """The newest checkpoint_step_N directory that holds a transformer."""
+        candidates = [d for d in self.save_dir.glob("checkpoint_step_*")
+                      if (d / "transformer" / "config.json").exists()]
+        if not candidates:
+            return None
+        return str(max(candidates, key=lambda d: int(d.name.rsplit("_", 1)[1])))
 
-            # Only rank 0 saves the checkpoint
+    def _resolve_resume_state(self, config):
+        """Where to pick training back up, or None for a fresh run.
+
+        `resume_from` is a directory holding training_state.pt; "auto" (the
+        default under SLURM --requeue) means this run's own save directory.
+        """
+        requested = getattr(config, 'resume_from', '') or ''
+        if requested and requested != 'auto':
+            path = Path(requested)
+            path = path if path.name == 'training_state.pt' else path / 'training_state.pt'
+            if not path.exists():
+                raise FileNotFoundError(f"resume_from has no training_state.pt: {path}")
+            return path
+        if requested == 'auto':
+            path = self.save_dir / 'training_state.pt'
+            return path if path.exists() else None
+        return None
+
+    def save_checkpoint(self,):
+        """Save weights in the pretrained model's format, plus a resume state.
+
+        Two files, for two readers. `transformer/` is what the inference server
+        loads: LoRA adapters are folded in, so a checkpoint is keyed exactly
+        like a full fine-tune. `training_state.pt` is what a requeued job
+        reloads -- optimizer moments, the step counter and, under LoRA, the
+        adapters themselves (the base on disk is the unchanged pretrained one).
+        Upstream saved neither of the last three, so a requeue silently
+        restarted at step 0.
+        """
+        try:
+            if self.use_fsdp:
+                state_dict = get_model_state_dict(
+                    self.transformer,
+                    options=StateDictOptions(full_state_dict=True, cpu_offload=True),
+                )
+            else:
+                state_dict = {k: v.detach().cpu()
+                              for k, v in self.transformer.state_dict().items()}
+            if self.lora_rank:
+                state_dict = merged_state_dict(self.transformer, state_dict)
+            state_dict_bf16 = {k: v.to(torch.bfloat16) for k, v in state_dict.items()}
+
+            if self.use_fsdp:
+                optim_state = get_optimizer_state_dict(
+                    self.transformer, self.optimizer,
+                    options=StateDictOptions(full_state_dict=True, cpu_offload=True),
+                )
+            else:
+                optim_state = self.optimizer.state_dict()
+
             if self.config.rank == 0:
                 checkpoint_dir = self.save_dir / f"checkpoint_step_{self.step}"
-                checkpoint_dir.mkdir(parents=True, exist_ok=True)
-
-                # Save transformer in the same format as pretrained model
                 transformer_dir = checkpoint_dir / "transformer"
                 transformer_dir.mkdir(parents=True, exist_ok=True)
 
                 logger.info(f"Saving transformer to {transformer_dir}")
+                save_file(state_dict_bf16, transformer_dir / "diffusion_pytorch_model.safetensors")
 
-                # Manually save in diffusers format (outside FSDP context to avoid deadlock)
-                # Save model weights
-                model_file = transformer_dir / "diffusion_pytorch_model.safetensors"
-                save_file(state_dict_bf16, model_file)
-
-                # Save config (copy from original transformer config and update _name_or_path)
-                config_file = transformer_dir / "config.json"
                 config_dict = dict(self.transformer.config)
                 config_dict.pop('_name_or_path', None)
-                with open(config_file, 'w') as f:
+                with open(transformer_dir / "config.json", 'w') as f:
                     json.dump(config_dict, f, indent=2)
 
-                # # Save optimizer state and training metadata in PyTorch format
-                # training_state_path = checkpoint_dir / "training_state.pt"
-                # logger.info(f"Saving training state to {training_state_path}")
-                # torch.save({
-                #     'step': self.step,
-                #     'optimizer_state_dict': optim_state,
-                #     'config': vars(self.config),
-                # }, training_state_path)
+                # The action quantiles the head was trained against, beside the
+                # weights: serving needs them and must not have to find the
+                # training dataset to get them.
+                with open(checkpoint_dir / "lingbot_norm_stat.json", 'w') as f:
+                    json.dump({"q01": list(self.config.norm_stat["q01"]),
+                               "q99": list(self.config.norm_stat["q99"])}, f)
+
+                trainable = {}
+                if self.lora_rank:
+                    trainable = {k: v.detach().cpu()
+                                 for k, v in self.transformer.state_dict().items()
+                                 if '.lora_A' in k or '.lora_B' in k or
+                                 k.startswith(('action_embedder.', 'action_proj_out.',
+                                               'condition_embedder_action.'))}
+
+                state_path = self.save_dir / "training_state.pt"
+                tmp_path = state_path.with_suffix('.pt.tmp')
+                torch.save({
+                    'step': self.step,
+                    'optimizer_state_dict': optim_state,
+                    'trainable_state_dict': trainable,
+                    'lora_rank': self.lora_rank,
+                }, tmp_path)
+                os.replace(tmp_path, state_path)
 
                 logger.info(f"Checkpoint saved successfully at step {self.step}")
 
-            # Synchronize all processes after saving
             if dist.is_initialized():
                 dist.barrier()
 
@@ -384,38 +534,40 @@ class Trainer:
                 logger.error(f"Failed to save checkpoint: {e}")
                 import traceback
                 logger.error(traceback.format_exc())
-            # Ensure all processes stay synchronized even on error
             if dist.is_initialized():
                 dist.barrier()
 
-    def _load_training_state(self, checkpoint_path):
-        """Load training state (optimizer + step) after FSDP and optimizer creation."""
-        checkpoint_dir = Path(checkpoint_path)
-        training_state_path = checkpoint_dir / "training_state.pt"
+    def _load_training_state(self, state_path):
+        """Restore optimizer moments, adapters and the step counter."""
+        logger.info(f"Loading training state from {state_path}")
+        training_state = torch.load(state_path, map_location='cpu', weights_only=False)
 
-        if not training_state_path.exists():
-            if self.config.rank == 0:
-                logger.warning(f"Training state not found: {training_state_path}, starting from step 0")
-            return
+        saved_rank = training_state.get('lora_rank', 0)
+        if saved_rank != self.lora_rank:
+            raise ValueError(
+                f"training state was written with lora_rank={saved_rank}, this run "
+                f"has {self.lora_rank}")
 
-        if self.config.rank == 0:
-            logger.info(f"Loading training state from {training_state_path}")
+        trainable = training_state.get('trainable_state_dict') or {}
+        if trainable:
+            missing, unexpected = self.transformer.load_state_dict(trainable, strict=False)
+            if unexpected:
+                raise ValueError(f"resume state has unknown keys: {unexpected[:5]}")
 
-        # All ranks load the training state directly
-        training_state = torch.load(training_state_path, map_location='cpu', weights_only=False)
-
-        # All ranks load optimizer state (required for FSDP)
-        set_optimizer_state_dict(
-            self.transformer, self.optimizer,
-            optim_state_dict=training_state['optimizer_state_dict'],
-            options=StateDictOptions(full_state_dict=True, strict=False)
-        )
+        if self.use_fsdp:
+            set_optimizer_state_dict(
+                self.transformer, self.optimizer,
+                optim_state_dict=training_state['optimizer_state_dict'],
+                options=StateDictOptions(full_state_dict=True, strict=False)
+            )
+        else:
+            self.optimizer.load_state_dict(training_state['optimizer_state_dict'])
         self.step = training_state.get('step', 0)
+        for _ in range(self.step):
+            self.lr_scheduler.step()
 
-        if self.config.rank == 0:
-            logger.info(f"Training state loaded, resuming from step {self.step}")
+        logger.info(f"Training state loaded, resuming from step {self.step}")
 
-        # Synchronize all ranks
         if dist.is_initialized():
             dist.barrier()
 
@@ -513,6 +665,9 @@ def run(args):
 
     init_distributed(world_size, local_rank, rank)
 
+    torch.manual_seed(args.seed + rank)
+    torch.cuda.manual_seed_all(args.seed + rank)
+
     config.rank = rank
     config.local_rank = local_rank
     config.world_size = world_size
@@ -542,6 +697,13 @@ def main():
         type=str,
         default=None,
         help="Root directory for saving checkpoints",
+    )
+    # run_va_posttrain.sh has always forwarded --seed; argparse rejected it.
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=0,
+        help="Seed for torch/numpy/python RNGs",
     )
 
     args = parser.parse_args()

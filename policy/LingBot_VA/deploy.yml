@@ -13,6 +13,19 @@ protocol: ws
 host: localhost
 port: null
 
+# MHBench serving (bench_name=mhbench) picks `mhbench` instead: 35D actions,
+# the one ego view, 224x320. eval_policy.sbatch sends bench_name/env_cfg_type/
+# model_dir as overrides.
+bench_name: null
+env_cfg_type: null
+model_dir: null
+ckpt_tag: null
+checkpoint_num: null
+# One shared multitask policy drives both agents, told apart only by the
+# instruction each is given. LingBot-VA has no per-robot pair and no
+# centralized 70D checkpoint, so the adapter refuses any other value.
+mhbench_decentralized_style: shared
+
 config_name: robotwin30_train
 # Left null: checkpoint resolves from ckpt_name (arg 3); base model resolves from
 # LINGBOT_VA_BASE_MODEL_PATH env or a value set here.

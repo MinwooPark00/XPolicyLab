@@ -5,7 +5,9 @@ Turns a standard RoboDojo LeRobot v2.1 dataset (parquet + per-episode mp4) into 
 LingBot-VA training dataset by running every step of the upstream pipeline
 (`lingbot_va/README.md` -> Post-Training / Custom Dataset Preparation):
 
-  1. Convert actions into the 30-dim LingBot layout (missing dims zero-padded).
+  1. Convert actions into the target layout: the 30-dim LingBot one for
+     RoboDojo, or MHBench's own 35-dim action passed through unchanged
+     (`--layout mhbench`, see baselines/scripts/README.md).
   2. Add `action_config` to `meta/episodes.jsonl` (one segment per episode).
   3. Extract Wan2.2 VAE video latents into `latents/` for every configured camera.
   4. Encode `empty_emb.pt` (empty-string text embedding) at the dataset root.
@@ -54,6 +56,12 @@ LATENT_CAM_KEYS = [
     "observation.images.cam_right_wrist",
 ]
 
+# MHBench's decentralized action, passed through as-is: 31 joint targets, the
+# pelvis height and the base velocity. `prepare_lingbot_init_ckpt.py` widens the
+# model's two action projections to match.
+ACTION_DIM_MHBENCH = 35
+MHBENCH_CAM_KEYS = ["observation.images.ego"]
+
 TEXT_MAX_LEN = 512
 VAE_TEMPORAL_RATE = 4  # Wan2.2 causal VAE temporal compression.
 
@@ -90,9 +98,13 @@ def sample_frame_ids(num_frames: int, stride: int) -> list:
 
 @torch.no_grad()
 def encode_video_latent(frames_rgb: np.ndarray, vae, wrapper, device, dtype, size):
-    """frames_rgb: (n, H, W, 3) uint8 -> normalized VAE latent, plus latent dims."""
+    """frames_rgb: (n, H, W, 3) uint8 -> normalized VAE latent, plus latent dims.
+
+    `size` is (height, width); both must be multiples of 32 so the latent grid
+    (VAE stride 16) is even and the model's 2x2 patching divides it.
+    """
     x = torch.from_numpy(frames_rgb).float().permute(3, 0, 1, 2)  # (3, n, H, W)
-    x = F.interpolate(x, size=(size, size), mode="bilinear", align_corners=False)
+    x = F.interpolate(x, size=tuple(size), mode="bilinear", align_corners=False)
     x = (x / 255.0 * 2.0 - 1.0).unsqueeze(0).to(device).to(dtype)  # (1, 3, n, H, W)
 
     wrapper.clear_cache()
@@ -146,6 +158,22 @@ def compute_column_stats(arr: np.ndarray) -> dict:
     }
 
 
+def quantile_norm_stat(arr: np.ndarray, floor: float = 1e-3) -> dict:
+    """Per-dimension q01/q99, the normalisation the model's action head expects.
+
+    A dimension that never moves would give q99 == q01 and a divide-by-nothing;
+    it is widened to `floor` so the normalised value stays 0 rather than -1.
+    """
+    q01 = np.quantile(arr, 0.01, axis=0)
+    q99 = np.quantile(arr, 0.99, axis=0)
+    flat = (q99 - q01) < floor
+    mid = (q99 + q01) / 2.0
+    q01 = np.where(flat, mid - floor / 2, q01)
+    q99 = np.where(flat, mid + floor / 2, q99)
+    return {"q01": q01.astype(float).tolist(), "q99": q99.astype(float).tolist(),
+            "flat_dims": np.flatnonzero(flat).tolist()}
+
+
 def source_video_path(src: Path, info: dict, cam: str, ep_idx: int, ep_chunk: int) -> Path:
     rel = info["video_path"].format(
         episode_chunk=ep_chunk, video_key=cam, episode_index=ep_idx,
@@ -160,9 +188,26 @@ def main():
     ap.add_argument("--base-model", required=True, help="lingbot-va-base weights dir (vae/tokenizer/text_encoder).")
     ap.add_argument("--num-episodes", type=int, default=0, help="Cap episodes (0 = all).")
     ap.add_argument("--target-fps", type=int, default=10, help="Target sampling fps for latents.")
-    ap.add_argument("--image-size", type=int, default=256, help="VAE input resolution (square).")
+    ap.add_argument("--image-size", default="256x256",
+                    help="VAE input resolution, HxW or a single square edge. "
+                         "Both sides must be multiples of 32.")
+    ap.add_argument("--layout", choices=("robodojo", "mhbench"), default="robodojo",
+                    help="robodojo: map 14D joints into the 30D LingBot layout. "
+                         "mhbench: pass MHBench's 35D action through unchanged.")
+    ap.add_argument("--cam-keys", default="",
+                    help="Comma-separated video keys to encode; defaults to the layout's.")
     ap.add_argument("--device", default="cuda", help="Torch device.")
     args = ap.parse_args()
+
+    if "x" in str(args.image_size):
+        size_hw = tuple(int(v) for v in str(args.image_size).split("x"))
+    else:
+        size_hw = (int(args.image_size), int(args.image_size))
+    if any(v % 32 for v in size_hw):
+        raise SystemExit(f"--image-size {size_hw} is not a multiple of 32 on both sides")
+    cam_keys = ([k for k in args.cam_keys.split(",") if k] or
+                (MHBENCH_CAM_KEYS if args.layout == "mhbench" else LATENT_CAM_KEYS))
+    action_dim = ACTION_DIM_MHBENCH if args.layout == "mhbench" else 30
 
     src = Path(args.source_dataset).resolve()
     out = Path(args.output_dataset).resolve()
@@ -171,23 +216,34 @@ def main():
     dtype = torch.bfloat16
 
     info = json.loads((src / "meta" / "info.json").read_text())
-    if info.get("codebase_version") != "v2.1":
-        print(f"[process_data] WARNING: source codebase {info.get('codebase_version')} != v2.1; "
-              "the trainer loader expects v2.1.", flush=True)
+    # The output is always v2.1, whatever the source is: LatentLeRobotDataset
+    # pins revision "v2.1" and reads per-episode statistics from
+    # meta/episodes_stats.jsonl, which v2.0 does not have (it carries one
+    # meta/stats.json for the whole dataset). MHBench's own export is v2.0, so
+    # the per-episode entries below are computed here rather than copied.
+    src_version = info.get("codebase_version")
+    if src_version not in ("v2.0", "v2.1"):
+        print(f"[process_data] WARNING: source codebase {src_version} is neither v2.0 nor "
+              "v2.1; the LeRobot layout this reads may not match.", flush=True)
     ori_fps = int(info["fps"])
     chunks_size = int(info.get("chunks_size", 1000))
     stride = max(1, round(ori_fps / args.target_fps))
 
     episodes = [json.loads(l) for l in (src / "meta" / "episodes.jsonl").read_text().splitlines() if l.strip()]
-    ep_stats = {json.loads(l)["episode_index"]: json.loads(l)
-                for l in (src / "meta" / "episodes_stats.jsonl").read_text().splitlines() if l.strip()}
+    ep_stats_file = src / "meta" / "episodes_stats.jsonl"
+    ep_stats = {}
+    if ep_stats_file.exists():
+        ep_stats = {json.loads(l)["episode_index"]: json.loads(l)
+                    for l in ep_stats_file.read_text().splitlines() if l.strip()}
     if args.num_episodes > 0:
         episodes = episodes[:args.num_episodes]
 
     print(f"[process_data] source={src}", flush=True)
     print(f"[process_data] output={out}", flush=True)
     print(f"[process_data] episodes={len(episodes)} ori_fps={ori_fps} stride={stride} "
-          f"target_fps={args.target_fps} size={args.image_size}", flush=True)
+          f"target_fps={args.target_fps} size={size_hw[0]}x{size_hw[1]}", flush=True)
+    print(f"[process_data] layout={args.layout} action_dim={action_dim} "
+          f"cams={cam_keys}", flush=True)
 
     (out / "meta").mkdir(parents=True, exist_ok=True)
 
@@ -199,6 +255,7 @@ def main():
 
     new_episodes, new_ep_stats = [], []
     total_frames = 0
+    all_actions = []
 
     for ep in episodes:
         ep_idx = ep["episode_index"]
@@ -210,12 +267,19 @@ def main():
         # --- Step 1: rewrite parquet action/state to 30-dim -------------------
         src_pq = src / "data" / chunk_dir / f"episode_{ep_idx:06d}.parquet"
         df = pd.read_parquet(src_pq)
-        act14 = np.stack(df["action"].to_numpy()).astype(np.float32)
-        st14 = np.stack(df["observation.state"].to_numpy()).astype(np.float32)
-        act30 = map_action_14_to_30(act14)
-        st30 = map_action_14_to_30(st14)
-        df["action"] = list(act30)
-        df["observation.state"] = list(st30)
+        act_src = np.stack(df["action"].to_numpy()).astype(np.float32)
+        st_src = np.stack(df["observation.state"].to_numpy()).astype(np.float32)
+        if args.layout == "mhbench":
+            if act_src.shape[1] != action_dim:
+                raise SystemExit(
+                    f"episode {ep_idx}: action is {act_src.shape[1]}D, expected {action_dim}")
+            act30, st30 = act_src, st_src
+        else:
+            act30 = map_action_14_to_30(act_src)
+            st30 = map_action_14_to_30(st_src)
+            df["action"] = list(act30)
+            df["observation.state"] = list(st30)
+        all_actions.append(act30)
         out_pq = out / "data" / chunk_dir / f"episode_{ep_idx:06d}.parquet"
         out_pq.parent.mkdir(parents=True, exist_ok=True)
         df.to_parquet(out_pq, index=False)
@@ -233,11 +297,22 @@ def main():
         stats = dict(st_entry["stats"])
         stats["action"] = compute_column_stats(act30)
         stats["observation.state"] = compute_column_stats(st30)
+        # A v2.0 source brings no per-episode entry at all, so fill in every
+        # numeric column the parquet carries.
+        for column in df.columns:
+            if column in stats or column.startswith("observation.images"):
+                continue
+            values = np.asarray(df[column].to_list())
+            if values.ndim == 1:
+                values = values[:, None]
+            if not np.issubdtype(values.dtype, np.number):
+                continue
+            stats[column] = compute_column_stats(values.astype(np.float64))
         new_ep_stats.append({"episode_index": ep_idx, "stats": stats})
 
         # --- Step 3: text embedding + video latents per camera ----------------
         text_emb = encode_text(task, tokenizer, text_encoder)
-        for cam in LATENT_CAM_KEYS:
+        for cam in cam_keys:
             mp4 = source_video_path(src, info, cam, ep_idx, ep_chunk)
             if not mp4.exists():
                 raise FileNotFoundError(f"missing source video: {mp4}")
@@ -246,7 +321,7 @@ def main():
             frame_ids = sample_frame_ids(n_avail, stride)
             clip = frames[frame_ids]
             latent, f_lat, h_lat, w_lat = encode_video_latent(
-                clip, vae, wrapper, device, dtype, args.image_size)
+                clip, vae, wrapper, device, dtype, size_hw)
 
             rec = {
                 "latent": latent,
@@ -254,8 +329,8 @@ def main():
                 "latent_height": h_lat,
                 "latent_width": w_lat,
                 "video_num_frames": len(frame_ids),
-                "video_height": args.image_size,
-                "video_width": args.image_size,
+                "video_height": size_hw[0],
+                "video_width": size_hw[1],
                 "text_emb": text_emb,
                 "text": task,
                 "frame_ids": frame_ids,
@@ -269,10 +344,17 @@ def main():
             torch.save(rec, lat_dir / f"episode_{ep_idx:06d}_0_{length}.pth")
 
         print(f"[process_data]   episode {ep_idx}: length={length} "
-              f"latent_frames={f_lat} cams={len(LATENT_CAM_KEYS)}", flush=True)
+              f"latent_frames={f_lat} cams={len(cam_keys)}", flush=True)
 
     # --- Step 4: empty_emb.pt -------------------------------------------------
     torch.save(encode_text("", tokenizer, text_encoder), out / "empty_emb.pt")
+
+    # --- Step 5: the action normalisation the training config reads ------------
+    norm_stat = quantile_norm_stat(np.concatenate(all_actions, axis=0))
+    (out / "meta" / "lingbot_norm_stat.json").write_text(json.dumps(norm_stat, indent=2))
+    if norm_stat["flat_dims"]:
+        print(f"[process_data] action dims that never move: {norm_stat['flat_dims']}",
+              flush=True)
 
     # --- meta files -----------------------------------------------------------
     (out / "meta" / "episodes.jsonl").write_text(
@@ -284,10 +366,12 @@ def main():
 
     # info.json: 30-dim action/state, trimmed episode/frame counts
     out_info = dict(info)
+    out_info["codebase_version"] = "v2.1"
     for key in ("action", "observation.state"):
         feat = dict(info["features"][key])
-        feat["shape"] = [30]
-        feat["names"] = list(ACTION_NAMES_30)
+        feat["shape"] = [action_dim]
+        if args.layout != "mhbench":
+            feat["names"] = list(ACTION_NAMES_30)
         out_info["features"][key] = feat
     out_info["total_episodes"] = len(new_episodes)
     out_info["total_frames"] = total_frames
