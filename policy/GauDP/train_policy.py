@@ -33,6 +33,22 @@ def _format_duration(seconds: float) -> str:
     return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
 
+def _parse_optional_int(value) -> int | None:
+    if value is None or str(value).strip().lower() in ("none", "null", ""):
+        return None
+    return int(value)
+
+
+def _parse_crop_shape(value) -> tuple[int, int] | None:
+    """Accept 'H W', 'HxW', 'H,W' or 'none'."""
+    if value is None or str(value).strip().lower() in ("none", "null", ""):
+        return None
+    parts = [part for part in str(value).replace("x", " ").replace(",", " ").split() if part]
+    if len(parts) != 2:
+        raise ValueError(f"expected two integers or 'none', got {value!r}")
+    return (int(parts[0]), int(parts[1]))
+
+
 def _should_log_batch(completed: int, total: int, interval: int) -> bool:
     return interval > 0 and (completed == 1 or completed == total or completed % interval == 0)
 
@@ -98,8 +114,56 @@ def _accumulate(sums: dict[str, float], metrics: dict[str, float]) -> None:
         sums[key] = sums.get(key, 0.0) + float(value)
 
 
-def _save(path: Path, policy: GauDPPolicy, optimizer, scheduler, epoch, metrics, gaussian_checkpoint: Path):
+def _validate_resume_payload(
+    payload: dict,
+    expected_contract: dict,
+    checkpoint: Path,
+    gaussian_checkpoint: Path,
+    camera_order: list[str],
+    epochs: int,
+) -> int:
+    """Validate a policy checkpoint and return the next zero-based epoch."""
+    for key in ("format", "config", "state_dim", "action_dim", "state_schema", "action_schema"):
+        if payload.get(key) != expected_contract.get(key):
+            raise ValueError(
+                f"resume checkpoint {checkpoint} has incompatible {key}: "
+                f"{payload.get(key)!r} != {expected_contract.get(key)!r}"
+            )
+    if list(payload.get("camera_order", ())) != list(camera_order):
+        raise ValueError(
+            f"resume checkpoint {checkpoint} uses cameras {payload.get('camera_order')!r}, "
+            f"but the dataset uses {camera_order!r}"
+        )
+    recorded_gaussian = Path(str(payload.get("gaussian_checkpoint", ""))).expanduser().resolve()
+    if recorded_gaussian != gaussian_checkpoint.expanduser().resolve():
+        raise ValueError(
+            f"resume checkpoint {checkpoint} uses Gaussian checkpoint {recorded_gaussian}, "
+            f"but this run requested {gaussian_checkpoint.expanduser().resolve()}"
+        )
+    for key in ("state_dict", "optimizer_state", "scheduler_state", "epoch", "metrics"):
+        if key not in payload:
+            raise ValueError(f"resume checkpoint {checkpoint} is missing {key}")
+    scheduler_epochs = int(payload["scheduler_state"].get("T_max", -1))
+    if scheduler_epochs != epochs:
+        raise ValueError(
+            f"resume checkpoint {checkpoint} used a {scheduler_epochs}-epoch LR schedule, "
+            f"but --epochs is {epochs}"
+        )
+    next_epoch = int(payload["epoch"]) + 1
+    if not 0 < next_epoch < epochs:
+        raise ValueError(
+            f"resume checkpoint {checkpoint} would start at epoch {next_epoch + 1}, "
+            f"outside a {epochs}-epoch run"
+        )
+    return next_epoch
+
+
+def _save(
+    path: Path, policy: GauDPPolicy, optimizer, scheduler, epoch, metrics,
+    gaussian_checkpoint: Path, camera_order: list[str],
+):
     path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(f"{path.suffix}.tmp")
     torch.save(
         policy_checkpoint_payload(
             policy,
@@ -110,9 +174,11 @@ def _save(path: Path, policy: GauDPPolicy, optimizer, scheduler, epoch, metrics,
             # Preserve checkpoints outside the run directory (for example the
             # official NoPoSplat checkpoint used with RGB-only LeRobot data).
             gaussian_checkpoint=str(gaussian_checkpoint.expanduser().resolve()),
+            camera_order=list(camera_order),
         ),
-        path,
+        temporary,
     )
+    os.replace(temporary, path)
 
 
 def main() -> None:
@@ -127,9 +193,37 @@ def main() -> None:
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--horizon", type=int, default=8)
-    parser.add_argument("--obs-steps", type=int, default=3)
+    parser.add_argument("--obs-steps", type=int, default=1)
     parser.add_argument("--action-steps", type=int, default=6)
     parser.add_argument("--inference-steps", type=int, default=100)
+    # --- vision recipe -------------------------------------------------------
+    # These defaults are the *current* recipe, not what the first MHBench GauDP
+    # runs used; every value is recorded in the checkpoint so evaluation rebuilds
+    # the same network. `--crop-shape none --image-norm symmetric
+    # --group-norm-divisor none` reproduces those runs exactly.
+    parser.add_argument(
+        "--crop-shape",
+        default="216 288",
+        help="random crop while training / centre crop at eval, as 'H W'; "
+             "'none' disables it. Upstream Policy-Lightning leaves crop_shape "
+             "null, but MHBench's own DP baseline crops to 90%% of the frame and "
+             "its config records why: without it validation loss bottoms early "
+             "and then climbs. GauDP shows the same curve.",
+    )
+    parser.add_argument(
+        "--image-norm",
+        choices=("imagenet", "symmetric"),
+        default="imagenet",
+        help="normalization applied to the fused 3-channel view before the ResNet. "
+             "'imagenet' is upstream's MultiImageObsEncoder(imagenet_norm=True); "
+             "'symmetric' is (x-0.5)/0.5, what this port used before.",
+    )
+    parser.add_argument(
+        "--group-norm-divisor",
+        default="16",
+        help="BatchNorm->GroupNorm grouping as num_features//DIVISOR (upstream "
+             "uses 16); 'none' keeps this port's original min(32, num_features).",
+    )
     parser.add_argument(
         "--log-every",
         type=int,
@@ -147,10 +241,24 @@ def main() -> None:
     parser.add_argument("--wandb-run-name", default=None)
     parser.add_argument("--wandb-group", default=None)
     parser.add_argument("--wandb-tags", default="", help="comma-separated W&B tags")
+    parser.add_argument(
+        "--resume",
+        type=Path,
+        default=None,
+        help="resume model, optimizer, scheduler, and epoch from a policy checkpoint",
+    )
     parser.add_argument("--debug", action="store_true", help="run one train and validation batch")
     args = parser.parse_args()
     if args.log_every < 0:
         parser.error("--log-every must be non-negative")
+    try:
+        args.crop_shape = _parse_crop_shape(args.crop_shape)
+    except ValueError as error:
+        parser.error(f"--crop-shape: {error}")
+    try:
+        args.group_norm_divisor = _parse_optional_int(args.group_norm_divisor)
+    except ValueError as error:
+        parser.error(f"--group-norm-divisor: {error}")
 
     global np, torch, DataLoader
     global GauDPSequenceDataset
@@ -186,6 +294,9 @@ def main() -> None:
         n_obs_steps=args.obs_steps,
         n_action_steps=args.action_steps,
         num_inference_steps=args.inference_steps,
+        crop_shape=args.crop_shape,
+        image_norm=args.image_norm,
+        group_norm_divisor=args.group_norm_divisor,
         # Policy checkpoints deliberately exclude this module. Training uses
         # cached features, while model.py constructs and loads the real
         # NoPoSplat encoder for online benchmark inference.
@@ -215,14 +326,54 @@ def main() -> None:
         f"trainable={trainable_count / 1e6:.1f}M / total={total_count / 1e6:.1f}M "
         f"gaussian_checkpoint={requested_checkpoint} gaussian_features={args.gaussian_features} "
         f"split={train_data.split_source} log_every={args.log_every} "
+        f"crop_shape={args.crop_shape} image_norm={args.image_norm} "
+        f"group_norm_divisor={args.group_norm_divisor} "
         f"val_state_oor={normalization_metrics['normalization/val_state_out_of_range_fraction']:.6f} "
         f"val_action_oor={normalization_metrics['normalization/val_action_out_of_range_fraction']:.6f}",
         flush=True,
     )
 
-    best = math.inf
     epochs = 1 if args.debug else args.epochs
+    best = math.inf
+    start_epoch = 0
     global_step = 0
+    if args.resume is not None:
+        resume_path = args.resume.expanduser().resolve()
+        if not resume_path.is_file():
+            raise FileNotFoundError(f"resume checkpoint not found: {resume_path}")
+        payload = torch.load(str(resume_path), map_location="cpu", weights_only=False, mmap=True)
+        expected_contract = policy_checkpoint_payload(policy)
+        start_epoch = _validate_resume_payload(
+            payload,
+            expected_contract,
+            resume_path,
+            requested_checkpoint,
+            train_data.camera_order,
+            epochs,
+        )
+        policy.load_state_dict(payload["state_dict"], strict=True)
+        optimizer.load_state_dict(payload["optimizer_state"])
+        scheduler.load_state_dict(payload["scheduler_state"])
+        global_step = start_epoch * train_batches
+        best = float(payload["metrics"].get("val/loss", math.inf))
+        del payload, expected_contract
+
+        # `last.ckpt` only contains its own validation loss. Preserve the
+        # historical best threshold so resumed training cannot replace a good
+        # best.ckpt with the first (worse) post-resume epoch.
+        best_path = args.output / "best.ckpt"
+        if best_path.is_file() and best_path.resolve() != resume_path:
+            best_payload = torch.load(
+                str(best_path), map_location="cpu", weights_only=False, mmap=True
+            )
+            best = min(best, float(best_payload.get("metrics", {}).get("val/loss", math.inf)))
+            del best_payload
+        print(
+            f"[GauDP][policy] resumed from {resume_path} at epoch={start_epoch + 1}/{epochs} "
+            f"global_step={global_step} lr={scheduler.get_last_lr()[0]:.8g} "
+            f"best_val_loss={best:.8g}",
+            flush=True,
+        )
     run_name = args.wandb_run_name or f"{args.output.parent.name}-policy"
     with ExperimentLogger(
         args.output,
@@ -234,7 +385,7 @@ def main() -> None:
         wandb_group=args.wandb_group,
         wandb_tags=parse_wandb_tags(args.wandb_tags),
     ) as logger:
-        for epoch in range(epochs):
+        for epoch in range(start_epoch, epochs):
             epoch_started = time.monotonic()
             if device.type == "cuda":
                 torch.cuda.reset_peak_memory_stats(device)
@@ -311,7 +462,10 @@ def main() -> None:
             }
             print(f"[GauDP][policy] saving last checkpoint to {args.output / 'last.ckpt'}", flush=True)
             save_started = time.monotonic()
-            _save(args.output / "last.ckpt", policy, optimizer, scheduler, epoch, metrics, args.gaussian)
+            _save(
+                args.output / "last.ckpt", policy, optimizer, scheduler, epoch, metrics,
+                args.gaussian, train_data.camera_order,
+            )
             print(
                 f"[GauDP][policy] saved last checkpoint in "
                 f"{_format_duration(time.monotonic() - save_started)}",
@@ -321,7 +475,10 @@ def main() -> None:
                 best = metrics["val/loss"]
                 print(f"[GauDP][policy] new best val/loss={best:.6f}; saving best checkpoint", flush=True)
                 best_save_started = time.monotonic()
-                _save(args.output / "best.ckpt", policy, optimizer, scheduler, epoch, metrics, args.gaussian)
+                _save(
+                    args.output / "best.ckpt", policy, optimizer, scheduler, epoch, metrics,
+                    args.gaussian, train_data.camera_order,
+                )
                 print(
                     f"[GauDP][policy] saved best checkpoint in "
                     f"{_format_duration(time.monotonic() - best_save_started)}",

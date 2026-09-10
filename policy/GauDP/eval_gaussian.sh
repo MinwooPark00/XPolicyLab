@@ -4,9 +4,9 @@ set -euo pipefail
 POLICY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${POLICY_DIR}/launcher_args.sh"
 gaudp_parse_stage_args "$@"
-if [[ "${action_type}" != "ee" ]]; then echo "[GauDP] only action_type=ee is supported" >&2; exit 2; fi
-data="${POLICY_DIR}/data/${bench}-${ckpt}-${env_cfg}-${action_type}.hdf5"
-run="${POLICY_DIR}/checkpoints/${bench}-${ckpt}-${env_cfg}-${action_type}-${seed}"
+gaudp_require_joint_action_type
+data="$(gaudp_data_path)"
+run="$(gaudp_run_dir)"
 if [[ ! -f "${data}" ]]; then bash "${POLICY_DIR}/process_data.sh" "${bench}" "${ckpt}" "${env_cfg}" "${action_type}" "${task}"; fi
 
 source "${POLICY_DIR}/resolve_noposplat_checkpoint.sh"

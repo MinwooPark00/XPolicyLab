@@ -62,13 +62,19 @@ def _render(gaussians, batch: dict[str, torch.Tensor], image_shape: tuple[int, i
     )
 
 
-def reconstruction_loss(
+def reconstruction_outputs(
     encoder,
     batch: dict[str, torch.Tensor],
     *,
     global_step: int,
     depth_weight: float,
-) -> tuple[torch.Tensor, dict[str, float]]:
+) -> tuple[torch.Tensor, dict[str, float], torch.Tensor, torch.Tensor]:
+    """Score the batch and hand back the renders the score was computed from.
+
+    Splatting the predicted Gaussians is the expensive half of this function and
+    it happens either way, so `eval_gaussian.py --dump-recon` writes the images
+    it already paid for rather than running the encoder a second time.
+    """
     import torch
     import torch.nn.functional as functional
     from XPolicyLab.policy.GauDP.gaudp.gaussian import encode_gaussians
@@ -85,11 +91,26 @@ def reconstruction_loss(
         else rgb_loss.new_zeros(())
     )
     loss = rgb_loss + depth_weight * depth_loss
-    return loss, {
+    metrics = {
         "rgb": float(rgb_loss.detach()),
         "depth": float(depth_loss.detach()),
         "psnr": float(-10.0 * torch.log10(rgb_loss.detach().clamp_min(1e-10))),
     }
+    return loss, metrics, rendered_rgb, rendered_depth
+
+
+def reconstruction_loss(
+    encoder,
+    batch: dict[str, torch.Tensor],
+    *,
+    global_step: int,
+    depth_weight: float,
+) -> tuple[torch.Tensor, dict[str, float]]:
+    """`reconstruction_outputs` without the renders, for the training loops."""
+    loss, metrics, _, _ = reconstruction_outputs(
+        encoder, batch, global_step=global_step, depth_weight=depth_weight
+    )
+    return loss, metrics
 
 
 def _to_device(batch: dict[str, torch.Tensor], device: torch.device) -> dict[str, torch.Tensor]:
