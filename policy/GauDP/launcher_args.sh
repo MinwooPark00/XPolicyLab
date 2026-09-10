@@ -116,7 +116,18 @@ gaudp_data_path() {
 # `_validate_feature_source` is the end that actually proves a reused cache
 # lines up with the new dataset (same export, same episodes, same cameras);
 # this only says where to look.
+# One encoder trained on every task's frames, so a new task inherits it instead
+# of paying another finetune. It is searched first and simply does not exist
+# until train_gaussian_shared.sh has run, so per-task discovery below is
+# unchanged for runs that never build one. GAUDP_SHARED_GAUSSIAN=0 ignores it.
+gaudp_shared_gaussian_dir() {
+    printf '%s\n' "${GAUDP_SHARED_GAUSSIAN_DIR:-${POLICY_DIR}/checkpoints/${bench:-mhbench}-shared-${env_cfg}-${action_type}-${seed}}"
+}
+
 gaudp_gaussian_run_dirs() {
+    if [[ "${GAUDP_SHARED_GAUSSIAN:-1}" == "1" ]]; then
+        printf '%s\n' "$(gaudp_shared_gaussian_dir)"
+    fi
     printf '%s\n' \
         "$(gaudp_run_dir)" \
         "${POLICY_DIR}/checkpoints/${bench}-${ckpt}-${scene}-ee-${seed}" \

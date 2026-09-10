@@ -158,40 +158,117 @@ def _validate_resume_payload(
     return next_epoch
 
 
+class EMA:
+    """diffusion_policy's EMAModel schedule (inv_gamma 1.0, power 0.75, max 0.9999).
+
+    The averaged weights are what gets served, so they are what a checkpoint
+    carries; the live weights only ever feed the next gradient step.
+    """
+
+    def __init__(self, model, inv_gamma=1.0, power=0.75, max_value=0.9999):
+        self.shadow = {
+            key: value.detach().clone().float()
+            for key, value in model.state_dict().items()
+            if not key.startswith("gaussian_encoder.")
+        }
+        self.inv_gamma, self.power, self.max_value = inv_gamma, power, max_value
+        self.step = 0
+
+    def decay(self) -> float:
+        step = max(0, self.step - 1)
+        if step <= 0:
+            return 0.0
+        return min(1 - (1 + step / self.inv_gamma) ** -self.power, self.max_value)
+
+    def update(self, model) -> None:
+        decay = self.decay()
+        self.step += 1
+        with torch.no_grad():
+            for key, value in model.state_dict().items():
+                if key not in self.shadow:
+                    continue
+                if value.dtype.is_floating_point:
+                    self.shadow[key].mul_(decay).add_(value.detach().float(), alpha=1 - decay)
+                else:
+                    self.shadow[key].copy_(value.detach().float())
+
+    def state(self, reference: dict) -> dict:
+        return {key: self.shadow[key].to(reference[key].dtype) for key in self.shadow}
+
+
+def _apply_range_eps(normalizer, eps: float) -> int:
+    """Neutralize near-constant state dims, the way DP's LinearNormalizer does.
+
+    Min-max normalization maps a dim whose demonstrations span 9e-6 rad onto
+    the full [-1, 1] -- a gain of 2.2e5 per radian on what is sensor noise.
+    Re-centering those dims on a unit-gain window makes them carry ~0 instead.
+    """
+    low, high = normalizer.state_min, normalizer.state_max
+    degenerate = (high - low) < eps
+    if not bool(degenerate.any()):
+        return 0
+    centre = (high + low) * 0.5
+    normalizer.state_min = torch.where(degenerate, centre - 1.0, low)
+    normalizer.state_max = torch.where(degenerate, centre + 1.0, high)
+    return int(degenerate.sum())
+
+
 def _save(
     path: Path, policy: GauDPPolicy, optimizer, scheduler, epoch, metrics,
-    gaussian_checkpoint: Path, camera_order: list[str],
+    gaussian_checkpoint: Path, camera_order: list[str], ema: "EMA | None" = None,
 ):
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(f"{path.suffix}.tmp")
+    payload = policy_checkpoint_payload(
+        policy,
+        optimizer_state=optimizer.state_dict(),
+        scheduler_state=scheduler.state_dict(),
+        epoch=epoch,
+        metrics=metrics,
+        # Preserve checkpoints outside the run directory (for example the
+        # official NoPoSplat checkpoint used with RGB-only LeRobot data).
+        gaussian_checkpoint=str(gaussian_checkpoint.expanduser().resolve()),
+        camera_order=list(camera_order),
+    )
+    if ema is not None:
+        payload["state_dict"] = ema.state(payload["state_dict"])
+        payload["ema"] = True
     torch.save(
-        policy_checkpoint_payload(
-            policy,
-            optimizer_state=optimizer.state_dict(),
-            scheduler_state=scheduler.state_dict(),
-            epoch=epoch,
-            metrics=metrics,
-            # Preserve checkpoints outside the run directory (for example the
-            # official NoPoSplat checkpoint used with RGB-only LeRobot data).
-            gaussian_checkpoint=str(gaussian_checkpoint.expanduser().resolve()),
-            camera_order=list(camera_order),
-        ),
+        payload,
         temporary,
     )
     os.replace(temporary, path)
 
 
 def main() -> None:
+    global torch
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--gaussian", type=Path, required=True)
     parser.add_argument("--gaussian-features", type=Path, required=True)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--epochs", type=int, default=300)
-    parser.add_argument("--batch-size", type=int, default=8)
-    parser.add_argument("--num-workers", type=int, default=4)
-    parser.add_argument("--lr", type=float, default=1e-4)
+    # Defaults are the recipe measured on handover (arm S02 in train_ab.py):
+    # 150 epochs, lr 3e-4 with a 500-step warmup, EMA, normalizer range_eps, and
+    # 0.02 proprioception noise. Closed-loop over 50 episodes, grasp_lift /
+    # transfer: sigma 0 gives 4/50, 0; sigma 0.02 gives 48/50, 13; sigma 0.04
+    # gives 21/50, 0. Past 200 epochs transfer collapses (250 -> 3, 300 -> 0)
+    # while grasp_lift still climbs, so 150 is the default rather than a floor.
+    parser.add_argument("--epochs", type=int, default=150)
+    parser.add_argument("--batch-size", type=int, default=128)
+    parser.add_argument("--num-workers", type=int, default=6)
+    parser.add_argument("--lr", type=float, default=3e-4)
+    parser.add_argument("--warmup", type=int, default=500,
+                        help="linear LR warmup steps (0 disables)")
+    parser.add_argument("--state-noise", type=float, default=0.02,
+                        help="Gaussian noise on proprioception during training, in units of "
+                             "half the per-dim demonstration span; breaks the state->action "
+                             "shortcut that leaves the visual branch without gradient")
+    parser.add_argument("--normalizer-range-eps", type=float, default=1e-4,
+                        help="state dims spanning less than this are given unit gain")
+    parser.add_argument("--no-ema", dest="ema", action="store_false",
+                        help="save the live weights instead of their EMA")
+    parser.set_defaults(ema=True)
     parser.add_argument("--horizon", type=int, default=8)
     parser.add_argument("--obs-steps", type=int, default=1)
     parser.add_argument("--action-steps", type=int, default=6)
@@ -304,13 +381,27 @@ def main() -> None:
     )
     states, actions = train_data.normalization_arrays()
     policy.normalizer.fit(states, actions)
+    neutralized = (
+        _apply_range_eps(policy.normalizer, args.normalizer_range_eps)
+        if args.normalizer_range_eps
+        else 0
+    )
+    if neutralized:
+        print(f"[GauDP][policy] neutralized {neutralized} near-constant state dims", flush=True)
     val_states, val_actions = val_data.normalization_arrays()
     normalization_metrics = policy.normalizer.range_diagnostics(val_states, val_actions)
     policy.to(device)
+    # `state_noise` is in normalized units; half the span converts it to radians
+    # per dim, so a dim the demonstrations barely move is barely perturbed.
+    state_span = (policy.normalizer.state_max - policy.normalizer.state_min).clamp_min(1e-6)
+    state_noise_scale = (args.state_noise * state_span * 0.5).to(device)
 
     trainable = [parameter for parameter in policy.parameters() if parameter.requires_grad]
     optimizer = torch.optim.AdamW(trainable, lr=args.lr, betas=(0.95, 0.999), weight_decay=1e-6)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max(1, 1 if args.debug else args.epochs))
+    # Warmup scales whatever the cosine schedule asked for, so the schedule the
+    # resume contract checks (T_max) stays exactly as it was.
+    ema = EMA(policy) if args.ema else None
     train_loader = DataLoader(train_data, args.batch_size, shuffle=True, num_workers=args.num_workers, pin_memory=True)
     val_loader = DataLoader(val_data, args.batch_size, shuffle=False, num_workers=args.num_workers, pin_memory=True)
     train_batches = min(1, len(train_loader)) if args.debug else len(train_loader)
@@ -394,11 +485,20 @@ def main() -> None:
             train_sums: dict[str, float] = {}
             train_count = 0
             train_started = time.monotonic()
+            scheduled_lrs = [group["lr"] for group in optimizer.param_groups]
             for batch_index, batch in enumerate(train_loader):
+                if args.warmup and global_step < args.warmup:
+                    warm = (global_step + 1) / args.warmup
+                    for group, scheduled in zip(optimizer.param_groups, scheduled_lrs):
+                        group["lr"] = scheduled * warm
+                elif args.warmup and global_step == args.warmup:
+                    for group, scheduled in zip(optimizer.param_groups, scheduled_lrs):
+                        group["lr"] = scheduled
+                batch = _to_device(batch, device)
+                if args.state_noise:
+                    batch["state"] = batch["state"] + torch.randn_like(batch["state"]) * state_noise_scale
                 optimizer.zero_grad(set_to_none=True)
-                loss, batch_metrics = policy.compute_loss(
-                    _to_device(batch, device), return_metrics=True
-                )
+                loss, batch_metrics = policy.compute_loss(batch, return_metrics=True)
                 loss.backward()
                 if any(parameter.grad is not None for parameter in policy.gaussian_encoder.parameters()):
                     raise RuntimeError("frozen Gaussian encoder unexpectedly received gradients")
@@ -406,6 +506,8 @@ def main() -> None:
                 batch_metrics["optimization/grad_norm"] = grad_norm
                 batch_metrics["optimization/gradient_clipped"] = float(grad_norm > 1.0)
                 optimizer.step()
+                if ema is not None:
+                    ema.update(policy)
                 _accumulate(train_sums, batch_metrics)
                 train_count += 1
                 global_step += 1
@@ -464,7 +566,7 @@ def main() -> None:
             save_started = time.monotonic()
             _save(
                 args.output / "last.ckpt", policy, optimizer, scheduler, epoch, metrics,
-                args.gaussian, train_data.camera_order,
+                args.gaussian, train_data.camera_order, ema,
             )
             print(
                 f"[GauDP][policy] saved last checkpoint in "
@@ -477,7 +579,7 @@ def main() -> None:
                 best_save_started = time.monotonic()
                 _save(
                     args.output / "best.ckpt", policy, optimizer, scheduler, epoch, metrics,
-                    args.gaussian, train_data.camera_order,
+                    args.gaussian, train_data.camera_order, ema,
                 )
                 print(
                     f"[GauDP][policy] saved best checkpoint in "

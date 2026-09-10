@@ -325,11 +325,14 @@ def _save(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--data", type=Path, required=True)
+    parser.add_argument("--data", type=Path, required=True, nargs="+",
+                        help="one or more converted datasets; several trains one shared encoder")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--pretrained", type=Path, required=True)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--epochs", type=int, default=20)
+    parser.add_argument("--early-stop-patience", type=int, default=3,
+                        help="stop after N epochs without a val/loss improvement (0 disables)")
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument(
@@ -442,9 +445,25 @@ def main() -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if device.type != "cuda":
         raise SystemExit("NoPoSplat fine-tuning requires a CUDA device and CUDA rasterizer")
-    train_data = GaussianFrameDataset(args.data, train=True)
-    val_data = GaussianFrameDataset(args.data, train=False)
-    num_views = len(train_data.camera_order)
+    train_parts = [GaussianFrameDataset(path, train=True) for path in args.data]
+    val_parts = [GaussianFrameDataset(path, train=False) for path in args.data]
+    # One encoder over several tasks only makes sense if they share a camera rig;
+    # the 13-channel output is per-view, so a mismatch is a silent wrong answer.
+    orders = {tuple(part.camera_order) for part in train_parts}
+    if len(orders) != 1:
+        raise SystemExit(f"datasets disagree on camera_order: {sorted(orders)}")
+    for path, part in zip(args.data, train_parts):
+        print(f"[GauDP][gaussian] {path.name}: {len(part)} train frames", flush=True)
+    if len(train_parts) > 1:
+        from torch.utils.data import ConcatDataset
+
+        train_data = ConcatDataset(train_parts)
+        val_data = ConcatDataset(val_parts)
+        print(f"[GauDP][gaussian] shared encoder over {len(train_parts)} datasets: "
+              f"{len(train_data)} train / {len(val_data)} val frames", flush=True)
+    else:
+        train_data, val_data = train_parts[0], val_parts[0]
+    num_views = len(train_parts[0].camera_order)
     encoder = build_gaussian_encoder(num_views)
     missing, unexpected = load_gaussian_checkpoint(encoder, args.pretrained, strict=False)
     print(f"[GauDP] initialized NoPoSplat: missing={len(missing)}, unexpected={len(unexpected)}")
@@ -499,6 +518,7 @@ def main() -> None:
         )
 
     best = math.inf
+    epochs_since_best = 0
     global_step = 0
     run_name = args.wandb_run_name or f"{args.output.parent.name}-gaussian"
     with ExperimentLogger(
@@ -629,7 +649,9 @@ def main() -> None:
                 f"{_format_duration(time.monotonic() - save_started)}",
                 flush=True,
             )
-            if metrics["val/loss"] < best:
+            improved = metrics["val/loss"] < best
+            epochs_since_best = 0 if improved else epochs_since_best + 1
+            if improved:
                 best = metrics["val/loss"]
                 print(f"[GauDP][gaussian] new best val/loss={best:.6f}; saving best checkpoint", flush=True)
                 best_save_started = time.monotonic()
@@ -651,6 +673,15 @@ def main() -> None:
                 )
             logger.log(metrics, step=global_step)
             print(f"[GauDP][gaussian] step={global_step} {metrics}", flush=True)
+            # best.ckpt already holds the best epoch, so stopping early costs
+            # nothing but the epochs that were not going to improve on it.
+            if args.early_stop_patience and epochs_since_best >= args.early_stop_patience:
+                print(
+                    f"[GauDP][gaussian] no val/loss improvement for {epochs_since_best} epochs "
+                    f"(best {best:.6f}); stopping at epoch {epoch}",
+                    flush=True,
+                )
+                break
 
 
 if __name__ == "__main__":
