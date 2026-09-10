@@ -89,7 +89,7 @@ fi
 # DP_RUN_TAG keeps a run's checkpoints out of an existing run's directory.
 OVERRIDES=()
 if [ -n "${DP_RUN_NAME:-}" ]; then
-    OVERRIDES+=("logging.name=${DP_RUN_NAME}" "logging.id=${DP_RUN_NAME}" "logging.resume=allow" "hydra.run.dir=${run_dir}")
+    OVERRIDES+=("logging.name=${DP_WANDB_NAME:-$DP_RUN_NAME}" "logging.id=${DP_RUN_NAME}" "logging.resume=allow" "hydra.run.dir=${run_dir}")
 fi
 [ -n "${DP_WANDB_PROJECT:-}" ] && OVERRIDES+=("logging.project=${DP_WANDB_PROJECT}")
 [ -n "${DP_WANDB_ENTITY:-}" ]  && OVERRIDES+=("+logging.entity=${DP_WANDB_ENTITY}")
