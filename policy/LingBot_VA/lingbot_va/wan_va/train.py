@@ -22,7 +22,7 @@ import json
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from configs import VA_CONFIGS
-from distributed.fsdp import shard_model, apply_ac
+from distributed.fsdp import shard_model, ptd_checkpoint_wrapper
 from distributed.util import (
     _configure_model, 
     init_distributed, 
@@ -174,8 +174,13 @@ class Trainer:
         else:
             self.transformer.requires_grad_(True)
 
-        logger.info("Setting up activation checkpointing ...")
-        apply_ac(self.transformer)
+        # Upstream's apply_ac skips the RNG state because its blocks draw no
+        # random numbers; LoRA dropout does, and the recompute in backward must
+        # redraw the forward's mask or the adapters get another network's gradient.
+        preserve_rng = bool(self.lora_rank) and getattr(config, 'lora_dropout', 0.0) > 0
+        logger.info(f"Setting up activation checkpointing (preserve_rng_state={preserve_rng}) ...")
+        for i, block in enumerate(self.transformer.blocks):
+            self.transformer.blocks[i] = ptd_checkpoint_wrapper(block, preserve_rng_state=preserve_rng)
 
         if self.use_fsdp:
             logger.info("Setting up FSDP...")

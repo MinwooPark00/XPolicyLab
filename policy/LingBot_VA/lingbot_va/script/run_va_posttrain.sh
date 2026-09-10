@@ -16,11 +16,11 @@ if [ $# -ne 0 ]; then
     overrides="$*"
 fi
 
-# Placeholders upstream; here the caller's environment wins and an unset
-# variable stays unset (wan_va.train only logs in when URL and key are both set).
-export WANDB_API_KEY="${WANDB_API_KEY:-}"
-export WANDB_BASE_URL="${WANDB_BASE_URL:-}"
-export WANDB_TEAM_NAME="${WANDB_TEAM_NAME:-}"
+# Placeholders upstream; here the caller's environment wins. An empty value is
+# unset, not exported: wandb rejects WANDB_BASE_URL="" and silently disables itself.
+for v in WANDB_API_KEY WANDB_BASE_URL WANDB_TEAM_NAME; do
+    [ -n "${!v:-}" ] && export "$v" || unset "$v"
+done
 export WANDB_PROJECT="${WANDB_PROJECT:-va_robotwin}"
 
 ## node setting
