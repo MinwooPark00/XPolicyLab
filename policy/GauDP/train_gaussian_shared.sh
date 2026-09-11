@@ -61,5 +61,6 @@ echo "[GauDP][shared] output   ${out}"
 CUDA_VISIBLE_DEVICES="${gpu}" PYTHONNOUSERSITE=1 "${python_bin}" "${POLICY_DIR}/train_gaussian.py" \
     --data "${datasets[@]}" --output "${out}" --pretrained "${pretrained}" --seed "${seed}" \
     --wandb-run-name "shared-gaussian-seed${seed}${GAUDP_TAG:+-${GAUDP_TAG}}" \
+    --wandb-id "shared-gaussian-seed${seed}${GAUDP_TAG:+-${GAUDP_TAG}}" \
     --wandb-tags "gaussian,shared,seed-${seed}" \
     ${extra[@]+"${extra[@]}"}

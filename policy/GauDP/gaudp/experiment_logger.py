@@ -39,6 +39,7 @@ class ExperimentLogger:
         wandb_entity: str | None = None,
         wandb_group: str | None = None,
         wandb_tags: Sequence[str] = (),
+        wandb_id: str | None = None,
     ) -> None:
         if wandb_mode not in {"online", "offline", "disabled"}:
             raise ValueError(f"unsupported W&B mode: {wandb_mode}")
@@ -66,6 +67,8 @@ class ExperimentLogger:
                 group=wandb_group,
                 tags=list(wandb_tags),
                 mode=wandb_mode,
+                id=wandb_id,
+                resume="allow" if wandb_id else None,
                 config=_json_value(config),
             )
 
