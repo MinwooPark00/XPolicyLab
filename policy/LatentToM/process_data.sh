@@ -75,7 +75,12 @@ if [[ -n "${expert_data_num}" ]]; then
   max_demos_args=(--max-demos "${expert_data_num}")
 fi
 
-python "${POLICY_DIR}/convert_to_replay_buffer.py" \
+# Same interpreter rule as train.sh: name the env's python rather than
+# trusting the PATH lookup.
+PY="${LATENTTOM_PYTHON:-${CONDA_PREFIX:-}/bin/python}"
+[ -x "$PY" ] || PY=python
+
+"$PY" "${POLICY_DIR}/convert_to_replay_buffer.py" \
     "${MHBENCH_DATASET_PATH}" "${out_dir}" \
     "${max_demos_args[@]}"
 

@@ -68,7 +68,9 @@ export NUMEXPR_NUM_THREADS="${NUMEXPR_NUM_THREADS:-1}"
 # activated by the login shell (MHBench's .venv, which holds Isaac Sim and none
 # of the training dependencies) keeps its PATH entry ahead of conda's, so
 # `python` there is the wrong one and the run dies on the first import.
-PY="${CONDA_PREFIX:-}/bin/python"
+# LATENTTOM_PYTHON names it outright, the way DP_PYTHON and GAUDP_PYTHON do,
+# for a caller that resolves the env without activating it (a launcher hook).
+PY="${LATENTTOM_PYTHON:-${CONDA_PREFIX:-}/bin/python}"
 [ -x "$PY" ] || PY=python
 
 # One task config for every MHBench two-G1 scene -- they present identical
