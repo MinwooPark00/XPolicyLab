@@ -39,6 +39,18 @@ class TrainDiffusionSheafSplitWorkspace(BaseWorkspace):
     # overwriting arm*_best_val.ckpt with its first, worse, validation.
     include_keys = ['global_step', 'epoch', 'best_val_loss_arm1', 'best_val_loss_arm2']
 
+    def _weights_only_exclude(self, arm: int) -> tuple:
+        # What model.py serves -- the EMA policy when there is one -- and
+        # nothing it cannot use: no optimizer, no other arm. ~1/4 of a
+        # resumable checkpoint (5.5 GB), which is what makes keeping one per
+        # snapshot affordable.
+        other = 2 if arm == 1 else 1
+        keys = list(self.exclude_keys) + [f'arm{other}_model', f'arm{other}_ema_model',
+                                          f'optimizer_arm{other}', f'optimizer_arm{arm}']
+        if getattr(self, f'arm{arm}_ema_model') is not None:
+            keys.append(f'arm{arm}_model')
+        return tuple(keys)
+
     def __init__(self, cfg: OmegaConf, output_dir=None):
         super().__init__(cfg, output_dir=output_dir)
 
@@ -470,11 +482,9 @@ class TrainDiffusionSheafSplitWorkspace(BaseWorkspace):
                         best_attr = f'best_val_loss_arm{arm}'
                         if key in step_log and step_log[key] < getattr(self, best_attr):
                             setattr(self, best_attr, step_log[key])
-                            exclude = tuple(list(self.exclude_keys) + [
-                                f'arm{other}_model', f'arm{other}_ema_model', f'optimizer_arm{other}'])
                             self.save_checkpoint(
                                 path=pathlib.Path(self.output_dir).joinpath('checkpoints', f'arm{arm}_best_val.ckpt'),
-                                tag=f'arm{arm}_best_val', exclude_keys=exclude)
+                                tag=f'arm{arm}_best_val', exclude_keys=self._weights_only_exclude(arm))
                             step_log[f'best_val_epoch_arm{arm}'] = self.epoch + 1
                         step_log[best_attr] = getattr(self, best_attr)
 
@@ -573,6 +583,19 @@ class TrainDiffusionSheafSplitWorkspace(BaseWorkspace):
                     if topk_ckpt_path_arm2 is not None:
                         arm2_exclude = tuple(list(self.exclude_keys) + ['arm1_model', 'arm1_ema_model', 'optimizer_arm1'])
                         self.save_checkpoint(path=topk_ckpt_path_arm2, tag='arm2_latest', exclude_keys=arm2_exclude)
+
+                # Fixed-epoch snapshots for picking a checkpoint closed-loop.
+                # The denoising val loss cannot pick one here (framehang: its
+                # minimum at epoch 35 grasps 0/20, epochs 519-924 grasp ~0.5),
+                # and the top-k above ranks on train_loss, which only falls --
+                # so it keeps the last k epochs and nothing earlier.
+                snapshot_every = cfg.checkpoint.get('snapshot_every', 0)
+                if snapshot_every and ((self.epoch + 1) % snapshot_every) == 0:
+                    for arm in (1, 2):
+                        self.save_checkpoint(
+                            path=pathlib.Path(self.output_dir).joinpath(
+                                'checkpoints', f'arm{arm}_epoch={self.epoch + 1:04d}.ckpt'),
+                            tag=f'arm{arm}_epoch{self.epoch + 1}', exclude_keys=self._weights_only_exclude(arm))
 
                 arm1_policy.train()
                 arm2_policy.train()

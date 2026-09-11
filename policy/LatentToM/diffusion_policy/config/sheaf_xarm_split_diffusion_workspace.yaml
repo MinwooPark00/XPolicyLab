@@ -130,6 +130,7 @@ checkpoint:
     format_str: 'epoch={epoch:04d}-train_loss={train_loss:.3f}.ckpt'
   save_last_ckpt: True
   save_last_snapshot: False
+  snapshot_every: 0  # epochs between weights-only arm{1,2}_epoch=NNNN.ckpt; 0 = none
 
 multi_run:
   run_dir: data/outputs/${now:%Y.%m.%d}/${now:%H.%M.%S}_${name}_${task_name}
