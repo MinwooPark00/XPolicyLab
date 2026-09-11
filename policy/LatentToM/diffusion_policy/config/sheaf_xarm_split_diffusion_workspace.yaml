@@ -110,6 +110,7 @@ training:
   max_val_steps: null
   tqdm_interval_sec: 1.0
   sheaf_loss_weight: 0.5
+  state_noise: 0.0  # x half each proprio dim's demonstration range; 0 = upstream behaviour
 
 logging:
   entity: null

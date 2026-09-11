@@ -227,6 +227,18 @@ class TrainDiffusionSheafSplitWorkspace(BaseWorkspace):
         optimizer_to(self.optimizer_arm1, device)
         optimizer_to(self.optimizer_arm2, device)
 
+        # Proprio jitter, GauDP's recipe: the joint state alone predicts the next
+        # action well enough that a policy stops reading its cameras, and Gaussian
+        # noise at state_noise x half of each dim's demonstration range breaks
+        # that shortcut (GauDP handover grasp 4/50 -> 48/50 at 0.02). Training
+        # batches only; validation and the sampled-MSE batch see clean state.
+        state_noise_scale = {}
+        if cfg.training.get('state_noise', 0.0):
+            for key in ('arm1_proprio', 'arm2_proprio'):
+                stats = normalizer[key].get_input_stats()
+                span = (stats['max'] - stats['min']).detach().clamp_min(1e-6)
+                state_noise_scale[key] = (cfg.training.state_noise * span * 0.5).to(device)
+
         train_sampling_batch = None
 
         if cfg.training.debug:
@@ -300,6 +312,12 @@ class TrainDiffusionSheafSplitWorkspace(BaseWorkspace):
 
                         if train_sampling_batch is None:
                             train_sampling_batch = batch
+
+                        if state_noise_scale:
+                            obs = dict(batch['obs'])
+                            for key, scale in state_noise_scale.items():
+                                obs[key] = obs[key] + torch.randn_like(obs[key]) * scale
+                            batch = dict(batch, obs=obs)
 
                         arm1_batch = build_arm_sub_batch(batch, arm_id=1)
                         arm2_batch = build_arm_sub_batch(batch, arm_id=2)
