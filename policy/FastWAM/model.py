@@ -269,6 +269,7 @@ class Model(ModelTemplate):
                 ckpt, stats, sim_cfg_name="sim_mhbench.yaml", sim_task=self._sim_task,
                 text_cache_dir=self._mhbench_text_cache_dir(task),
             )
+            self._preflight_text_cache(policy, task)
             fallback = self._mhbench_instruction(task)
             for robot in ("robot_a", "robot_b"):
                 self._policies[robot] = policy
@@ -288,6 +289,7 @@ class Model(ModelTemplate):
                     text_cache_dir=self._mhbench_text_cache_dir(f"{task}_{robot}"),
                 )
                 self._instructions[robot] = self._mhbench_instruction(f"{task}_{robot}")
+                self._preflight_text_cache(self._policies[robot], f"{task}_{robot}")
                 print(f"[FastWAM][mhbench] {robot}: {ckpt}")
         else:
             ckpt = self.model_cfg.get("model_dir") or self.model_cfg.get("checkpoint_path")
@@ -301,6 +303,7 @@ class Model(ModelTemplate):
                 text_cache_dir=self._mhbench_text_cache_dir(task),
             )
             self._instructions["duo"] = self._mhbench_instruction(task)
+            self._preflight_text_cache(self._policies["duo"], task)
             print(f"[FastWAM][mhbench] centralized: {ckpt}")
 
         first = next(iter(self._policies.values()))
@@ -322,7 +325,20 @@ class Model(ModelTemplate):
             return None
         data_key = f"mhbench-{ckpt_name}-{self.env_cfg_type}-{self.action_type}"
         cache = FASTWAM_ROOT / "data" / "text_embeds_cache" / "xpolicylab" / data_key
-        return str(cache) if any(cache.glob("*.pt")) else None
+        if any(cache.glob("*.pt")):
+            return str(cache)
+        # Not a silent fall-through to the live T5. Until 2026-09-11 a missing
+        # or half-built cache returned None here, which loaded the 11 GB
+        # encoder instead -- 24.7 GiB resident rather than 12.5, and a serving
+        # path nobody chose. Ask for the encoder explicitly with
+        # `serve_text_encoder: true` (checked above) if that is what you want.
+        raise FileNotFoundError(
+            f"No T5 text-embedding cache at {cache}. Precompute it with "
+            "FastWAM/scripts/precompute_text_embeds.py over this dataset "
+            "(baselines/scripts/README.md, FastWAM > One-off setup), name another "
+            "with deploy.yml's `text_embedding_cache_dir`, or set "
+            "`serve_text_encoder: true` to load the encoder instead."
+        )
 
     def _mhbench_stats_path(self, ckpt_name: str) -> str:
         explicit = self.model_cfg.get("dataset_stats_path")
@@ -363,11 +379,106 @@ class Model(ModelTemplate):
         else:
             sentence = wire.get(target)
             sentence = str(sentence) if sentence and str(sentence).strip() else self._instructions[target]
+        # Memoised on the sentence that came IN, so a substituted one is not
+        # re-resolved (and re-announced) on every step of the episode.
         seen = self.__dict__.setdefault("_instruction_seen", {})
-        if seen.get(target) != sentence:
-            seen[target] = sentence
-            print(f"[FastWAM][mhbench] {target} instruction: {sentence!r}", flush=True)
-        return sentence
+        cached = seen.get(target)
+        if cached is not None and cached[0] == sentence:
+            return cached[1]
+        resolved = self._resolve_cached_instruction(target, sentence)
+        seen[target] = (sentence, resolved)
+        print(f"[FastWAM][mhbench] {target} instruction: {resolved!r}", flush=True)
+        return resolved
+
+    def _text_cache_has(self, policy, sentence: str) -> bool:
+        """Whether the T5 cache `policy` serves from holds `sentence`.
+
+        The lookup goes through the upstream loader rather than re-deriving its
+        sha256/filename scheme, so the two cannot drift apart. A policy with no
+        cache encodes anything, so it is vacuously true there."""
+        if getattr(policy, "text_embedding_cache_dir", None) is None:
+            return True
+        from fastwam.datasets.lerobot.robot_video_dataset import (
+            DEFAULT_PROMPT,
+            load_cached_text_context,
+        )
+        try:
+            load_cached_text_context(
+                policy.text_embedding_cache_dir,
+                DEFAULT_PROMPT.format(task=sentence),
+                int(getattr(policy, "context_len", 128)),
+            )
+        except FileNotFoundError:
+            return False
+        return True
+
+    def _preflight_text_cache(self, policy, ckpt_name: str) -> None:
+        """Every sentence the checkpoint trained on must be in its T5 cache.
+
+        At load, not at the inference that first needs it: a precompute killed
+        part-way leaves a cache that serves some episodes and then dies, and a
+        crash at episode 7 reads as a policy failure rather than as setup."""
+        if getattr(policy, "text_embedding_cache_dir", None) is None:
+            return
+        tasks_file = self._mhbench_data_root(ckpt_name) / "lerobot" / "meta" / "tasks.jsonl"
+        try:
+            sentences = [
+                str(json.loads(line)["task"])
+                for line in tasks_file.read_text().splitlines()
+                if line.strip()
+            ]
+        except (OSError, KeyError, json.JSONDecodeError):
+            print(f"[FastWAM][mhbench] no readable {tasks_file}; text-cache preflight skipped")
+            return
+        missing = [s for s in sentences if not self._text_cache_has(policy, s)]
+        if missing:
+            raise FileNotFoundError(
+                f"{len(missing)} of {len(sentences)} training sentences are absent from the "
+                f"T5 cache {policy.text_embedding_cache_dir} (first missing: {missing[0]!r}). "
+                "Rebuild it with FastWAM/scripts/precompute_text_embeds.py over this dataset."
+            )
+        print(
+            f"[FastWAM][mhbench] text-cache preflight: {len(sentences)} training sentences present",
+            flush=True,
+        )
+
+    def _resolve_cached_instruction(self, target: str, sentence: str) -> str:
+        """`sentence`, once the checkpoint's T5 cache is known to hold it.
+
+        A miss reaches the upstream loader as a bare `Missing text embedding
+        cache: <sha256>.t5_len128.wan22ti2v5b.pt`, raised inside the first
+        inference of an episode -- which names neither the sentence nor the
+        real problem, that this checkpoint never trained on the task being
+        evaluated. The benchmark hits it for real: the env's DoorPassage and
+        FrameHang (with-handles) sentences are not among the 16 in the cohub8
+        multitask dataset, so those two evaluations died mid-episode with a
+        hash for a message.
+
+        FASTWAM_UNCACHED_INSTRUCTION=dataset substitutes the sentence this run
+        DID train on, which keeps a smoke test moving. It is not the default:
+        the policy is then being told to do a different job and the score
+        means nothing."""
+        policy = self._policies.get(target)
+        if policy is None or self._text_cache_has(policy, sentence):
+            return sentence
+        fallback = self._instructions[target]
+        if os.environ.get("FASTWAM_UNCACHED_INSTRUCTION") == "dataset" and self._text_cache_has(
+            policy, fallback
+        ):
+            print(
+                f"[FastWAM][mhbench] WARNING {target}: {sentence!r} is not in the T5 cache; "
+                f"substituting the trained sentence {fallback!r} "
+                "(FASTWAM_UNCACHED_INSTRUCTION=dataset). This score is not a benchmark result.",
+                flush=True,
+            )
+            return fallback
+        raise FileNotFoundError(
+            f"{target} was told {sentence!r}, which is not in this checkpoint's T5 cache "
+            f"({policy.text_embedding_cache_dir}) -- the checkpoint never trained on it. "
+            "Evaluate a task whose sentences the training dataset covers, precompute the "
+            "embedding for this one, or set FASTWAM_UNCACHED_INSTRUCTION=dataset to "
+            "substitute a trained sentence for a wiring check (not a benchmark result)."
+        )
 
     def _newest_weights(self, run_dir: Path) -> str:
         """A servable weights file the trainer wrote under a run

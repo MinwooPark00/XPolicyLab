@@ -52,12 +52,15 @@ dataset_stats_path="${FASTWAM_DATASET_STATS_PATH:-${ckpt_dir}/dataset_stats.json
 
 allow_dummy_policy="${FASTWAM_ALLOW_DUMMY_POLICY:-false}"
 checkpoint_path="${FASTWAM_CHECKPOINT_PATH:-}"
+# Left EMPTY when the run has no weights yet, deliberately: model.py then
+# reports what is actually wrong ("no FastWAM weights under <run>/checkpoints/
+# weights -- train first", or mhbench's model_dir resolution). Until 2026-09-11
+# this fell back to "${weights_dir}/step_latest.pt", a name the trainer never
+# writes (it writes step_%06d.pt), so an untrained run died inside torch.load
+# on a path that does not exist instead of saying so.
 if [[ -z "${checkpoint_path}" && "${allow_dummy_policy}" != "true" ]]; then
     if [[ -d "${weights_dir}" ]]; then
         checkpoint_path=$(find "${weights_dir}" -maxdepth 1 -type f -name 'step_*.pt' | sort -V | tail -n 1)
-    fi
-    if [[ -z "${checkpoint_path}" ]]; then
-        checkpoint_path="${weights_dir}/step_latest.pt"
     fi
 fi
 if [[ -n "${checkpoint_path}" && -d "${checkpoint_path}" ]]; then

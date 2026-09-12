@@ -36,6 +36,15 @@ if [[ "${num_gpus}" -le 1 ]]; then
     export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 fi
 export PYTHONPATH="${ROOT_DIR}:${FASTWAM_DIR}:${FASTWAM_DIR}/src:${PYTHONPATH:-}"
+# Triton caches a compiled CUDA helper (cuda_utils.so) and keys it by the hash
+# of its source alone -- not by the host that built it. $HOME is shared across
+# this cluster and the nodes are NOT uniform (login glibc 2.39, node100 2.28),
+# so a helper built on one node makes every run on an older node die at import
+# with "ImportError: /lib64/libc.so.6: version `GLIBC_2.34' not found", inside
+# `import deepspeed`, before a single step. Key the cache by host on node-local
+# disk. An explicit TRITON_CACHE_DIR in the environment is kept.
+export TRITON_CACHE_DIR="${TRITON_CACHE_DIR:-/tmp/triton-cache-${USER:-$(id -un)}-$(hostname -s)}"
+mkdir -p "${TRITON_CACHE_DIR}"
 
 action_dim=$(bash "${UTILS_DIR}/get_action_dim.sh" "${ROOT_DIR}" "${env_cfg_type}")
 # Default dataset_id is the 4-tuple data_key. Set FASTWAM_DATASET_ID to point
