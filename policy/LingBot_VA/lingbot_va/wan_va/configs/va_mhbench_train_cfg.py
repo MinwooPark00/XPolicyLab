@@ -119,6 +119,19 @@ va_mhbench_train_cfg.load_worker = _env_int("LINGBOT_NUM_WORKERS", 8)
 # CUDA context is what hung the first probe for two hours.
 va_mhbench_train_cfg.dataset_init_workers = _env_int("LINGBOT_DATASET_INIT_WORKERS", 1)
 va_mhbench_train_cfg.save_interval = _env_int("LINGBOT_SAVE_INTERVAL", 2500)
+# Same defaults as train/LingBot_VA.sh's train_env(), for a checkout invoked
+# without the MHBench hook (a bare `python -m wan_va.train`, or a site whose
+# launcher does not export these). Keeping the fallback here non-zero too
+# means pruning is never silently off just because one side forgot to set it.
+va_mhbench_train_cfg.keep_last_checkpoints = _env_int(
+    "LINGBOT_KEEP_LAST_CHECKPOINTS", 5)
+va_mhbench_train_cfg.keep_checkpoint_interval = _env_int(
+    "LINGBOT_KEEP_CHECKPOINT_INTERVAL", 1000)
+# 0 (default) = disabled. A held-out pass every N steps inside the same
+# process -- not the between-segment validate_lingbot_checkpoint.py, which
+# only ever runs once per SLURM job and so cannot give a mid-run curve.
+va_mhbench_train_cfg.validation_interval = _env_int("LINGBOT_VALIDATION_INTERVAL", 0)
+va_mhbench_train_cfg.validation_samples = _env_int("LINGBOT_VALIDATION_SAMPLES", 3)
 va_mhbench_train_cfg.gc_interval = 50
 va_mhbench_train_cfg.cfg_prob = _env_float("LINGBOT_CFG_PROB", 0.1)
 
