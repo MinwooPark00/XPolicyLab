@@ -61,13 +61,25 @@ MHBENCH_BENCH_NAME = "mhbench"
 MHBENCH_CENTRALIZED_ENV_CFG_TYPE = "unitree_g1x2_centralized"
 MHBENCH_DECENTRALIZED_ENV_CFG_TYPE = "unitree_g1x2_decentralized"
 MHBENCH_ROBOTS = ("robot_a", "robot_b")
-MHBENCH_MULTITASK_CKPT = "multitask"
+MHBENCH_ROBOTS3 = ("robot_a", "robot_b", "robot_c")
+"""Every robot name a task may have. A three-robot task (MoveHouse, BigTable)
+drives the third from the same shared weights; which robots a run actually has
+comes from the observation, so a two-robot task is unchanged."""
 
-MHBENCH_VIDEO_SLOT = {"ego_a": "cam_left_wrist", "ego_b": "cam_right_wrist"}
+
+def _mhbench_robots(obs: dict) -> tuple[str, ...]:
+    present = obs.get("mhbench_state") or {}
+    return tuple(robot for robot in MHBENCH_ROBOTS3 if robot in present) or MHBENCH_ROBOTS
+MHBENCH_MULTITASK_CKPT = "multitask"
+MHBENCH_MULTITASK_CKPTS = ("multitask", "multitask3")
+"""The two shared runs: the eight two-robot tasks, and the three-robot pair."""
+
+MHBENCH_VIDEO_SLOT = {"ego_a": "cam_left_wrist", "ego_b": "cam_right_wrist",
+                      "ego_c": "cam_third_view"}
 """`MHBenchTaskEnv.get_obs()`'s historical slot names: `cam_left_wrist` is
 robot A's *head* camera, not a wrist one."""
 
-MHBENCH_EGO_VIEW = {"robot_a": "ego_a", "robot_b": "ego_b"}
+MHBENCH_EGO_VIEW = {"robot_a": "ego_a", "robot_b": "ego_b", "robot_c": "ego_c"}
 
 MHBENCH_JOINT_TARGET_DIM = 31
 MHBENCH_ACTION_DIM = 35
@@ -232,15 +244,15 @@ class Model(ModelTemplate):
         self._mode = _mhbench_mode(model_cfg)
         self._style = _decentralized_style(model_cfg)
         self._prompt_override = {
-            robot: model_cfg.get(f"prompt_{robot}") for robot in MHBENCH_ROBOTS}
+            robot: model_cfg.get(f"prompt_{robot}") for robot in MHBENCH_ROBOTS3}
 
         task = str(model_cfg.get("ckpt_name") or "").strip()
         if not task:
             raise ValueError("mhbench eval needs ckpt_name (multitask for the shared policy)")
         shared = self._style == "shared"
-        if shared and task != MHBENCH_MULTITASK_CKPT:
+        if shared and task not in MHBENCH_MULTITASK_CKPTS:
             print(f"[Psi0] decentralized_style=shared with ckpt_name={task!r}; "
-                  f"the benchmark's shared run is {MHBENCH_MULTITASK_CKPT!r}")
+                  f"the benchmark's shared runs are {MHBENCH_MULTITASK_CKPTS}")
 
         import torch
 
@@ -255,7 +267,10 @@ class Model(ModelTemplate):
         loaded: dict[str | None, Any] = {}
         for target in targets:
             loaded[target] = self._load(model_cfg, target)
-        self._per_robot = {robot: loaded[None if shared else robot] for robot in MHBENCH_ROBOTS}
+        # Shared weights drive every robot the scene has, including a third;
+        # per-robot style has one checkpoint each, and only the pair has them.
+        self._per_robot = {robot: loaded[None] for robot in MHBENCH_ROBOTS3} if shared else {
+            robot: loaded[robot] for robot in MHBENCH_ROBOTS}
 
         first = next(iter(loaded.values()))
         self.model = first["model"]
@@ -265,7 +280,7 @@ class Model(ModelTemplate):
         self._exec_horizon = max(1, min(horizon, chunk))
         self._steps = int(model_cfg.get("num_inference_steps")
                           or getattr(first["config"].model, "eval_diffusion_steps", 10))
-        self._last_height = {robot: layout.NOMINAL_HEIGHT for robot in MHBENCH_ROBOTS}
+        self._last_height = {robot: layout.NOMINAL_HEIGHT for robot in MHBENCH_ROBOTS3}
         print(f"[Psi0][mhbench] style={self._style} chunk={chunk} exec={self._exec_horizon} "
               f"steps={self._steps} device={self._device}")
 
@@ -311,7 +326,7 @@ class Model(ModelTemplate):
         except (KeyError, TypeError) as exc:
             raise KeyError(
                 f"observation carries no {slot} view for {robot}; the eval runner sends "
-                f"ego_a and ego_b by default") from exc
+                f"ego_a and ego_b (and ego_c on a three-robot task) by default") from exc
         # The server hands decoded, read-only views. Copy before anything reads
         # into a tensor.
         return np.array(color, dtype=np.uint8, copy=True)
@@ -375,12 +390,13 @@ class Model(ModelTemplate):
         return mhbench
 
     def _actions_for(self, obs: dict[str, Any]) -> list[dict[str, Any]]:
-        per_robot = {robot: self._chunk_for(obs, robot) for robot in MHBENCH_ROBOTS}
+        robots = _mhbench_robots(obs)
+        per_robot = {robot: self._chunk_for(obs, robot) for robot in robots}
         steps = min(len(chunk) for chunk in per_robot.values())
         return [
             {"mhbench_raw_action": {
                 robot: _pack_mhbench_robot_action(per_robot[robot][step])
-                for robot in MHBENCH_ROBOTS}}
+                for robot in robots}}
             for step in range(steps)
         ]
 
@@ -406,7 +422,7 @@ class Model(ModelTemplate):
     def reset(self):
         self.observation_window = None
         self._latest_env_idx_list = [0]
-        self._last_height = {robot: layout.NOMINAL_HEIGHT for robot in MHBENCH_ROBOTS}
+        self._last_height = {robot: layout.NOMINAL_HEIGHT for robot in MHBENCH_ROBOTS3}
 
     def reset_obsrvationwindows(self):
         self.reset()

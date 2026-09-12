@@ -106,12 +106,15 @@ def _joint_spans() -> dict[tuple[str, str], tuple[int, int]]:
     keys = _mhbench_keys()
     spans: dict[tuple[str, str], tuple[int, int]] = {}
     cursor = 0
-    for robot in keys.ROBOTS:
+    # Every robot name, not just a two-robot task's: the robots are stored in
+    # order, so robot_c's columns are where they would be on a three-robot task
+    # and unused on a two-robot one. One table serves both.
+    for robot in keys.ALL_ROBOTS:
         for group in keys.JOINT_GROUPS:
             width = keys.JOINT_GROUP_WIDTHS[group]
             spans[(robot, group)] = (cursor, cursor + width)
             cursor += width
-    assert cursor == keys.JOINTS_PER_ROBOT * len(keys.ROBOTS), cursor
+    assert cursor == keys.JOINTS_PER_ROBOT * len(keys.ALL_ROBOTS), cursor
     return spans
 
 
@@ -153,7 +156,7 @@ def action_slices(robot: str | None) -> tuple[Slice, ...]:
 
     out: list[Slice] = []
     for r in robots:
-        index = keys.ROBOTS.index(r)
+        index = keys.ALL_ROBOTS.index(r)
         out.extend(Slice(JOINT_COLUMN, *spans[(r, group)]) for group in keys.ACTION_JOINT_GROUPS)
         out.append(Slice(BASE_HEIGHT_COLUMN, index, index + 1))
         out.append(Slice(NAVIGATE_COLUMN, 3 * index, 3 * index + 3))
@@ -169,7 +172,7 @@ def action_slices(robot: str | None) -> tuple[Slice, ...]:
 # to MHBENCH_SCENE_CAMERA=0, so leaving it out keeps the baselines comparable.
 PI0_IMAGE_SLOTS = ("base_0_rgb", "left_wrist_0_rgb", "right_wrist_0_rgb")
 
-EGO_VIEW = {"robot_a": "ego_a", "robot_b": "ego_b"}
+EGO_VIEW = {"robot_a": "ego_a", "robot_b": "ego_b", "robot_c": "ego_c"}
 
 
 def camera_slots(robot: str | None) -> tuple[str, ...]:

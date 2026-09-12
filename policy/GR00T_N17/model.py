@@ -367,8 +367,24 @@ def _mhbench_task_key(task: str) -> str:
 # packs ego_a/ego_b/scene into XPolicyLab's standard bimanual slot names.
 MHBENCH_VIDEO_SLOT = {
     "ego_a": "cam_left_wrist", "ego_b": "cam_right_wrist", "scene": "cam_head",
+    # A three-robot task (MoveHouse, BigTable) carries a third head, which
+    # MHBenchTaskEnv packs into the remaining standard slot.
+    "ego_c": "cam_third_view",
 }
-MHBENCH_EGO_VIEW = {"robot_a": "ego_a", "robot_b": "ego_b"}
+MHBENCH_EGO_VIEW = {"robot_a": "ego_a", "robot_b": "ego_b", "robot_c": "ego_c"}
+MHBENCH_ROBOTS = ("robot_a", "robot_b", "robot_c")
+"""Every robot name a task may have, in order.
+
+Which of them a run actually drives comes from the observation -- the env packs
+one `mhbench_state` group per robot in the scene -- so a two-robot task is
+unchanged and a three-robot one is queried three times."""
+
+
+def _mhbench_robots(obs: dict[str, Any]) -> tuple[str, ...]:
+    """The robots this observation carries, in order."""
+    present = obs.get("mhbench_state") or {}
+    found = tuple(robot for robot in MHBENCH_ROBOTS if robot in present)
+    return found or MHBENCH_ROBOTS[:2]
 
 # The shared instruction a centralized policy is trained on (meta/tasks.jsonl
 # index 0). Add a task here from its own dataset rather than guessing it -- a
@@ -602,11 +618,11 @@ class Model(ModelTemplate):
         # deploy.yml `prompt_<robot>` still wins over both.
         task_prompts = MHBENCH_TASK_PROMPTS.get(_mhbench_task_key(task), {})
         self._prompt_overrides = {
-            robot: model_cfg.get(f"prompt_{robot}") for robot in ("robot_a", "robot_b")
+            robot: model_cfg.get(f"prompt_{robot}") for robot in MHBENCH_ROBOTS
         }
         self._prompts = {
             robot: str(self._prompt_overrides[robot] or task_prompts.get(robot) or default_prompt)
-            for robot in ("robot_a", "robot_b")
+            for robot in MHBENCH_ROBOTS
         }
 
         if self._style == "shared":
@@ -779,7 +795,7 @@ class Model(ModelTemplate):
             # is what makes this a decentralized pair rather than one policy
             # doing the task twice.
             per_robot = {}
-            for robot in ("robot_a", "robot_b"):
+            for robot in _mhbench_robots(obs):
                 encoded = _encode_mhbench_shared_observation(obs, robot, self._mhbench_prompt(obs, robot))
                 action, _ = self._policy_shared.get_action(encoded)
                 per_robot[robot] = self._pack_robot_action(action, robot, prefixed=False)
@@ -789,9 +805,9 @@ class Model(ModelTemplate):
                 encoded = _encode_mhbench_observation(obs, robot, self._mhbench_prompt(obs, robot))
                 action, _ = policy.get_action(encoded)
                 per_robot[robot] = self._pack_robot_action(action, robot)
-        steps = min(len(per_robot["robot_a"]), len(per_robot["robot_b"]))
+        steps = min(len(chunk) for chunk in per_robot.values())
         return [
-            {"mhbench_raw_action": {"robot_a": per_robot["robot_a"][t], "robot_b": per_robot["robot_b"][t]}}
+            {"mhbench_raw_action": {robot: chunk[t] for robot, chunk in per_robot.items()}}
             for t in range(steps)
         ]
 

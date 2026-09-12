@@ -1163,6 +1163,26 @@ _CONFIGS.append(
     )
 )
 
+# The three-robot set (MoveHouse, BigTable), trained the same way: its rows are
+# one robot each as well -- robot_c included -- so the model shape, the recipe
+# and the environment knobs are the two-robot config's. Only the flattened
+# dataset differs, and with it the split, which comes from its own meta.
+_CONFIGS.append(
+    TrainConfig(
+        name="pi05_mhbench_multitask3_decentralized",
+        project_name="MHBench-Pi05",
+        model=_mhbench_lora_model("robot_a"),
+        data=LeRobotMHBenchSharedDataConfig(repo_id="mhbench-multitask3"),
+        weight_loader=weight_loaders.PartialCheckpointWeightLoader(
+            "gs://openpi-assets/checkpoints/pi05_base/params"
+        ),
+        freeze_filter=_mhbench_lora_model("robot_a").get_freeze_filter(),
+        ema_decay=None,
+        num_workers=12,
+        **_mhbench_multitask_train_kwargs(),
+    )
+)
+
 if len({config.name for config in _CONFIGS}) != len(_CONFIGS):
     raise ValueError("Config names must be unique.")
 _CONFIGS_DICT = {config.name: config for config in _CONFIGS}

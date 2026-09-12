@@ -42,15 +42,29 @@ MHBENCH_CENTRALIZED_ENV_CFG_TYPE = "unitree_g1x2_centralized"
 MHBENCH_DECENTRALIZED_ENV_CFG_TYPE = "unitree_g1x2_decentralized"
 
 MHBENCH_ROBOTS = ("robot_a", "robot_b")
+MHBENCH_ROBOTS3 = ("robot_a", "robot_b", "robot_c")
+"""Every robot name a task may have. The shared policy drives a three-robot
+task's third agent from the same weights; which robots a run has comes from the
+observation, so a two-robot task is unchanged."""
+
+
+def _mhbench_robots(observation: dict) -> tuple:
+    present = observation.get("mhbench_state") or {}
+    return tuple(robot for robot in MHBENCH_ROBOTS3 if robot in present) or MHBENCH_ROBOTS
 
 # MHBenchTaskEnv.get_obs puts each robot's ego camera on an XPolicyLab-generic
 # slot name; the scene camera lands on cam_head and no pi0.5 target reads it.
-MHBENCH_VIDEO_SLOT = {"ego_a": "cam_left_wrist", "ego_b": "cam_right_wrist"}
-MHBENCH_EGO_VIEW = {"robot_a": "ego_a", "robot_b": "ego_b"}
+MHBENCH_VIDEO_SLOT = {"ego_a": "cam_left_wrist", "ego_b": "cam_right_wrist",
+                      "ego_c": "cam_third_view"}
+MHBENCH_EGO_VIEW = {"robot_a": "ego_a", "robot_b": "ego_b", "robot_c": "ego_c"}
 
 # The run name of the shared decentralized policy -- one set of weights over
 # every task and both roles, so it is named for neither.
 MHBENCH_MULTITASK_CKPT = "multitask"
+MHBENCH_MULTITASK_CKPTS = ("multitask", "multitask3")
+"""The shared runs: the eight two-robot tasks, and the three-robot pair. Each
+has its own flattened dataset and its own TrainConfig; both are one policy over
+every task and role in their set."""
 
 # Per robot the policy commands 35 numbers, and MHBenchTaskEnv.take_action reads
 # them back in these three pieces. Same split ACT and DP pack (see
@@ -77,15 +91,15 @@ def _mhbench_train_config_name(task: str, robot: str | None) -> str:
     dataset (`ckpt_name` is `multitask`, not a task), and it is the same one
     for both agents -- what tells them apart is the instruction each is sent.
     """
-    if task == MHBENCH_MULTITASK_CKPT:
-        return "pi05_mhbench_multitask_decentralized"
+    if task in MHBENCH_MULTITASK_CKPTS:
+        return f"pi05_mhbench_{task}_decentralized"
     return f"pi05_mhbench_{task}_{robot or 'centralized'}"
 
 
 def _mhbench_model_dir(model_cfg: dict[str, Any], task: str, robot: str | None) -> Path:
     """`checkpoints/mhbench-<task>[_<robot>]-<env_cfg_type>-joint-<seed>/<step>`."""
     explicit = model_cfg.get(
-        "model_dir" if robot is None or task == MHBENCH_MULTITASK_CKPT else f"model_dir_{robot}"
+        "model_dir" if robot is None or task in MHBENCH_MULTITASK_CKPTS else f"model_dir_{robot}"
     )
     if explicit:
         return _resolve_pi05_model_root({**model_cfg, "model_path": explicit})
@@ -94,7 +108,7 @@ def _mhbench_model_dir(model_cfg: dict[str, Any], task: str, robot: str | None) 
     if robot is None:
         run_cfg["ckpt_name"] = task
         run_cfg["env_cfg_type"] = MHBENCH_CENTRALIZED_ENV_CFG_TYPE
-    elif task == MHBENCH_MULTITASK_CKPT:
+    elif task in MHBENCH_MULTITASK_CKPTS:
         # One run directory, named for neither a task nor a robot.
         run_cfg["ckpt_name"] = task
         run_cfg["env_cfg_type"] = MHBENCH_DECENTRALIZED_ENV_CFG_TYPE
@@ -261,7 +275,7 @@ class Model(ModelTemplate):
         if not task:
             raise ValueError("mhbench eval needs ckpt_name=<task> (e.g. cocarry)")
 
-        self._mhbench_shared = task == MHBENCH_MULTITASK_CKPT
+        self._mhbench_shared = task in MHBENCH_MULTITASK_CKPTS
         targets: tuple[str | None, ...] = (
             (None,) if self._mhbench_mode == "centralized" else MHBENCH_ROBOTS
         )
@@ -280,7 +294,9 @@ class Model(ModelTemplate):
             self._mhbench_policies[robot] = _policy_config.create_trained_policy(config, str(model_dir))
             print(f"[Pi_05][mhbench] {robot or 'centralized'}: {config_name} <- {model_dir}")
         if self._mhbench_shared:
-            for robot in targets:
+            # Every robot a task may have: one policy object, shared, so a
+            # three-robot scene finds robot_c here too.
+            for robot in MHBENCH_ROBOTS3:
                 self._mhbench_policies[robot] = self._mhbench_policies[load_targets[0]]
 
         horizon = _config.get_config(_mhbench_train_config_name(task, targets[0])).model.action_horizon
@@ -317,7 +333,7 @@ class Model(ModelTemplate):
                 # the two answers differ.
                 source = self.observation_window_raw[index]
                 per_robot = {}
-                for robot in MHBENCH_ROBOTS:
+                for robot in _mhbench_robots(source):
                     encoded = _encode_mhbench_shared_obs(source, robot)
                     prompt = (source.get("mhbench_instruction") or {}).get(robot)
                     if prompt:
@@ -336,8 +352,8 @@ class Model(ModelTemplate):
                 [
                     {
                         "mhbench_raw_action": {
-                            robot: _pack_mhbench_robot_action(per_robot[robot][step])
-                            for robot in MHBENCH_ROBOTS
+                            robot: _pack_mhbench_robot_action(chunk[step])
+                            for robot, chunk in per_robot.items()
                         }
                     }
                     for step in range(steps)
