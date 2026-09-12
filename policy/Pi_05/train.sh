@@ -32,10 +32,11 @@ fsdp_devices="${OPENPI_FSDP_DEVICES:-$(( gpu_count < 2 ? 1 : 2 ))}"
 #                  both roles) | <task>_robot_a | <task>_robot_b (single-task)
 mhbench_repo_id=""
 if [[ "${bench_name}" == "mhbench" ]]; then
-  if [[ "${ckpt_name}" == "multitask" ]]; then
-    # Before the `_robot_` parsing below, which would read this as a task named
-    # "multitask" driven by a robot named "multitask".
-    mhbench_task="multitask"; mhbench_target="decentralized"
+  if [[ "${ckpt_name}" == "multitask" || "${ckpt_name}" == "multitask3" ]]; then
+    # Before the `_robot_` parsing below, which would read either of these as a
+    # task driven by a robot of the same name. `multitask3` is the three-robot
+    # set's shared policy; it has its own config and its own flattened dataset.
+    mhbench_task="${ckpt_name}"; mhbench_target="decentralized"
   else
     case "${env_cfg_type}" in
       unitree_g1x2_centralized)   mhbench_task="${ckpt_name}";            mhbench_target="centralized" ;;
