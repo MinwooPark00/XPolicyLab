@@ -91,6 +91,13 @@ def main() -> None:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--fractions", default="0,0.25,0.5,0.75")
     parser.add_argument("--edge-threshold", type=float, default=0.02)
+    parser.add_argument(
+        "--geometry-scale",
+        choices=("baseline", "metric"),
+        default="baseline",
+        help="the units the checkpoint was fine-tuned in (train_gaussian.py --geometry-scale); "
+             "'metric' for encoders trained before that option existed",
+    )
     args = parser.parse_args()
 
     fractions = tuple(sorted({float(value) for value in args.fractions.split(",")}))
@@ -102,7 +109,7 @@ def main() -> None:
         raise SystemExit("diagnostic requires CUDA and the CUDA Gaussian rasterizer")
 
     device = torch.device("cuda")
-    dataset = GaussianFrameDataset(args.data, train=False)
+    dataset = GaussianFrameDataset(args.data, train=False, geometry_scale=args.geometry_scale)
     keyframes = select_keyframes(dataset, fractions)
     encoder = build_gaussian_encoder(len(dataset.camera_order))
     missing, unexpected = load_gaussian_checkpoint(encoder, args.checkpoint, strict=False)

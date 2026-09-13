@@ -307,11 +307,14 @@ def _save(
     finetune_mode: str,
     metrics: dict,
     resume_state: dict | None = None,
+    *,
+    geometry_scale: str,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(
         {
             **gaussian_checkpoint_metadata(num_views),
+            "geometry_scale": geometry_scale,
             "encoder_state": encoder.state_dict(),
             "optimizer_state": optimizer.state_dict(),
             "scheduler_state": scheduler.state_dict(),
@@ -388,6 +391,14 @@ def main() -> None:
     )
     parser.add_argument("--depth-weight", type=float, default=0.1)
     parser.add_argument(
+        "--geometry-scale",
+        choices=("baseline", "metric"),
+        default="baseline",
+        help="units of the camera poses and depth the renderer is supervised in: 'baseline' "
+             "rescales each frame so its cameras are one unit apart, as NoPoSplat was pretrained; "
+             "'metric' keeps metres, which every run before this option used",
+    )
+    parser.add_argument(
         "--log-every",
         type=int,
         default=50,
@@ -454,8 +465,8 @@ def main() -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if device.type != "cuda":
         raise SystemExit("NoPoSplat fine-tuning requires a CUDA device and CUDA rasterizer")
-    train_parts = [GaussianFrameDataset(path, train=True) for path in args.data]
-    val_parts = [GaussianFrameDataset(path, train=False) for path in args.data]
+    train_parts = [GaussianFrameDataset(path, train=True, geometry_scale=args.geometry_scale) for path in args.data]
+    val_parts = [GaussianFrameDataset(path, train=False, geometry_scale=args.geometry_scale) for path in args.data]
     # One encoder over several tasks only makes sense if they share a camera rig;
     # the 13-channel output is per-view, so a mismatch is a silent wrong answer.
     orders = {tuple(part.camera_order) for part in train_parts}
@@ -510,7 +521,8 @@ def main() -> None:
         scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda _: 1.0)
 
     print(
-        f"[GauDP][gaussian] device={device} cameras={train_data.camera_order} "
+        f"[GauDP][gaussian] device={device} cameras={train_parts[0].camera_order} "
+        f"geometry_scale={args.geometry_scale} "
         f"train_samples={len(train_data)} val_samples={len(val_data)} "
         f"train_batches={train_batches} val_batches={val_batches} "
         f"batch_size={args.batch_size} accumulation={args.gradient_accumulation_steps} "
@@ -536,6 +548,14 @@ def main() -> None:
     # stopping state, so the chain trains exactly what one run would have.
     if args.resume and last_path.is_file():
         state = torch.load(last_path, map_location=device, weights_only=False)
+        # Checkpoints from before --geometry-scale existed were all trained in metres.
+        recorded_scale = state.get("geometry_scale", "metric")
+        if recorded_scale != args.geometry_scale:
+            raise SystemExit(
+                f"{last_path} was trained with --geometry-scale {recorded_scale} and this run uses "
+                f"{args.geometry_scale}: the encoder's point maps are in different units. Write to a "
+                f"new --output, or pass --no-resume to start over here."
+            )
         planned = state.get("max_optimizer_steps")
         if planned is not None and planned != max_optimizer_steps:
             raise SystemExit(
@@ -694,6 +714,7 @@ def main() -> None:
                 args.finetune_mode,
                 metrics,
                 resume_state,
+                geometry_scale=args.geometry_scale,
             )
             print(
                 f"[GauDP][gaussian] saved last checkpoint in "
@@ -714,6 +735,7 @@ def main() -> None:
                     args.finetune_mode,
                     metrics,
                     resume_state,
+                    geometry_scale=args.geometry_scale,
                 )
                 print(
                     f"[GauDP][gaussian] saved best checkpoint in "
