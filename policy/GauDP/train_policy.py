@@ -269,9 +269,11 @@ def main() -> None:
     parser.add_argument("--no-ema", dest="ema", action="store_false",
                         help="save the live weights instead of their EMA")
     parser.set_defaults(ema=True)
-    parser.add_argument("--horizon", type=int, default=8)
+    # 40 predicted / 20 executed at 50 Hz: 0.8 s planned, 0.4 s between replans,
+    # LatentToM's own chunking. Was 8 / 6 (0.16 s / 0.12 s) through the S02 runs.
+    parser.add_argument("--horizon", type=int, default=40)
     parser.add_argument("--obs-steps", type=int, default=1)
-    parser.add_argument("--action-steps", type=int, default=6)
+    parser.add_argument("--action-steps", type=int, default=20)
     parser.add_argument("--inference-steps", type=int, default=100)
     # --- vision recipe -------------------------------------------------------
     # These defaults are the *current* recipe, not what the first MHBench GauDP
