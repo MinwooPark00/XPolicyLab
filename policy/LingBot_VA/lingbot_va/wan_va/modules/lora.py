@@ -86,6 +86,7 @@ class FP32Linear(nn.Module):
 
 def apply_lora(model: nn.Module, rank: int, alpha: float, dropout: float,
                train_action_projections: bool = True,
+               train_video_projections: bool = False,
                train_action_condition: bool = False):
     """Freeze the model, adapt every block projection, unfreeze the action head.
 
@@ -110,6 +111,16 @@ def apply_lora(model: nn.Module, rank: int, alpha: float, dropout: float,
         model.action_proj_out = FP32Linear(model.action_proj_out)
         model.action_embedder.requires_grad_(True)
         model.action_proj_out.requires_grad_(True)
+
+    if train_video_projections:
+        # These are only ~1.18M parameters together. Keep them in fp32 like the
+        # newly initialised action projections, but put them in their own lower-
+        # LR optimizer group in train.py so the pretrained Wan latent mapping
+        # can adapt without being moved as aggressively as the LoRA/action arm.
+        model.patch_embedding_mlp = FP32Linear(model.patch_embedding_mlp)
+        model.proj_out = FP32Linear(model.proj_out)
+        model.patch_embedding_mlp.requires_grad_(True)
+        model.proj_out.requires_grad_(True)
 
     if train_action_condition:
         # Left in the model's dtype on purpose: it runs on bf16 activations, so

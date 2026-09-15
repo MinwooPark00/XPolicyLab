@@ -269,7 +269,8 @@ class LatentLeRobotDataset(LeRobotDataset):
             left_action = get_relative_pose(action[:, :7])
             right_action = get_relative_pose(action[:, 8:15])
             action = np.concatenate([left_action, action[:, 7:8], right_action, action[:, 15:16]], axis=1)
-        action = np.pad(action, pad_width=((frame_stride * 4, 0), (0, 0)), mode='constant', constant_values=0)
+        leading_condition_steps = frame_stride * 4
+        action = np.pad(action, pad_width=((leading_condition_steps, 0), (0, 0)), mode='constant', constant_values=0)
 
         latent_frame_num = (len(latent_frame_ids) - 1) // 4 + 1
         required_action_num = latent_frame_num * frame_stride * 4
@@ -287,6 +288,14 @@ class LatentLeRobotDataset(LeRobotDataset):
         action_aligned = (action_aligned - self.q01) / (
                 self.q99 - self.q01 + 1e-6) * 2. - 1.
         action_aligned = np.clip(action_aligned, -1.5, 1.5)
+        # This prefix is a synthetic clean-action conditioning slot, not a
+        # physical command. Inference creates the same slot directly in model
+        # space with torch.zeros(), and later cached actions round-trip through
+        # preprocess_action() to model-space zero as well. Keeping the raw zero
+        # through quantile normalisation made training see a different sentinel
+        # (pelvis height clips to -1.5 and many hand channels to +/-1), putting
+        # the very first rollout chunk off-distribution.
+        action_aligned[:leading_condition_steps] = 0.0
         action_aligned = rearrange(action_aligned, "(f n) c -> c f n 1", f=latent_frame_num)
         action_mask_aligned = rearrange(action_mask_aligned, "(f n) c -> c f n 1", f=latent_frame_num)
         action_aligned *= action_mask_aligned

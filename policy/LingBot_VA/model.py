@@ -203,7 +203,13 @@ class Model(ModelTemplate):
         self._last_exec_step_count = 0
         self.rollout_mode = str(self.model_cfg.get("rollout_mode", "closed_loop"))
         self.keyframe_stride = self.model_cfg.get("keyframe_stride")
+        # ``exec_horizon`` is the common MHBench comparison knob used by the
+        # GR00T and pi0.5 adapters.  Keep LingBot's upstream name as the more
+        # specific override, but honor the common name so a matched-horizon
+        # evaluation actually applies to every baseline.
         self.chunk_exec_steps = self.model_cfg.get("chunk_exec_steps")
+        if self.chunk_exec_steps is None:
+            self.chunk_exec_steps = self.model_cfg.get("exec_horizon")
         self.initial_action_skip = self.model_cfg.get("initial_action_skip")
 
         # Imagined-video saving: when enabled, ask the server to decode predicted
@@ -394,6 +400,15 @@ class Model(ModelTemplate):
             key_frames = list(roll.exec_buffer)
         if not key_frames:
             return
+        # A chunk can terminate before all scheduled actions execute (fall,
+        # dropped object, etc.).  The action tensor still spans the model's
+        # full frame chunk, but the old fallback supplied only one final
+        # image.  Wan's streaming VAE then received temporal size 2 for a
+        # size-3 convolution.  Repeat the most recent real observation to keep
+        # video and action chunk lengths aligned for this truncated history.
+        target_frames = int(getattr(self.job_config, "frame_chunk_size", 1))
+        while len(key_frames) < target_frames:
+            key_frames.append(key_frames[-1])
         payload = self._to_engine_obs_batch(key_frames, state=roll.latest_raw_chunk)
         payload["session"] = agent
         payload["compute_kv_cache"] = True
@@ -415,6 +430,21 @@ class Model(ModelTemplate):
             host=self.va_server_host,
             port=self.va_server_port,
         )
+
+    def seed(self, seed: int):
+        """Seed the backend process that actually samples diffusion noise.
+
+        ``setup_policy_server.py`` runs in a different process from
+        ``wan_va_server``.  Seeding torch in the outer server therefore does
+        not affect the ``torch.randn`` calls used for LingBot's video and
+        action latents.  Forward the episode seed explicitly and require an
+        acknowledgement so evaluation provenance cannot claim a seeded
+        episode when the stochastic backend was not seeded.
+        """
+        reply = self._ws.infer({"seed": int(seed)})
+        if not isinstance(reply, dict) or not reply.get("seeded"):
+            raise RuntimeError(f"LingBot-VA backend rejected seed {seed}: {reply!r}")
+        return reply
 
     def _soft_reset_inference_state(self):
         """Clear server KV/VAE state (receding-horizon replan)."""
