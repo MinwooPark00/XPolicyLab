@@ -21,7 +21,12 @@ from XPolicyLab.utils.checkpoint_resolver import resolve_checkpoint_root, build_
 # own ego camera onto these XPolicyLab-generic slot names -- same mapping
 # ACT/model.py and GR00T_N17/model.py's MHBENCH_CAMERA_SLOT use, since it
 # comes from the env, not the policy.
-MHBENCH_CAMERA_SLOT = {"robot_a": "cam_left_wrist", "robot_b": "cam_right_wrist"}
+MHBENCH_CAMERA_SLOT = {"robot_a": "cam_left_wrist", "robot_b": "cam_right_wrist", "robot_c": "cam_third_view"}
+# robot_c only exists on a three-robot task (MoveHouse, BigTable), whose env
+# packs ego_c into `cam_third_view`. Its checkpoint is optional: a two-robot
+# task never has one, so it is loaded only when the runner names it
+# (model_dir_robot_c) or its default run directory exists.
+MHBENCH_OPTIONAL_ROBOTS = ("robot_c",)
 
 
 def _prep_camera(color: np.ndarray) -> np.ndarray:
@@ -289,6 +294,8 @@ class Model(ModelTemplate):
                     raise ValueError("bench_name/ckpt_name/env_cfg_type/action_type/seed required to name the run dir")
                 ckpt_dir = os.path.join(checkpoints_dir, run_name)
             if not os.path.isdir(ckpt_dir):
+                if robot in MHBENCH_OPTIONAL_ROBOTS and not explicit:
+                    continue
                 raise FileNotFoundError(f"{robot} checkpoint not found: {ckpt_dir}")
 
             self._sub_policies[robot] = self._load_policy(ckpt_dir, model_cfg.get('checkpoint_num', 'latest'))
@@ -396,6 +403,11 @@ class Model(ModelTemplate):
         env_idx_list = [obs["env_idx"] for obs in obs_list]
 
         if self._mhbench_decentralized:
+            unserved = [r for r in (obs_list[0].get("mhbench_state") or {}) if r not in self._sub_runners] if obs_list else []
+            if unserved:
+                raise FileNotFoundError(
+                    f"the scene has {unserved} but no checkpoint was loaded for it "
+                    f"(loaded: {list(self._sub_runners)}); pass model_dir_{unserved[0]}")
             merged = {}
             for robot, runner in self._sub_runners.items():
                 encoded = [self._encode_mhbench_robot_obs(obs, robot) for obs in obs_list]
@@ -520,7 +532,7 @@ class Model(ModelTemplate):
             if self._dump_last_obs is not None:
                 self._dump(
                     self._dump_last_obs,
-                    np.concatenate([per_robot["robot_a"][0], per_robot["robot_b"][0]], axis=-1),
+                    np.concatenate([chunk[0] for chunk in per_robot.values()], axis=-1),
                 )
             steps = min(arr.shape[1] for arr in per_robot.values())
             return [
