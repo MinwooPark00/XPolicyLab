@@ -73,6 +73,7 @@ class RobotImageDataset(BaseImageDataset):
         batch_size=128,
         max_train_episodes=None,
         val_zarr_path=None,
+        n_obs_steps=None,
     ):
 
         super().__init__()
@@ -107,8 +108,17 @@ class RobotImageDataset(BaseImageDataset):
 
         self.batch_size = batch_size
         sequence_length = self.sampler.sequence_length
+        # A camera is read for its first n_obs_steps frames only, as upstream
+        # diffusion_policy's `key_first_k` does: with obs_as_global_cond the
+        # policy conditions on x[:, :n_obs_steps] and never looks at the rest,
+        # but a batch holding every camera for the whole horizon costs
+        # batch x horizon x 3x240x320 as float32 on the GPU once postprocess
+        # divides by 255 -- 9.4 GB at batch 256, horizon 40, and again for the
+        # normalizer's output, which ran a 24 GB card out of memory. State and
+        # action keep the horizon; they are what the chunk is trained on.
+        self.image_steps = min(n_obs_steps, sequence_length) if n_obs_steps else sequence_length
         self.buffers = {
-            k: np.zeros((batch_size, sequence_length, *v.shape[1:]), dtype=v.dtype)
+            k: np.zeros((batch_size, self._steps(k), *v.shape[1:]), dtype=v.dtype)
             for k, v in self.sampler.replay_buffer.items()
         }
         self.buffers_torch = {k: torch.from_numpy(v) for k, v in self.buffers.items()}
@@ -121,6 +131,11 @@ class RobotImageDataset(BaseImageDataset):
         # runs at `task.dataset` with "CUDA error: no CUDA-capable device is
         # detected" when several jobs started on one node at once. Dataset
         # construction now touches no CUDA at all.
+
+    def _steps(self, zarr_key: str) -> int:
+        """Frames a batch carries for this key: the first image_steps for a
+        camera, the whole sequence for state and action."""
+        return self.image_steps if zarr_key in self.camera_keys else self.sampler.sequence_length
 
     def _obs_key(self, zarr_key: str) -> str:
         return self.cam_obs_names.get(zarr_key, _cam_obs_key(zarr_key))
@@ -191,6 +206,7 @@ class RobotImageDataset(BaseImageDataset):
                     self.sampler.indices,
                     idx,
                     self.sampler.sequence_length,
+                    first_k=self._steps(k),
                 )
             return self.buffers_torch
         else:
@@ -227,6 +243,31 @@ def _batch_sample_sequence(
 
 
 _batch_sample_sequence_sequential = numba.jit(_batch_sample_sequence, nopython=True, parallel=False)
+
+
+def _batch_sample_first_k(
+    data: np.ndarray,
+    input_arr: np.ndarray,
+    indices: np.ndarray,
+    idx: np.ndarray,
+    first_k: int,
+):
+    # Frame t of the padded sequence, for t < first_k: the first buffer frame
+    # while t is still in the front padding, the last one once t is past the
+    # episode's end, and buffer frame buffer_start + (t - sample_start) between.
+    for i in range(len(idx)):
+        buffer_start_idx, buffer_end_idx, sample_start_idx, sample_end_idx = indices[idx[i]]
+        for t in range(first_k):
+            if t < sample_start_idx:
+                src = buffer_start_idx
+            elif t >= sample_end_idx:
+                src = buffer_end_idx - 1
+            else:
+                src = buffer_start_idx + (t - sample_start_idx)
+            data[i, t] = input_arr[src]
+
+
+_batch_sample_first_k_sequential = numba.jit(_batch_sample_first_k, nopython=True, parallel=False)
 # No parallel=True variant: numba's prange spins up its own thread pool, and
 # that pool does not survive the DataLoader's fork() into worker processes --
 # a worker calling into it segfaults (PyTorch reports this as "Unexpected
@@ -241,7 +282,15 @@ def batch_sample_sequence(
     indices: np.ndarray,
     idx: np.ndarray,
     sequence_length: int,
+    first_k: int | None = None,
 ):
+    """Fill `data` with the sequences at `idx`; with `first_k`, only each
+    sequence's first first_k frames (data is then (batch, first_k, ...)), which
+    are exactly the frames the whole sequence would have started with."""
     batch_size = len(idx)
-    assert data.shape == (batch_size, sequence_length, *input_arr.shape[1:])
-    _batch_sample_sequence_sequential(data, input_arr, indices, idx, sequence_length)
+    if first_k is None or first_k >= sequence_length:
+        assert data.shape == (batch_size, sequence_length, *input_arr.shape[1:])
+        _batch_sample_sequence_sequential(data, input_arr, indices, idx, sequence_length)
+        return
+    assert data.shape == (batch_size, first_k, *input_arr.shape[1:])
+    _batch_sample_first_k_sequential(data, input_arr, indices, idx, first_k)
