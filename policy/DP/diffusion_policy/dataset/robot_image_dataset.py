@@ -112,8 +112,15 @@ class RobotImageDataset(BaseImageDataset):
             for k, v in self.sampler.replay_buffer.items()
         }
         self.buffers_torch = {k: torch.from_numpy(v) for k, v in self.buffers.items()}
-        for v in self.buffers_torch.values():
-            v.pin_memory()
+        # No pin_memory() here. `Tensor.pin_memory()` returns a *pinned copy*
+        # rather than pinning in place, so the loop that used to stand here
+        # allocated page-locked memory and dropped it on the floor -- the
+        # buffers were never pinned and `postprocess`'s non_blocking copies
+        # never benefited. What it did do is force CUDA initialisation while the
+        # dataset was being built, and on 2026-09-12 that killed 11 of 16 DP
+        # runs at `task.dataset` with "CUDA error: no CUDA-capable device is
+        # detected" when several jobs started on one node at once. Dataset
+        # construction now touches no CUDA at all.
 
     def _obs_key(self, zarr_key: str) -> str:
         return self.cam_obs_names.get(zarr_key, _cam_obs_key(zarr_key))
