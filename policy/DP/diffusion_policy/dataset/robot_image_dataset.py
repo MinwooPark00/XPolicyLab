@@ -117,16 +117,12 @@ class RobotImageDataset(BaseImageDataset):
         # normalizer's output, which ran a 24 GB card out of memory. State and
         # action keep the horizon; they are what the chunk is trained on.
         self.image_steps = min(n_obs_steps, sequence_length) if n_obs_steps else sequence_length
-        self.buffers = {
-            k: np.zeros((batch_size, self._steps(k), *v.shape[1:]), dtype=v.dtype)
-            for k, v in self.sampler.replay_buffer.items()
-        }
-        self.buffers_torch = {k: torch.from_numpy(v) for k, v in self.buffers.items()}
-        # No pin_memory() here. `Tensor.pin_memory()` returns a *pinned copy*
-        # rather than pinning in place, so the loop that used to stand here
-        # allocated page-locked memory and dropped it on the floor -- the
-        # buffers were never pinned and `postprocess`'s non_blocking copies
-        # never benefited. What it did do is force CUDA initialisation while the
+        # No batch buffers are kept on the dataset: __getitem__ fills fresh
+        # arrays for every batch (see there). And no pin_memory() either.
+        # `Tensor.pin_memory()` returns a *pinned copy* rather than pinning in
+        # place, so the loop that used to stand here allocated page-locked
+        # memory and dropped it on the floor -- nothing was ever pinned and
+        # `postprocess`'s non_blocking copies never benefited. What it did do is force CUDA initialisation while the
         # dataset was being built, and on 2026-09-12 that killed 11 of 16 DP
         # runs at `task.dataset` with "CUDA error: no CUDA-capable device is
         # detected" when several jobs started on one node at once. Dataset
@@ -199,16 +195,27 @@ class RobotImageDataset(BaseImageDataset):
             return sample
         elif isinstance(idx, np.ndarray):
             assert len(idx) == self.batch_size
+            # Fresh arrays for every batch. The dataset used to fill one set of
+            # buffers allocated in __init__ and return tensors viewing them, which
+            # holds only in-process: a DataLoader worker sends a tensor by moving
+            # its storage into shared memory, which detaches it from the numpy
+            # buffer, so every later batch was written where the tensor no longer
+            # looked and each worker sent its first batch for the whole epoch --
+            # with num_workers=8, eight distinct batches per epoch. Allocating a
+            # batch costs little next to reading it out of the replay buffer.
+            batch = {}
             for k, v in self.sampler.replay_buffer.items():
+                data = np.empty((self.batch_size, self._steps(k), *v.shape[1:]), dtype=v.dtype)
                 batch_sample_sequence(
-                    self.buffers[k],
+                    data,
                     v,
                     self.sampler.indices,
                     idx,
                     self.sampler.sequence_length,
                     first_k=self._steps(k),
                 )
-            return self.buffers_torch
+                batch[k] = torch.from_numpy(data)
+            return batch
         else:
             raise ValueError(idx)
 
