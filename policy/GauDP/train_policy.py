@@ -369,6 +369,7 @@ def main() -> None:
         )
     policy = GauDPPolicy(
         num_views=len(train_data.camera_order),
+        robot_count=train_data.robot_count,
         horizon=args.horizon,
         n_obs_steps=args.obs_steps,
         n_action_steps=args.action_steps,
@@ -412,7 +413,7 @@ def main() -> None:
     trainable_count = sum(parameter.numel() for parameter in trainable)
     total_count = sum(parameter.numel() for parameter in policy.parameters())
     print(
-        f"[GauDP][policy] device={device} cameras={train_data.camera_order} "
+        f"[GauDP][policy] device={device} robots={list(train_data.robot_names)} cameras={train_data.camera_order} "
         f"train_samples={len(train_data)} val_samples={len(val_data)} "
         f"train_batches={train_batches} val_batches={val_batches} "
         f"batch_size={args.batch_size} workers={args.num_workers} epochs={1 if args.debug else args.epochs} "

@@ -11,8 +11,9 @@ action_type: joint
 gpu_id: null
 eval_batch: false
 
-# GauDP-specific. Must match GAUDP_USE_SCENE during data conversion/training.
-use_scene: false
+# GauDP-specific. The checkpoint's camera_order decides the views; set this
+# only to cross-check that the scene camera is (true) or is not (false) one.
+use_scene: null
 # best falls back to last when best.ckpt does not exist (and vice versa).
 checkpoint: last
 # Clamp live joint observations to the per-dimension range stored in the policy

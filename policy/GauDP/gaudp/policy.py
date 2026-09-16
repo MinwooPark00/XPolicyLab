@@ -13,7 +13,16 @@ from .core.model.gaussian_cnn import GaussianConvEncoder
 from .core.model.vision.crop_randomizer import CropRandomizer
 from .gaussian import build_gaussian_encoder, encode_gaussians, freeze_gaussian_encoder
 from .normalizer import GauDPNormalizer
-from .schema import ACTION_DIM, ACTION_SCHEMA, PROPRIO_DIM, ROBOT_ACTION_DIM, STATE_SCHEMA
+from .schema import (
+    ACTION_SCHEMA,
+    DEFAULT_ROBOT_COUNT,
+    PROPRIO_DIM,
+    ROBOT_ACTION_DIM,
+    STATE_SCHEMA,
+    action_dim as action_dim_for,
+    proprio_dim,
+    robot_names,
+)
 
 IMAGE_SIZE = (240, 320)
 """The converted/served frame size. `dataset.py` and `model.py` resize to it."""
@@ -66,7 +75,7 @@ def _normalized_crop_shape(crop_shape) -> tuple[int, int] | None:
 
 
 class MultiViewObservationEncoder(nn.Module):
-    """Shared ResNet-18 over each fused view plus the pair's 86D joint state.
+    """Shared ResNet-18 over each fused view plus the scene's joint state.
 
     The fused view is `GaussianConvEncoder`'s 3-channel output, so this stands in
     for upstream Policy-Lightning's `MultiImageObsEncoder`: the same
@@ -79,6 +88,7 @@ class MultiViewObservationEncoder(nn.Module):
         num_views: int,
         feature_dim: int = 512,
         *,
+        state_dim: int = PROPRIO_DIM,
         crop_shape: tuple[int, int] | None = LEGACY_CROP_SHAPE,
         image_norm: str = LEGACY_IMAGE_NORM,
         group_norm_divisor: int | None = LEGACY_GROUP_NORM_DIVISOR,
@@ -97,6 +107,7 @@ class MultiViewObservationEncoder(nn.Module):
         self.projection = nn.Identity() if feature_dim == in_features else nn.Linear(in_features, feature_dim)
         self.num_views = int(num_views)
         self.feature_dim = int(feature_dim)
+        self.state_dim = int(state_dim)
         self.image_norm = str(image_norm)
         self.crop_shape = _normalized_crop_shape(crop_shape)
         self.crop = (
@@ -118,7 +129,7 @@ class MultiViewObservationEncoder(nn.Module):
 
     @property
     def output_dim(self) -> int:
-        return self.num_views * self.feature_dim + PROPRIO_DIM
+        return self.num_views * self.feature_dim + self.state_dim
 
     def _normalize(self, pixels: torch.Tensor) -> torch.Tensor:
         if self.image_norm == "imagenet":
@@ -145,6 +156,31 @@ class MultiViewObservationEncoder(nn.Module):
         return torch.cat((visual, state), dim=-1)
 
 
+def action_group_indices(robot_count: int = DEFAULT_ROBOT_COUNT) -> dict[str, list[int]]:
+    """Per-robot and cross-robot column groups of one centralized action.
+
+    For two robots these are exactly the lists `compute_loss` built inline before
+    (`both()` over the literal `(0, 35)` offsets), in the same order: `group_mse`
+    averages over `squared_error[..., indices]`, so the order is part of the
+    logged value, not just of the set.
+    """
+    offsets = tuple(index * ROBOT_ACTION_DIM for index in range(len(robot_names(robot_count))))
+
+    def every(local: range | list[int]) -> list[int]:
+        return [index + offset for offset in offsets for index in local]
+
+    groups = {
+        robot: list(range(offset, offset + ROBOT_ACTION_DIM))
+        for robot, offset in zip(robot_names(robot_count), offsets)
+    }
+    groups["arm"] = every(range(0, 14))
+    groups["hand"] = every(range(14, 28))
+    groups["waist"] = every(range(28, 31))
+    groups["height"] = every([31])
+    groups["navigation"] = every(range(32, 35))
+    return groups
+
+
 class GauDPPolicy(nn.Module):
     """Frozen NoPoSplat context encoder + trainable fusion/vision/DDPM policy."""
 
@@ -152,6 +188,7 @@ class GauDPPolicy(nn.Module):
         self,
         *,
         num_views: int = 2,
+        robot_count: int = DEFAULT_ROBOT_COUNT,
         horizon: int = 8,
         n_obs_steps: int = 1,
         n_action_steps: int = 6,
@@ -175,6 +212,12 @@ class GauDPPolicy(nn.Module):
                 "cannot shadow the GauDP environment."
             ) from error
         self.num_views = int(num_views)
+        # The scene's robot count, from the data (dataset.robot_count) or from a
+        # checkpoint's recorded state width -- never restated by hand.
+        self.robot_names = robot_names(robot_count)
+        self.robot_count = len(self.robot_names)
+        self.state_dim = proprio_dim(self.robot_count)
+        self.action_dim = action_dim_for(self.robot_count)
         self.horizon = int(horizon)
         self.n_obs_steps = int(n_obs_steps)
         self.n_action_steps = int(n_action_steps)
@@ -196,6 +239,7 @@ class GauDPPolicy(nn.Module):
             MultiViewObservationEncoder(
                 self.num_views,
                 obs_feature_dim,
+                state_dim=self.state_dim,
                 crop_shape=self.crop_shape,
                 image_norm=self.image_norm,
                 group_norm_divisor=self.group_norm_divisor,
@@ -203,9 +247,9 @@ class GauDPPolicy(nn.Module):
             if observation_encoder is None
             else observation_encoder
         )
-        self.normalizer = GauDPNormalizer()
+        self.normalizer = GauDPNormalizer(self.state_dim, self.action_dim)
         self.diffusion = ConditionalUnet1D(
-            input_dim=ACTION_DIM,
+            input_dim=self.action_dim,
             global_cond_dim=self.obs_encoder.output_dim * self.n_obs_steps,
             diffusion_step_embed_dim=128,
             down_dims=self.down_dims,
@@ -276,7 +320,7 @@ class GauDPPolicy(nn.Module):
             gaussian_features = gaussian_features.to(dtype=images.dtype)
         fused = self.gaussian_fusion(gaussian_features, images)
         fused = fused.reshape(batch * steps, views, 3, height, width)
-        encoded = self.obs_encoder(fused, state.reshape(batch * steps, PROPRIO_DIM))
+        encoded = self.obs_encoder(fused, state.reshape(batch * steps, self.state_dim))
         return encoded.reshape(batch, steps * self.obs_encoder.output_dim)
 
     def compute_loss(
@@ -286,8 +330,8 @@ class GauDPPolicy(nn.Module):
         return_metrics: bool = False,
     ) -> torch.Tensor | tuple[torch.Tensor, dict[str, float]]:
         images, state, action = batch["images"], batch["state"], batch["action"]
-        if action.shape[-1] != ACTION_DIM:
-            raise ValueError(f"expected {ACTION_DIM}D action, got {action.shape[-1]}")
+        if action.shape[-1] != self.action_dim:
+            raise ValueError(f"expected {self.action_dim}D action, got {action.shape[-1]}")
         normalized_action = self.normalizer.normalize_action(action)
         noise = torch.randn_like(normalized_action)
         timesteps = torch.randint(
@@ -324,16 +368,6 @@ class GauDPPolicy(nn.Module):
         def group_mse(indices: list[int]) -> float:
             return float(squared_error[..., indices].mean().detach())
 
-        robot_a = list(range(0, ROBOT_ACTION_DIM))
-        robot_b = list(range(ROBOT_ACTION_DIM, ACTION_DIM))
-        def both(local: range | list[int]) -> list[int]:
-            return [index + offset for offset in (0, ROBOT_ACTION_DIM) for index in local]
-
-        arm = both(range(0, 14))
-        hand = both(range(14, 28))
-        waist = both(range(28, 31))
-        height = both([31])
-        navigation = both(range(32, 35))
         snr = alpha / (1.0 - alpha).clamp_min(1e-6)
         noise_cosine = F.cosine_similarity(
             prediction.flatten(1), noise.flatten(1), dim=1
@@ -347,13 +381,10 @@ class GauDPPolicy(nn.Module):
             "diffusion/snr_mean": float(snr.mean().detach()),
             "action/x0_clipped_mse": float(squared_error.mean().detach()),
             "action/x0_clipped_mae": float(absolute_error.mean().detach()),
-            "action/robot_a_mse": group_mse(robot_a),
-            "action/robot_b_mse": group_mse(robot_b),
-            "action/arm_mse": group_mse(arm),
-            "action/hand_mse": group_mse(hand),
-            "action/waist_mse": group_mse(waist),
-            "action/height_mse": group_mse(height),
-            "action/navigation_mse": group_mse(navigation),
+            **{
+                f"action/{name}_mse": group_mse(indices)
+                for name, indices in action_group_indices(self.robot_count).items()
+            },
         }
         return loss, metrics
 
@@ -362,7 +393,7 @@ class GauDPPolicy(nn.Module):
         batch = images.shape[0]
         global_condition = self._global_condition(images, state)
         trajectory = torch.randn(
-            (batch, self.horizon, ACTION_DIM), device=images.device, dtype=images.dtype
+            (batch, self.horizon, self.action_dim), device=images.device, dtype=images.dtype
         )
         self.noise_scheduler.set_timesteps(self.num_inference_steps, device=images.device)
         for timestep in self.noise_scheduler.timesteps:
@@ -383,8 +414,12 @@ def policy_checkpoint_payload(policy: GauDPPolicy, **metadata: Any) -> dict[str,
     }
     return {
         "format": "mhbench-gaudp-policy-v2",
-        "state_dim": PROPRIO_DIM,
-        "action_dim": ACTION_DIM,
+        "state_dim": policy.state_dim,
+        "action_dim": policy.action_dim,
+        # Top level, not inside `config`: train_policy.py compares `config` as a
+        # whole dict, so a new key there would refuse every resume in flight.
+        "robot_count": policy.robot_count,
+        "robot_names": list(policy.robot_names),
         "state_schema": STATE_SCHEMA,
         "action_schema": ACTION_SCHEMA,
         "config": policy.config(),

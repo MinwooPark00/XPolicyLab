@@ -1,15 +1,15 @@
 """XPolicyLab adapter for standalone MHBench GauDP.
 
-GauDP is centralized and joint-space: one network reads both robots' 86D
-URDF-ordered joint state plus the two ego views, and predicts the pair's 70D
-absolute joint-target action -- the same contract the GR00T adapter drives the
+GauDP is centralized and joint-space: one network reads every robot's 43D
+URDF-ordered joint state plus their ego views, and predicts all of their 35D
+absolute joint-target actions at once (86D / 70D for a two-robot task, 129D /
+105D for a three-robot one) -- the same contract the GR00T adapter drives the
 environment with (`mhbench_raw_action.<robot>.{joint_targets, height,
-base_vel}`, `upper_body_mode="joint"`). The wrist-pose/Pink path GauDP used to
-be evaluated under is gone from this adapter; see `gaudp/schema.py`.
+base_vel}`, `upper_body_mode="joint"`). See `gaudp/schema.py`.
 
-The two cameras stay `ego_a`, `ego_b` in that order (`GAUDP_USE_SCENE=1` adds
-`scene` as a third view and needs a three-view Gaussian checkpoint and a
-re-extracted feature cache).
+The checkpoint decides both the robot count (its recorded state width) and the
+views (its `camera_order`); serving reproduces what was trained. `use_scene` /
+`GAUDP_USE_SCENE` only cross-check that the scene camera is among them.
 """
 
 from __future__ import annotations
@@ -35,13 +35,16 @@ from XPolicyLab.policy.GauDP.gaudp.gaussian import (  # noqa: E402
 from XPolicyLab.policy.GauDP.gaudp.policy import GauDPPolicy  # noqa: E402
 from XPolicyLab.policy.GauDP.gaudp.runner import GauDPRunner  # noqa: E402
 from XPolicyLab.policy.GauDP.gaudp.schema import (  # noqa: E402
-    ACTION_DIM,
     ACTION_SCHEMA,
-    PROPRIO_DIM,
-    ROBOT_NAMES,
+    CAMERA_SLOT,
+    ROBOT_ACTION_DIM,
+    SCENE_VIEW,
     STATE_SCHEMA,
+    joint_state_from_observation,
     pack_xpolicy_action,
-    proprio_from_observation,
+    robot_count_from_state_dim,
+    robot_names,
+    robots_in_observation,
 )
 from XPolicyLab.utils.checkpoint_resolver import resolve_checkpoint_root  # noqa: E402
 
@@ -108,13 +111,23 @@ def _to_chw_float(image: np.ndarray) -> np.ndarray:
     return tensor[0].numpy()
 
 
-def encode_observation(observation: dict, use_scene: bool) -> tuple[np.ndarray, np.ndarray]:
+def encode_observation(
+    observation: dict, camera_order: list[str], robots: tuple[str, ...]
+) -> tuple[np.ndarray, np.ndarray]:
+    """The checkpoint's views, in its order, and the scene's robots' joint state."""
     vision = observation["vision"]
-    camera_keys = ["cam_left_wrist", "cam_right_wrist"]
-    if use_scene:
-        camera_keys.append("cam_head")
-    images = np.stack([_to_chw_float(vision[key]["color"]) for key in camera_keys])
-    state = np.concatenate([proprio_from_observation(observation, robot) for robot in ROBOT_NAMES])
+    images = []
+    for camera in camera_order:
+        slot = CAMERA_SLOT[camera]
+        if slot not in vision:
+            raise KeyError(
+                f"this checkpoint was trained on view {camera!r}, which MHBench delivers as "
+                f"vision[{slot!r}]; this observation carries {sorted(vision)}. Add {camera} to the "
+                f"client's --obs_cameras (eval/runner.sbatch: EVAL_OBS_CAMERAS)."
+            )
+        images.append(_to_chw_float(vision[slot]["color"]))
+    images = np.stack(images)
+    state = joint_state_from_observation(observation, robots)
     return (
         _require_finite("encoded observation images", images).astype(np.float32),
         _require_finite("encoded proprioception", state).astype(np.float32),
@@ -146,14 +159,18 @@ def _checkpoint_preference(model_cfg: dict) -> str:
     return preference
 
 
-def _check_checkpoint_contract(payload: dict, policy_path: Path) -> None:
-    """Refuse anything that is not a joint-space v2 checkpoint, by name."""
+def _check_checkpoint_contract(payload: dict, policy_path: Path) -> int:
+    """Refuse anything that is not a joint-space v2 checkpoint, by name.
+
+    Returns the robot count the checkpoint drives, read off its state width. A
+    checkpoint written before `robot_count` was recorded is a two-robot one.
+    """
     recorded = str(payload.get("format", ""))
     if recorded == "mhbench-gaudp-policy-v1":
         raise ValueError(
             f"{policy_path} is a v1 GauDP checkpoint (42D pelvis/EEF state, 44D wrist-pose "
             "action). GauDP now trains and serves the centralized GR00T joint contract "
-            f"({PROPRIO_DIM}D state / {ACTION_DIM}D absolute joint targets); no weights carry "
+            "(86D state / 70D absolute joint targets for two robots); no weights carry "
             "over, so this run has to be retrained in joint space."
         )
     if recorded != POLICY_CHECKPOINT_FORMAT:
@@ -163,10 +180,22 @@ def _check_checkpoint_contract(payload: dict, policy_path: Path) -> None:
         )
     state_dim = int(payload.get("state_dim", -1))
     action_dim = int(payload.get("action_dim", -1))
-    if state_dim != PROPRIO_DIM or action_dim != ACTION_DIM:
+    try:
+        count = robot_count_from_state_dim(state_dim)
+    except ValueError as error:
         raise ValueError(
-            f"{policy_path} was trained on {state_dim}D state / {action_dim}D action; "
-            f"this adapter serves {PROPRIO_DIM}D / {ACTION_DIM}D"
+            f"{policy_path} was trained on {state_dim}D state / {action_dim}D action; this adapter "
+            f"serves 43D / 35D per robot -- 86D / 70D for two robots, 129D / 105D for three"
+        ) from error
+    if action_dim != count * ROBOT_ACTION_DIM:
+        raise ValueError(
+            f"{policy_path} pairs {state_dim}D state ({count} robots) with {action_dim}D action; "
+            f"expected {count * ROBOT_ACTION_DIM}D"
+        )
+    declared = int(payload.get("robot_count", count))
+    if declared != count:
+        raise ValueError(
+            f"{policy_path} records robot_count={declared} but its {state_dim}D state is {count} robots"
         )
     state_schema = tuple(payload.get("state_schema", ()))
     action_schema = tuple(payload.get("action_schema", ()))
@@ -175,6 +204,7 @@ def _check_checkpoint_contract(payload: dict, policy_path: Path) -> None:
             f"{policy_path} records state={state_schema} action={action_schema}, which is not "
             f"the centralized GR00T ordering state={STATE_SCHEMA} action={ACTION_SCHEMA}"
         )
+    return count
 
 
 class Model(ModelTemplate):
@@ -182,14 +212,15 @@ class Model(ModelTemplate):
         super().__init__()
         if model_cfg.get("action_type") != "joint":
             raise NotImplementedError(
-                "GauDP is a joint-space policy: it predicts the centralized 70D absolute "
+                "GauDP is a joint-space policy: it predicts the centralized absolute "
                 "joint-target action, so deploy.yml/serve must set action_type=joint"
             )
         self.model_cfg = model_cfg
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-        self.use_scene = bool(model_cfg.get("use_scene", False))
-        if bool(int(os.environ.get("GAUDP_USE_SCENE", "0"))):
-            self.use_scene = True
+        # Only a cross-check now: the checkpoint's camera_order decides the views.
+        requested_scene = model_cfg.get("use_scene")
+        if os.environ.get("GAUDP_USE_SCENE"):
+            requested_scene = bool(int(os.environ["GAUDP_USE_SCENE"]))
 
         # Nothing is read out of XPolicyLab's env_cfg tree: the joint contract
         # is fixed by mhbench_keys.py, and `env_cfg_type` is now
@@ -208,7 +239,8 @@ class Model(ModelTemplate):
         preference = _checkpoint_preference(model_cfg)
         policy_path = _checkpoint_file(root, "policy", preference)
         payload = torch.load(policy_path, map_location="cpu", weights_only=False)
-        _check_checkpoint_contract(payload, policy_path)
+        robot_count = _check_checkpoint_contract(payload, policy_path)
+        self.robots = robot_names(robot_count)
         configured_gaussian = os.environ.get("GAUDP_GAUSSIAN_CKPT") or model_cfg.get("gaussian_checkpoint")
         recorded = str(payload.get("gaussian_checkpoint", ""))
         candidates = []
@@ -234,20 +266,30 @@ class Model(ModelTemplate):
                     "used for offline feature extraction."
                 ) from local_error
         config = dict(payload["config"])
-        expected_views = 3 if self.use_scene else 2
-        if int(config["num_views"]) != expected_views:
-            raise ValueError(
-                f"checkpoint uses {config['num_views']} views, but evaluation requested {expected_views}; "
-                "GAUDP_USE_SCENE and data conversion/training must match"
-            )
-        expected_cameras = ["ego_a", "ego_b"] + (["scene"] if self.use_scene else [])
         recorded_cameras = list(payload.get("camera_order", []))
-        if recorded_cameras != expected_cameras:
+        unknown = [camera for camera in recorded_cameras if camera not in CAMERA_SLOT]
+        if not recorded_cameras or unknown:
             raise ValueError(
-                f"checkpoint camera order is {recorded_cameras}, expected {expected_cameras}"
+                f"{policy_path} records camera_order={recorded_cameras}; known views are {sorted(CAMERA_SLOT)}"
             )
-        self.model = GauDPPolicy(**config)
-        load_gaussian_checkpoint(self.model.gaussian_encoder, gaussian_path, strict=True)
+        if len(recorded_cameras) != int(config["num_views"]):
+            raise ValueError(
+                f"{policy_path} lists {len(recorded_cameras)} cameras {recorded_cameras} but its "
+                f"config says num_views={config['num_views']}"
+            )
+        self.camera_order = recorded_cameras
+        self.use_scene = SCENE_VIEW in recorded_cameras
+        if requested_scene is not None and bool(requested_scene) != self.use_scene:
+            raise ValueError(
+                f"use_scene={requested_scene} but the checkpoint's views are {recorded_cameras}; "
+                "the checkpoint decides, and use_scene/GAUDP_USE_SCENE only cross-check it"
+            )
+        if "robot_count" in config and int(config.pop("robot_count")) != robot_count:
+            raise ValueError(f"{policy_path} config and state width disagree on the robot count")
+        self.model = GauDPPolicy(**config, robot_count=robot_count)
+        load_gaussian_checkpoint(
+            self.model.gaussian_encoder, gaussian_path, strict=True, expect_views=len(self.camera_order)
+        )
         missing, unexpected = self.model.load_state_dict(payload["state_dict"], strict=False)
         non_gaussian_missing = [key for key in missing if not key.startswith("gaussian_encoder.")]
         if non_gaussian_missing or unexpected:
@@ -277,6 +319,10 @@ class Model(ModelTemplate):
             f"image_norm={config.get('image_norm', 'legacy:symmetric')} "
             f"group_norm_divisor={config.get('group_norm_divisor', 'legacy:None')}"
         )
+        print(
+            f"[GauDP] {len(self.robots)} robots {list(self.robots)}, views {self.camera_order} "
+            f"-> slots {[CAMERA_SLOT[camera] for camera in self.camera_order]}"
+        )
         print(f"[GauDP] loaded {policy_path} and {gaussian_path} on {self.device}")
 
     def update_obs(self, obs):
@@ -286,7 +332,14 @@ class Model(ModelTemplate):
         indices = []
         for observation in obs_list:
             env_idx = int(observation.get("env_idx", 0))
-            images, state = encode_observation(observation, self.use_scene)
+            present = robots_in_observation(observation)
+            if present != self.robots:
+                raise ValueError(
+                    f"the scene has robots {list(present)} but this checkpoint drives {list(self.robots)} "
+                    f"({len(self.robots) * 43}D state / {len(self.robots) * ROBOT_ACTION_DIM}D action); "
+                    "a centralized policy cannot serve a different robot count"
+                )
+            images, state = encode_observation(observation, self.camera_order, self.robots)
             if self._obs_bounds is not None:
                 state = _clip_fitted_state(state, *self._obs_bounds)
             self.runner.update(env_idx, images, state)
@@ -306,7 +359,7 @@ class Model(ModelTemplate):
         action = self.model.predict_action(images, state).cpu().numpy()
         _require_finite("predicted action", action)
         return [
-            [pack_xpolicy_action(action[batch, step]) for step in range(action.shape[1])]
+            [pack_xpolicy_action(action[batch, step], self.robots) for step in range(action.shape[1])]
             for batch in range(action.shape[0])
         ]
 

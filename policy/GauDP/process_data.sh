@@ -96,6 +96,8 @@ output="$(gaudp_data_path)"
 extra=()
 if [[ -n "${max_demos}" ]]; then extra+=(--max-demos "${max_demos}"); fi
 if [[ "${GAUDP_USE_SCENE:-0}" == "1" ]]; then extra+=(--use-scene); fi
+# A different view list than every robot's ego camera (e.g. "ego_a,ego_b").
+if [[ -n "${GAUDP_CAMERAS:-}" ]]; then extra+=(--cameras "${GAUDP_CAMERAS}"); fi
 
 python_bin="${GAUDP_PYTHON:-python}"
 if ! command -v "${python_bin}" >/dev/null 2>&1; then

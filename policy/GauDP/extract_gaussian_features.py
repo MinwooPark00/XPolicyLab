@@ -150,7 +150,9 @@ def main() -> None:
         completed = 0
 
     encoder = build_gaussian_encoder(len(dataset.camera_order))
-    missing, unexpected = load_gaussian_checkpoint(encoder, checkpoint, strict=False)
+    missing, unexpected = load_gaussian_checkpoint(
+        encoder, checkpoint, strict=False, expect_views=len(dataset.camera_order)
+    )
     encoder.to(device).eval().requires_grad_(False)
     remaining = Subset(dataset, range(completed, len(dataset)))
     loader = DataLoader(

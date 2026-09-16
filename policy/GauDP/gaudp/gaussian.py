@@ -80,11 +80,23 @@ def load_gaussian_checkpoint(
     checkpoint: str | Path,
     *,
     strict: bool = False,
+    expect_views: int | None = None,
 ) -> tuple[list[str], list[str]]:
     path = Path(checkpoint).expanduser().resolve()
     if not path.is_file():
         raise FileNotFoundError(f"NoPoSplat checkpoint not found: {path}")
     payload = torch.load(path, map_location="cpu", weights_only=False)
+    # A fine-tuned MHBench encoder records its view count. Two and three views are
+    # different architectures (noposplat vs noposplat_multi) that a non-strict load
+    # would half-fill without complaint -- and a feature cache built from that
+    # passes every later shape check. Official initializations carry no record.
+    recorded_views = payload.get("num_views") if isinstance(payload, dict) else None
+    if expect_views is not None and recorded_views is not None and int(recorded_views) != int(expect_views):
+        raise ValueError(
+            f"{path} is a {int(recorded_views)}-view GauDP Gaussian encoder "
+            f"({payload.get('encoder')}) and this run needs {int(expect_views)} views; "
+            f"fine-tune a {int(expect_views)}-view encoder instead"
+        )
     if isinstance(payload, dict) and "model" in payload:
         # DUSt3R/MASt3R-style public initialization checkpoint supported by
         # NoPoSplat's own training entry point.

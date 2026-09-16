@@ -127,8 +127,30 @@ gaudp_data_path() {
 # of paying another finetune. It is searched first and simply does not exist
 # until train_gaussian_shared.sh has run, so per-task discovery below is
 # unchanged for runs that never build one. GAUDP_SHARED_GAUSSIAN=0 ignores it.
-gaudp_shared_gaussian_dir() {
-    printf '%s\n' "${GAUDP_SHARED_GAUSSIAN_DIR:-${POLICY_DIR}/checkpoints/${bench:-mhbench}-shared-${env_cfg}-${action_type}-${seed}${GAUDP_TAG:+-${GAUDP_TAG}}}"
+# The shared encoder is also a function of its views: two ego views, three, or
+# the pair plus the scene are different architectures trained on different
+# frames. The ego pair every two-robot run used keeps the unsuffixed name; any
+# other camera_order is spelled into the directory (`-ego_a-ego_b-ego_c`), so a
+# three-robot encoder cannot overwrite the two-robot one.
+gaudp_view_suffix() {   # [converted hdf5] -> "" or "-<view>-<view>..."
+    local data=${1:-$(gaudp_data_path)}
+    [[ -f "${data}" ]] || return 0
+    PYTHONNOUSERSITE=1 "${GAUDP_PYTHON:-python}" - "${data}" <<'PY'
+import json
+import sys
+
+import h5py
+
+with h5py.File(sys.argv[1], "r") as source:
+    order = json.loads(source.attrs["camera_order"])
+print("" if order == ["ego_a", "ego_b"] else "-" + "-".join(order))
+PY
+}
+
+gaudp_shared_gaussian_dir() {   # [view suffix]; default: this task's converted hdf5
+    local views
+    if (( $# )); then views=$1; else views="$(gaudp_view_suffix)"; fi
+    printf '%s\n' "${GAUDP_SHARED_GAUSSIAN_DIR:-${POLICY_DIR}/checkpoints/${bench:-mhbench}-shared-${env_cfg}-${action_type}-${seed}${GAUDP_TAG:+-${GAUDP_TAG}}${views}}"
 }
 
 gaudp_gaussian_run_dirs() {

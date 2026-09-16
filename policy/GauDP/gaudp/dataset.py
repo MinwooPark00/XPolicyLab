@@ -11,7 +11,14 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import Dataset
 
-from .schema import ACTION_DIM, ACTION_SCHEMA, PROPRIO_DIM, STATE_SCHEMA, pose7_xyzw_to_matrix
+from .schema import (
+    ACTION_SCHEMA,
+    STATE_SCHEMA,
+    action_dim,
+    pose7_xyzw_to_matrix,
+    robot_count_from_state_dim,
+    robot_names,
+)
 
 IMAGE_SIZE = (240, 320)
 _OPENGL_TO_OPENCV = np.diag([1.0, -1.0, -1.0, 1.0]).astype(np.float32)
@@ -109,8 +116,41 @@ class _LazyH5Dataset(Dataset):
                 self.val_mask = np.zeros(count, dtype=bool)
                 self.val_mask[val_ids] = True
                 self.split_source = "95:5-fallback"
-            if int(source.attrs["state_dim"]) != PROPRIO_DIM or int(source.attrs["action_dim"]) != ACTION_DIM:
-                raise ValueError("dataset does not follow GauDP's 86D state / 70D joint-action contract")
+            # The robot count is the file's: 43D state / 35D action per robot,
+            # two or three of them. Every width the policy builds comes from here.
+            state_width = int(source.attrs["state_dim"])
+            action_width = int(source.attrs["action_dim"])
+            try:
+                self.robot_count = robot_count_from_state_dim(state_width)
+            except ValueError as error:
+                raise ValueError(
+                    f"dataset does not follow GauDP's 86D state / 70D joint-action contract "
+                    f"(or 129D / 105D for three robots): {state_width}D / {action_width}D"
+                ) from error
+            if action_width != action_dim(self.robot_count):
+                raise ValueError(
+                    f"dataset pairs {state_width}D state ({self.robot_count} robots) with "
+                    f"{action_width}D action; expected {action_dim(self.robot_count)}D"
+                )
+            recorded = source.attrs.get("robot_count")
+            if recorded is not None and int(recorded) != self.robot_count:
+                raise ValueError(
+                    f"dataset records robot_count={int(recorded)} but its {state_width}D state is "
+                    f"{self.robot_count} robots"
+                )
+            self.robot_names = robot_names(self.robot_count)
+            self.state_dim = state_width
+            self.action_dim = action_width
+            for key, width in (("state", state_width), ("action", action_width)):
+                if key in source and int(source[key].shape[-1]) != width:
+                    raise ValueError(
+                        f"dataset declares {key}_dim={width} but its {key} array is "
+                        f"{int(source[key].shape[-1])} wide"
+                    )
+            if f"rgb_{len(self.camera_order)}" in source:
+                raise ValueError(
+                    f"dataset holds more rgb_* arrays than its camera_order {self.camera_order} names"
+                )
             if str(source.attrs.get("action_type", "")) != "joint":
                 raise ValueError("dataset is not marked action_type=joint; regenerate it with process_data.sh")
             state_schema = tuple(json.loads(source.attrs.get("state_schema", "[]")))

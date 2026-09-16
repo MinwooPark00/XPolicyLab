@@ -22,16 +22,22 @@ if str(_MHBENCH_SCRIPTS) not in sys.path:
 
 from _dataset import DemoSource  # noqa: E402
 from XPolicyLab.policy.GauDP.gaudp.schema import (  # noqa: E402
-    ACTION_DIM,
     ACTION_GROUPS,
     ACTION_SCHEMA,
-    PROPRIO_DIM,
+    CAMERA_SLOT,
+    EGO_VIEWS,
     ROBOT_ACTION_DIM,
     ROBOT_NAMES,
     ROBOT_PROPRIO_DIM,
+    SCENE_VIEW,
     STATE_GROUPS,
     STATE_SLICES,
     STATE_SCHEMA,
+    action_dim,
+    ego_views,
+    proprio_dim,
+    robot_count_from_state_dim,
+    robot_names,
 )
 
 
@@ -63,10 +69,10 @@ def _camera_array(demo, camera: str, field: str, length: int) -> np.ndarray:
     return value
 
 
-def _direct_modality() -> dict:
+def _direct_modality(robots: tuple[str, ...] = ROBOT_NAMES) -> dict:
     """GR00T modality slices for the canonical exported float columns."""
     state, action = {}, {}
-    for robot_index, robot in enumerate(ROBOT_NAMES):
+    for robot_index, robot in enumerate(robots):
         base = robot_index * ROBOT_PROPRIO_DIM
         for group, _ in STATE_GROUPS:
             sl = STATE_SLICES[group]
@@ -107,11 +113,11 @@ def _modality_slice(
 
 
 def _joint_state_action_from_columns(
-    columns: dict[str, np.ndarray], modality: dict
+    columns: dict[str, np.ndarray], modality: dict, robots: tuple[str, ...] = ROBOT_NAMES
 ) -> tuple[np.ndarray, np.ndarray]:
     """Select exactly the centralized GR00T state/action modality keys."""
     states, actions = [], []
-    for robot in ROBOT_NAMES:
+    for robot in robots:
         state_parts = []
         action_parts = []
         for group, width in STATE_GROUPS:
@@ -138,9 +144,72 @@ def _joint_state_action_from_columns(
         actions.append(np.concatenate(action_parts, axis=-1))
     state = np.concatenate(states, axis=-1).astype(np.float32)
     action = np.concatenate(actions, axis=-1).astype(np.float32)
-    if state.shape[1] != PROPRIO_DIM or action.shape[1] != ACTION_DIM:
+    if state.shape[1] != len(robots) * ROBOT_PROPRIO_DIM or action.shape[1] != len(robots) * ROBOT_ACTION_DIM:
         raise AssertionError(f"GR00T schema mismatch: state={state.shape}, action={action.shape}")
     return state, action
+
+
+def _robot_count_from_info(info: dict) -> int:
+    """How many robots a LeRobot export carries, read off its declared widths.
+
+    `observation.state` is 43D per robot; the teleop command columns are one and
+    three wide per robot. All three must agree -- there is no knob to restate it.
+    """
+    features = info.get("features", {})
+
+    def width(key: str) -> int:
+        try:
+            return int(features[key]["shape"][0])
+        except (KeyError, IndexError, TypeError) as error:
+            raise KeyError(f"LeRobot metadata is missing the width of {key!r}") from error
+
+    count = robot_count_from_state_dim(width("observation.state"))
+    for key, per_robot in (("teleop.base_height_command", 1), ("teleop.navigate_command", 3)):
+        if width(key) != per_robot * count:
+            raise ValueError(
+                f"{key} is {width(key)}D but observation.state says {count} robots "
+                f"({per_robot * count}D expected)"
+            )
+    return count
+
+
+def resolve_cameras(
+    features: dict, robot_count: int, use_scene: bool, override: str | None = None
+) -> list[str]:
+    """The views to convert: every robot's own ego camera, plus the scene if asked.
+
+    One ego view per robot is the dataset contract, so the default is read off
+    the robot count and checked against the export. `override` (--cameras,
+    GAUDP_CAMERAS) may pick a different list, but never a width: state and
+    action always come from the export.
+    """
+    declared = [view for view in EGO_VIEWS if f"observation.images.{view}" in features]
+    expected = list(ego_views(robot_count))
+    if declared != expected:
+        raise ValueError(
+            f"export declares ego views {declared} but has {robot_count} robots, whose own head "
+            f"cameras are {expected}; one ego view per robot is the dataset contract"
+        )
+    default = expected + ([SCENE_VIEW] if use_scene else [])
+    if override is None or not str(override).strip():
+        return default
+    cameras = [token for token in re.split(r"[,:+\s]+", str(override)) if token]
+    unknown = [camera for camera in cameras if camera not in CAMERA_SLOT]
+    if unknown:
+        raise ValueError(f"unknown views {unknown}; known views are {sorted(CAMERA_SLOT)}")
+    if len(set(cameras)) != len(cameras):
+        raise ValueError(f"duplicate views in {cameras}")
+    if len(cameras) < 2:
+        raise ValueError(f"NoPoSplat needs at least two context views, got {cameras}")
+    egos = [camera for camera in cameras if camera in EGO_VIEWS]
+    if egos != sorted(egos, key=EGO_VIEWS.index):
+        raise ValueError(f"ego views must stay in {list(EGO_VIEWS)} order, got {egos}")
+    if use_scene and SCENE_VIEW not in cameras:
+        raise ValueError("--use-scene contradicts --cameras; list 'scene' or drop --use-scene")
+    missing = [camera for camera in cameras if f"observation.images.{camera}" not in features]
+    if missing:
+        raise ValueError(f"the export has no video for {missing}")
+    return cameras
 
 
 def _convert_hdf5(
@@ -149,7 +218,10 @@ def _convert_hdf5(
     max_demos: int | None,
     use_scene: bool,
     include_failed: bool,
-) -> tuple[int, list[int], list[str]]:
+) -> tuple[int, list[int], list[str], int]:
+    # Two robots only: the columns come from scripts/export_lerobot.py, which in
+    # this checkout lays out a pair. Three-robot data converts from its LeRobot
+    # export.
     try:
         from export_lerobot import ACTION_TERM_LAYOUT, episode_columns, precheck
     except ImportError as error:
@@ -157,7 +229,7 @@ def _convert_hdf5(
             "raw HDF5 joint conversion requires scripts/export_lerobot.py and its dependencies; "
             "export the dataset to LeRobot v2.1 first"
         ) from error
-    cameras = ["ego_a", "ego_b"] + (["scene"] if use_scene else [])
+    cameras = list(ego_views(len(ROBOT_NAMES))) + ([SCENE_VIEW] if use_scene else [])
     with DemoSource(source) as demos:
         facts = precheck(demos, selection=None, layout=ACTION_TERM_LAYOUT)
         names = [name for name in demos.names if include_failed or bool(demos[name].attrs.get("success", True))]
@@ -177,7 +249,7 @@ def _convert_hdf5(
                 state[:, i * ROBOT_PROPRIO_DIM : (i + 1) * ROBOT_PROPRIO_DIM]
                 for i in range(len(ROBOT_NAMES))
             ]
-            if state.shape[1] != PROPRIO_DIM or action.shape[1] != ACTION_DIM:
+            if state.shape[1] != proprio_dim(len(ROBOT_NAMES)) or action.shape[1] != action_dim(len(ROBOT_NAMES)):
                 raise AssertionError(f"schema mismatch: state={state.shape}, action={action.shape}")
 
             _append(target, "state", state)
@@ -207,7 +279,7 @@ def _convert_hdf5(
     target.attrs["source_format"] = "mhbench-hdf5"
     target.attrs["gaussian_supervision"] = True
     target.attrs["camera_pose_convention"] = "opengl"
-    return total, episode_ends, cameras
+    return total, episode_ends, cameras, len(ROBOT_NAMES)
 
 
 _EPISODE_FILE = re.compile(r"episode_(\d+)\.parquet$")
@@ -247,9 +319,12 @@ def _camera_pose_names(camera: str) -> list[str]:
 
 
 def _lerobot_state_action(
-    columns: dict[str, np.ndarray], info: dict, modality: dict | None = None
+    columns: dict[str, np.ndarray],
+    info: dict,
+    modality: dict | None = None,
+    robots: tuple[str, ...] = ROBOT_NAMES,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Map LeRobot v2.1 fields to the centralized GR00T 86D/70D contract."""
+    """Map LeRobot v2.1 fields to the centralized joint contract (43D/35D per robot)."""
     required = (
         "observation.state",
         "action",
@@ -269,7 +344,7 @@ def _lerobot_state_action(
                 f"{key} metadata declares {len(names)} dimensions but data has "
                 f"{np.asarray(columns[key]).shape[1]}"
             )
-    return _joint_state_action_from_columns(columns, modality or _direct_modality())
+    return _joint_state_action_from_columns(columns, modality or _direct_modality(robots), robots)
 
 
 def _read_video(path: Path, length: int) -> np.ndarray:
@@ -371,7 +446,8 @@ def _convert_lerobot(
     target: h5py.File,
     max_demos: int | None,
     use_scene: bool,
-) -> tuple[int, list[int], list[str]]:
+    cameras_override: str | None = None,
+) -> tuple[int, list[int], list[str], int]:
     try:
         import pyarrow.parquet as parquet
     except ImportError as error:
@@ -387,11 +463,19 @@ def _convert_lerobot(
         )
     with modality_path.open(encoding="utf-8") as stream:
         modality = json.load(stream)
-    cameras = ["ego_a", "ego_b"] + (["scene"] if use_scene else [])
-    for camera in cameras:
+    robot_count = _robot_count_from_info(info)
+    robots = robot_names(robot_count)
+    for camera in list(ego_views(robot_count)) + ([SCENE_VIEW] if use_scene else []):
         key = f"observation.images.{camera}"
         if key not in info.get("features", {}):
             raise KeyError(f"LeRobot metadata is missing required video feature {key!r}")
+    cameras = resolve_cameras(info.get("features", {}), robot_count, use_scene, cameras_override)
+    default = list(ego_views(robot_count)) + ([SCENE_VIEW] if use_scene else [])
+    print(
+        f"[GauDP] robots   {robot_count} ({', '.join(robots)})  "
+        f"state={proprio_dim(robot_count)}D action={action_dim(robot_count)}D"
+    )
+    print(f"[GauDP] cameras  {cameras}" + ("" if cameras == default else f"  (default: {default})"))
 
     files = sorted(source.glob("data/chunk-*/episode_*.parquet"), key=_episode_index)
     if max_demos is not None:
@@ -428,7 +512,9 @@ def _convert_lerobot(
         else []
     )
     intrinsics = {camera: _camera_intrinsics(info, camera) for camera in cameras}
-    ego_depth_keys = [f"observation.depth.{camera}" for camera in ("ego_a", "ego_b")]
+    ego_depth_keys = [f"observation.depth.{camera}" for camera in cameras if camera in EGO_VIEWS]
+    for key in ego_depth_keys:
+        print(f"[GauDP] depth    {key}: {'present' if key in info.get('features', {}) else 'MISSING'}")
     gaussian_supervision = bool(camera_pose_names) and all(
         matrix is not None for matrix in intrinsics.values()
     ) and all(key in info.get("features", {}) for key in ego_depth_keys)
@@ -436,14 +522,14 @@ def _convert_lerobot(
         episode = _episode_index(path)
         table = parquet.read_table(path)
         columns = {key: np.asarray(table[key].to_pylist()) for key in table.column_names}
-        state, action = _lerobot_state_action(columns, info, modality)
+        state, action = _lerobot_state_action(columns, info, modality, robots)
         length = state.shape[0]
         if action.shape[0] != length:
             raise ValueError(f"{path} state/action length mismatch: {length} vs {action.shape[0]}")
 
         _append(target, "state", state)
         _append(target, "action", action)
-        for robot_index in range(len(ROBOT_NAMES)):
+        for robot_index in range(robot_count):
             _append(
                 target,
                 f"state_{robot_index}",
@@ -504,10 +590,17 @@ def _convert_lerobot(
     target.attrs["gaussian_supervision"] = gaussian_supervision
     target.attrs["depth_encoding"] = "uint16_hi_lo_rgb" if gaussian_supervision else ""
     target.attrs["camera_pose_convention"] = "isaac_x_forward_y_left_z_up"
-    return total, episode_ends, cameras
+    return total, episode_ends, cameras, robot_count
 
 
-def convert(source: Path, output: Path, max_demos: int | None, use_scene: bool, include_failed: bool) -> None:
+def convert(
+    source: Path,
+    output: Path,
+    max_demos: int | None,
+    use_scene: bool,
+    include_failed: bool,
+    cameras: str | None = None,
+) -> None:
     source = source.expanduser().resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
     temporary = output.with_suffix(output.suffix + ".tmp")
@@ -516,15 +609,23 @@ def convert(source: Path, output: Path, max_demos: int | None, use_scene: bool, 
     try:
         with h5py.File(temporary, "w") as target:
             if (source / "meta" / "info.json").is_file() and (source / "data").is_dir():
-                total, episode_ends, cameras = _convert_lerobot(source, target, max_demos, use_scene)
+                total, episode_ends, cameras, robot_count = _convert_lerobot(
+                    source, target, max_demos, use_scene, cameras
+                )
             else:
-                total, episode_ends, cameras = _convert_hdf5(source, target, max_demos, use_scene, include_failed)
+                if cameras:
+                    raise SystemExit("--cameras applies to LeRobot exports; the raw HDF5 path keeps ego_a/ego_b")
+                total, episode_ends, cameras, robot_count = _convert_hdf5(
+                    source, target, max_demos, use_scene, include_failed
+                )
 
             target.create_dataset("episode_ends", data=np.asarray(episode_ends, dtype=np.int64))
             target.attrs["camera_order"] = json.dumps(cameras)
-            target.attrs["use_scene"] = bool(use_scene)
-            target.attrs["state_dim"] = PROPRIO_DIM
-            target.attrs["action_dim"] = ACTION_DIM
+            target.attrs["use_scene"] = SCENE_VIEW in cameras
+            target.attrs["state_dim"] = proprio_dim(robot_count)
+            target.attrs["action_dim"] = action_dim(robot_count)
+            target.attrs["robot_count"] = robot_count
+            target.attrs["robot_names"] = json.dumps(list(robot_names(robot_count)))
             target.attrs["schema_version"] = "mhbench-gaudp-joint-v2"
             target.attrs["action_type"] = "joint"
             target.attrs["state_schema"] = json.dumps(STATE_SCHEMA)
@@ -544,8 +645,14 @@ def main() -> None:
     parser.add_argument("--max-demos", type=int)
     parser.add_argument("--use-scene", action="store_true")
     parser.add_argument("--include-failed", action="store_true")
+    parser.add_argument(
+        "--cameras",
+        default=None,
+        help="views to convert, e.g. 'ego_a,ego_b'; default is every robot's ego view "
+        "(plus scene with --use-scene)",
+    )
     args = parser.parse_args()
-    convert(args.source, args.output, args.max_demos, args.use_scene, args.include_failed)
+    convert(args.source, args.output, args.max_demos, args.use_scene, args.include_failed, args.cameras)
 
 
 if __name__ == "__main__":

@@ -35,7 +35,6 @@ done
 bench=${GAUDP_BENCH:-mhbench}
 action_type=$GAUDP_ACTION_TYPE
 env_cfg=${GAUDP_ENV_CFG:-$GAUDP_DEFAULT_ENV_CFG}
-out="$(gaudp_shared_gaussian_dir)/gaussian"
 
 # Convert anything missing, and collect the datasets to train over.
 datasets=()
@@ -52,6 +51,10 @@ done
 
 source "${POLICY_DIR}/resolve_noposplat_checkpoint.sh"
 for d in "${datasets[@]}"; do require_gaussian_supervision "${d}"; done
+# train_gaussian.py refuses datasets whose camera_order differs, so the first
+# one names the views of all of them.
+views="$(gaudp_view_suffix "${datasets[0]}")"
+out="$(gaudp_shared_gaussian_dir "${views}")/gaussian"
 pretrained="$(resolve_noposplat_checkpoint "${datasets[0]}" "${POLICY_DIR}")"
 python_bin="${GAUDP_PYTHON:-python}"
 
@@ -61,7 +64,7 @@ echo "[GauDP][shared] output   ${out}"
 # The W&B id resumes, so it names the geometry scale too: a baseline-normalized
 # run must not append to a metric run of the same tag, whose step counter is
 # already ahead and would make W&B drop the new run's early steps.
-wandb_id="shared-gaussian-seed${seed}${GAUDP_TAG:+-${GAUDP_TAG}}-baseline"
+wandb_id="shared-gaussian-seed${seed}${GAUDP_TAG:+-${GAUDP_TAG}}${views}-baseline"
 CUDA_VISIBLE_DEVICES="${gpu}" PYTHONNOUSERSITE=1 "${python_bin}" "${POLICY_DIR}/train_gaussian.py" \
     --data "${datasets[@]}" --output "${out}" --pretrained "${pretrained}" --seed "${seed}" \
     --wandb-run-name "${wandb_id}" \

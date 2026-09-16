@@ -9,20 +9,29 @@ from .schema import ACTION_DIM, PROPRIO_DIM
 
 
 class GauDPNormalizer(nn.Module):
-    def __init__(self) -> None:
+    """Min-max statistics of one task's state and action widths.
+
+    The widths are the task's, not a constant: the buffers are in every
+    checkpoint's state dict, so a robot count that disagrees with the data fails
+    at `load_state_dict` rather than training a narrow head on wide rows.
+    """
+
+    def __init__(self, state_dim: int = PROPRIO_DIM, action_dim: int = ACTION_DIM) -> None:
         super().__init__()
-        self.register_buffer("state_min", torch.zeros(PROPRIO_DIM))
-        self.register_buffer("state_max", torch.ones(PROPRIO_DIM))
-        self.register_buffer("action_min", torch.zeros(ACTION_DIM))
-        self.register_buffer("action_max", torch.ones(ACTION_DIM))
+        self.state_dim = int(state_dim)
+        self.action_dim = int(action_dim)
+        self.register_buffer("state_min", torch.zeros(self.state_dim))
+        self.register_buffer("state_max", torch.ones(self.state_dim))
+        self.register_buffer("action_min", torch.zeros(self.action_dim))
+        self.register_buffer("action_max", torch.ones(self.action_dim))
 
     def fit(self, state, action) -> None:
         state = torch.as_tensor(state, dtype=torch.float32)
         action = torch.as_tensor(action, dtype=torch.float32)
-        if state.ndim != 2 or state.shape[-1] != PROPRIO_DIM:
-            raise ValueError(f"state statistics require [N,{PROPRIO_DIM}], got {tuple(state.shape)}")
-        if action.ndim != 2 or action.shape[-1] != ACTION_DIM:
-            raise ValueError(f"action statistics require [N,{ACTION_DIM}], got {tuple(action.shape)}")
+        if state.ndim != 2 or state.shape[-1] != self.state_dim:
+            raise ValueError(f"state statistics require [N,{self.state_dim}], got {tuple(state.shape)}")
+        if action.ndim != 2 or action.shape[-1] != self.action_dim:
+            raise ValueError(f"action statistics require [N,{self.action_dim}], got {tuple(action.shape)}")
         if not torch.isfinite(state).all():
             raise ValueError("state statistics contain NaN or Inf")
         if not torch.isfinite(action).all():

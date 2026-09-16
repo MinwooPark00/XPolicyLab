@@ -485,7 +485,7 @@ def main() -> None:
         train_data, val_data = train_parts[0], val_parts[0]
     num_views = len(train_parts[0].camera_order)
     encoder = build_gaussian_encoder(num_views)
-    missing, unexpected = load_gaussian_checkpoint(encoder, args.pretrained, strict=False)
+    missing, unexpected = load_gaussian_checkpoint(encoder, args.pretrained, strict=False, expect_views=num_views)
     print(f"[GauDP] initialized NoPoSplat: missing={len(missing)}, unexpected={len(unexpected)}")
     encoder.to(device)
     trainable_parameters = _configure_finetuning(encoder, args.finetune_mode)
