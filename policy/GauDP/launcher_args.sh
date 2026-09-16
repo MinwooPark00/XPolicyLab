@@ -131,7 +131,9 @@ gaudp_data_path() {
 # the pair plus the scene are different architectures trained on different
 # frames. The ego pair every two-robot run used keeps the unsuffixed name; any
 # other camera_order is spelled into the directory (`-ego_a-ego_b-ego_c`), so a
-# three-robot encoder cannot overwrite the two-robot one.
+# three-robot encoder cannot overwrite the two-robot one. GAUDP_SHARED_VARIANT
+# names a retrained encoder of the same round, so it neither resumes nor
+# replaces an earlier one.
 gaudp_view_suffix() {   # [converted hdf5] -> "" or "-<view>-<view>..."
     local data=${1:-$(gaudp_data_path)}
     [[ -f "${data}" ]] || return 0
@@ -150,7 +152,7 @@ PY
 gaudp_shared_gaussian_dir() {   # [view suffix]; default: this task's converted hdf5
     local views
     if (( $# )); then views=$1; else views="$(gaudp_view_suffix)"; fi
-    printf '%s\n' "${GAUDP_SHARED_GAUSSIAN_DIR:-${POLICY_DIR}/checkpoints/${bench:-mhbench}-shared-${env_cfg}-${action_type}-${seed}${GAUDP_TAG:+-${GAUDP_TAG}}${views}}"
+    printf '%s\n' "${GAUDP_SHARED_GAUSSIAN_DIR:-${POLICY_DIR}/checkpoints/${bench:-mhbench}-shared-${env_cfg}-${action_type}-${seed}${GAUDP_TAG:+-${GAUDP_TAG}}${GAUDP_SHARED_VARIANT:+-${GAUDP_SHARED_VARIANT}}${views}}"
 }
 
 gaudp_gaussian_run_dirs() {

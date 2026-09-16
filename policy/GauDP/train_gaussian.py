@@ -251,33 +251,98 @@ def _build_optimizer(
     )
 
 
+# Recorded in checkpoints; resuming across a schedule change is refused.
+_LR_SCHEDULE = "warmup-cosine-group-relative"
+
+
+def _lr_factor(step: int, *, warm_up_steps: int, max_steps: int, min_lr_ratio: float) -> float:
+    if step < warm_up_steps:
+        return (step + 1) / warm_up_steps
+    progress = min(1.0, (step - warm_up_steps) / max(1, max_steps - warm_up_steps))
+    return min_lr_ratio + (1.0 - min_lr_ratio) * 0.5 * (1.0 + math.cos(math.pi * progress))
+
+
 def _build_lr_scheduler(
     optimizer,
     *,
     warm_up_steps: int,
     max_steps: int,
-    base_lr: float,
     min_lr_ratio: float,
 ):
-    """Match NoPoSplat's linear warm-up followed by step-wise cosine decay."""
-    cosine = torch.optim.lr_scheduler.CosineAnnealingLR(
+    """Linear warm-up, then cosine to min_lr_ratio x each group's own LR at max_steps.
+
+    A multiplicative factor keeps the head/backbone ratio; CosineAnnealingLR's single
+    absolute eta_min (head LR x ratio) equalled the backbone LR and held it flat.
+    """
+    return torch.optim.lr_scheduler.LambdaLR(
         optimizer,
-        T_max=max(1, max_steps),
-        eta_min=base_lr * min_lr_ratio,
+        lr_lambda=lambda step: _lr_factor(
+            step, warm_up_steps=warm_up_steps, max_steps=max_steps, min_lr_ratio=min_lr_ratio
+        ),
     )
-    if warm_up_steps == 0:
-        return cosine
-    warm_up = torch.optim.lr_scheduler.LinearLR(
-        optimizer,
-        start_factor=1 / warm_up_steps,
-        end_factor=1,
-        total_iters=warm_up_steps,
-    )
-    return torch.optim.lr_scheduler.SequentialLR(
-        optimizer,
-        schedulers=[warm_up, cosine],
-        milestones=[warm_up_steps],
-    )
+
+
+def _dataset_label(path: Path) -> str:
+    # mhbench-<task>-<env_cfg>-<action>.hdf5 -> <task>
+    parts = path.stem.split("-")
+    return parts[1] if len(parts) >= 4 else path.stem
+
+
+def _evenly_spaced_subset(dataset, count: int):
+    from torch.utils.data import Subset
+
+    if count <= 0 or count >= len(dataset):
+        return dataset
+    return Subset(dataset, np.linspace(0, len(dataset) - 1, count).round().astype(int).tolist())
+
+
+def _validate(
+    encoder,
+    loaders: list[tuple[str, object]],
+    *,
+    device: torch.device,
+    global_step: int,
+    depth_weight: float,
+    prefix: str,
+    debug: bool = False,
+    on_batch=None,
+) -> dict[str, float]:
+    """Batch-mean val metrics overall (all batches pooled) and per dataset."""
+    keys = ("loss", "rgb_loss", "depth_loss", "psnr")
+    total = dict.fromkeys(keys, 0.0)
+    total_count = 0
+    metrics: dict[str, float] = {}
+    encoder.eval()
+    with torch.no_grad():
+        for label, loader in loaders:
+            sums = dict.fromkeys(keys, 0.0)
+            count = 0
+            for batch in loader:
+                loss, batch_metrics = reconstruction_loss(
+                    encoder, _to_device(batch, device), global_step=global_step, depth_weight=depth_weight
+                )
+                values = {
+                    "loss": float(loss),
+                    "rgb_loss": batch_metrics["rgb"],
+                    "depth_loss": batch_metrics["depth"],
+                    "psnr": batch_metrics["psnr"],
+                }
+                for key in keys:
+                    sums[key] += values[key]
+                count += 1
+                if on_batch is not None:
+                    on_batch(label, values)
+                if debug:
+                    break
+            for key in keys:
+                total[key] += sums[key]
+                if len(loaders) > 1:
+                    metrics[f"{prefix}/{label}/{key}"] = sums[key] / max(1, count)
+            total_count += count
+            if debug:
+                break
+    metrics.update({f"{prefix}/{key}": total[key] / max(1, total_count) for key in keys})
+    return metrics
 
 
 def _learning_rate_metrics(optimizer) -> dict[str, float]:
@@ -405,6 +470,18 @@ def main() -> None:
         help="print and send batch progress to W&B every N batches; 0 disables batch progress logs",
     )
     parser.add_argument(
+        "--val-every-steps",
+        type=int,
+        default=0,
+        help="also validate on a fixed val subset every N optimizer steps, and before the first (0 disables)",
+    )
+    parser.add_argument(
+        "--val-subset-frames",
+        type=int,
+        default=800,
+        help="evenly spaced val frames per dataset for --val-every-steps",
+    )
+    parser.add_argument(
         "--finetune-mode",
         choices=("full", "heads"),
         default="full",
@@ -433,6 +510,8 @@ def main() -> None:
         args.gradient_clip = 0.5 if args.finetune_mode == "full" else 1.0
     if args.log_every < 0:
         parser.error("--log-every must be non-negative")
+    if args.val_every_steps < 0 or args.val_subset_frames < 0:
+        parser.error("--val-every-steps and --val-subset-frames must be non-negative")
     if args.lr <= 0:
         parser.error("--lr must be positive")
     if args.backbone_lr_multiplier < 0:
@@ -503,9 +582,23 @@ def main() -> None:
         weight_decay=args.weight_decay,
     )
     train_loader = DataLoader(train_data, args.batch_size, shuffle=True, num_workers=args.num_workers, pin_memory=True)
-    val_loader = DataLoader(val_data, args.batch_size, shuffle=False, num_workers=args.num_workers, pin_memory=True)
+    labels = [_dataset_label(path) for path in args.data]
+
+    def _loaders(parts):
+        return [
+            (label, DataLoader(part, args.batch_size, shuffle=False, num_workers=args.num_workers, pin_memory=True))
+            for label, part in zip(labels, parts)
+        ]
+
+    # One loader per dataset, so val/<task>/* comes for free; val/* pools every batch.
+    val_loaders = _loaders(val_parts)
+    subset_loaders = (
+        _loaders([_evenly_spaced_subset(part, args.val_subset_frames) for part in val_parts])
+        if args.val_every_steps
+        else []
+    )
     train_batches = min(1, len(train_loader)) if args.debug else len(train_loader)
-    val_batches = min(1, len(val_loader)) if args.debug else len(val_loader)
+    val_batches = 1 if args.debug else sum(len(loader) for _, loader in val_loaders)
     epochs = 1 if args.debug else args.epochs
     optimizer_steps_per_epoch = math.ceil(train_batches / args.gradient_accumulation_steps)
     max_optimizer_steps = max(1, epochs * optimizer_steps_per_epoch)
@@ -514,11 +607,22 @@ def main() -> None:
             optimizer,
             warm_up_steps=args.warm_up_steps,
             max_steps=max_optimizer_steps,
-            base_lr=args.lr,
             min_lr_ratio=args.min_lr_ratio,
         )
     else:
         scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda _: 1.0)
+    # Anything that shapes the optimizer trajectory; resume must match all of it.
+    optimization = {
+        "lr_schedule": _LR_SCHEDULE if args.finetune_mode == "full" else "constant",
+        "finetune_mode": args.finetune_mode,
+        "lr": args.lr,
+        "backbone_lr_multiplier": args.backbone_lr_multiplier,
+        "weight_decay": args.weight_decay,
+        "warm_up_steps": args.warm_up_steps,
+        "min_lr_ratio": args.min_lr_ratio,
+        "gradient_clip": args.gradient_clip,
+        "depth_weight": args.depth_weight,
+    }
 
     print(
         f"[GauDP][gaussian] device={device} cameras={train_parts[0].camera_order} "
@@ -528,13 +632,17 @@ def main() -> None:
         f"batch_size={args.batch_size} accumulation={args.gradient_accumulation_steps} "
         f"effective_batch_size={args.batch_size * args.gradient_accumulation_steps} "
         f"workers={args.num_workers} epochs={epochs} optimizer_steps={max_optimizer_steps} "
-        f"warm_up_steps={args.warm_up_steps} log_every={args.log_every}",
+        f"warm_up_steps={args.warm_up_steps} log_every={args.log_every} "
+        f"val_every_steps={args.val_every_steps} "
+        f"val_subset_batches={sum(len(loader) for _, loader in subset_loaders)}",
         flush=True,
     )
     for group in optimizer.param_groups:
         print(
             f"[GauDP] optimizer group={group['group_name']} "
-            f"initial_lr={group['initial_lr']:.2e} parameters={sum(p.numel() for p in group['params']) / 1e6:.1f}M",
+            f"initial_lr={group['initial_lr']:.2e} "
+            f"final_lr={group['initial_lr'] * scheduler.lr_lambdas[0](max_optimizer_steps):.2e} "
+            f"parameters={sum(p.numel() for p in group['params']) / 1e6:.1f}M",
             flush=True,
         )
 
@@ -562,6 +670,16 @@ def main() -> None:
                 f"{last_path} was trained toward {planned} optimizer steps and this run toward "
                 f"{max_optimizer_steps}: epochs, batch size or accumulation changed, and resuming would "
                 f"bend the LR schedule. Pass --no-resume to start over."
+            )
+        # The optimizer and scheduler states restored below would override a new LR anyway.
+        recorded = state.get("optimization")
+        if recorded != optimization:
+            changed = sorted(
+                key for key in optimization if (recorded or {}).get(key) != optimization[key]
+            )
+            raise SystemExit(
+                f"{last_path} was trained with other optimizer settings ({', '.join(changed)}; "
+                f"recorded {recorded}). Write to a new --output, or pass --no-resume to start over."
             )
         encoder.load_state_dict(state["encoder_state"])
         optimizer.load_state_dict(state["optimizer_state"])
@@ -592,6 +710,36 @@ def main() -> None:
         wandb_tags=parse_wandb_tags(args.wandb_tags),
         wandb_id=args.wandb_id,
     ) as logger:
+
+        def validate_subset(epoch: int) -> None:
+            started = time.monotonic()
+            metrics = _validate(
+                encoder,
+                subset_loaders,
+                device=device,
+                global_step=global_step,
+                depth_weight=args.depth_weight,
+                prefix="val_subset",
+                debug=args.debug,
+            )
+            metrics.update(
+                {
+                    "record_type": "val_subset",
+                    "epoch": epoch,
+                    "global_step": global_step,
+                    "performance/val_subset_seconds": time.monotonic() - started,
+                }
+            )
+            logger.log(metrics, step=global_step)
+            print(
+                f"[GauDP][gaussian] step={global_step} val_subset loss={metrics['val_subset/loss']:.6f} "
+                f"psnr={metrics['val_subset/psnr']:.2f} ({metrics['performance/val_subset_seconds']:.0f} s)",
+                flush=True,
+            )
+            _set_train_mode(encoder, args.finetune_mode)
+
+        if subset_loaders and global_step == 0:
+            validate_subset(start_epoch)
         for epoch in range(start_epoch, epochs):
             epoch_started = time.monotonic()
             if device.type == "cuda":
@@ -631,6 +779,8 @@ def main() -> None:
                     optimizer.step()
                     scheduler.step()
                     global_step += 1
+                    if subset_loaders and global_step % args.val_every_steps == 0:
+                        validate_subset(epoch)
                 train_sums["loss"] += float(loss.detach())
                 train_sums["rgb_loss"] += batch_metrics["rgb"]
                 train_sums["depth_loss"] += batch_metrics["depth"]
@@ -654,43 +804,59 @@ def main() -> None:
                 if args.debug:
                     break
 
-            encoder.eval()
             print(f"[GauDP][gaussian] epoch={epoch + 1}/{epochs} validation started", flush=True)
-            val_sums = {"loss": 0.0, "rgb_loss": 0.0, "depth_loss": 0.0, "psnr": 0.0}
-            val_count = 0
             val_started = time.monotonic()
-            with torch.no_grad():
-                for batch_index, batch in enumerate(val_loader):
-                    loss, batch_metrics = reconstruction_loss(
-                        encoder,
-                        _to_device(batch, device),
-                        global_step=global_step,
-                        depth_weight=args.depth_weight,
-                    )
-                    val_sums["loss"] += float(loss)
-                    val_sums["rgb_loss"] += batch_metrics["rgb"]
-                    val_sums["depth_loss"] += batch_metrics["depth"]
-                    val_sums["psnr"] += batch_metrics["psnr"]
-                    val_count += 1
-                    completed = batch_index + 1
-                    if _should_log_batch(completed, val_batches, args.log_every):
-                        progress = {
-                            "val/batch_loss": float(loss),
-                            "val/batch_rgb_loss": batch_metrics["rgb"],
-                            "val/batch_depth_loss": batch_metrics["depth"],
-                            "val/batch_psnr": batch_metrics["psnr"],
-                            **_progress_metrics(completed, val_batches, val_started, "val"),
-                        }
-                        _print_batch_progress("gaussian", epoch, epochs, "val", progress)
-                    if args.debug:
-                        break
+            val_completed = 0
+            val_rows = []
+
+            def on_val_batch(label: str, values: dict[str, float]) -> None:
+                nonlocal val_completed
+                val_completed += 1
+                if not _should_log_batch(val_completed, val_batches, args.log_every):
+                    return
+                # Every val batch shares one global_step, so W&B gets these as one table per epoch.
+                row = {
+                    "record_type": "val_batch",
+                    "epoch": epoch,
+                    "global_step": global_step,
+                    "val_batch": val_completed,
+                    "dataset": label,
+                    **{f"val/batch_{key}": value for key, value in values.items()},
+                }
+                logger.write_jsonl(row, step=global_step)
+                val_rows.append(row)
+                progress = {
+                    "val/batch_loss": values["loss"],
+                    "val/batch_rgb_loss": values["rgb_loss"],
+                    "val/batch_depth_loss": values["depth_loss"],
+                    "val/batch_psnr": values["psnr"],
+                    **_progress_metrics(val_completed, val_batches, val_started, "val"),
+                }
+                _print_batch_progress(f"gaussian][{label}", epoch, epochs, "val", progress)
+
+            val_metrics = _validate(
+                encoder,
+                val_loaders,
+                device=device,
+                global_step=global_step,
+                depth_weight=args.depth_weight,
+                prefix="val",
+                debug=args.debug,
+                on_batch=on_val_batch,
+            )
+            columns = ["val_batch", "dataset", "val/batch_loss", "val/batch_rgb_loss",
+                       "val/batch_depth_loss", "val/batch_psnr"]
+            logger.log_table(
+                f"val_batches/epoch_{epoch + 1}", columns,
+                [[row[column] for column in columns] for row in val_rows], step=global_step,
+            )
             metrics = {
                 "record_type": "epoch",
                 "epoch": epoch,
                 **_learning_rate_metrics(optimizer),
                 "performance/epoch_seconds": time.monotonic() - epoch_started,
                 **{f"train/{key}": value / max(1, train_count) for key, value in train_sums.items()},
-                **{f"val/{key}": value / max(1, val_count) for key, value in val_sums.items()},
+                **val_metrics,
             }
             improved = metrics["val/loss"] < best
             epochs_since_best = 0 if improved else epochs_since_best + 1
@@ -700,6 +866,7 @@ def main() -> None:
                 "best_val_loss": best,
                 "epochs_since_best": epochs_since_best,
                 "max_optimizer_steps": max_optimizer_steps,
+                "optimization": optimization,
             }
             print(f"[GauDP][gaussian] saving last checkpoint to {args.output / 'last.ckpt'}", flush=True)
             save_started = time.monotonic()

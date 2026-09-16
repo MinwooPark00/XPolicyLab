@@ -64,7 +64,7 @@ echo "[GauDP][shared] output   ${out}"
 # The W&B id resumes, so it names the geometry scale too: a baseline-normalized
 # run must not append to a metric run of the same tag, whose step counter is
 # already ahead and would make W&B drop the new run's early steps.
-wandb_id="shared-gaussian-seed${seed}${GAUDP_TAG:+-${GAUDP_TAG}}${views}-baseline"
+wandb_id="shared-gaussian-seed${seed}${GAUDP_TAG:+-${GAUDP_TAG}}${GAUDP_SHARED_VARIANT:+-${GAUDP_SHARED_VARIANT}}${views}-baseline"
 CUDA_VISIBLE_DEVICES="${gpu}" PYTHONNOUSERSITE=1 "${python_bin}" "${POLICY_DIR}/train_gaussian.py" \
     --data "${datasets[@]}" --output "${out}" --pretrained "${pretrained}" --seed "${seed}" \
     --wandb-run-name "${wandb_id}" \

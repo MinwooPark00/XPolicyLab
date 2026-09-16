@@ -72,15 +72,28 @@ class ExperimentLogger:
                 config=_json_value(config),
             )
 
-    def log(self, metrics: Mapping[str, Any], *, step: int) -> None:
+    def write_jsonl(self, metrics: Mapping[str, Any], *, step: int) -> dict[str, Any]:
         payload = {
             "timestamp": time.time(),
             "step": int(step),
             **{str(key): _json_value(value) for key, value in metrics.items()},
         }
         self._file.write(json.dumps(payload, sort_keys=True) + "\n")
+        return payload
+
+    def log(self, metrics: Mapping[str, Any], *, step: int) -> None:
+        payload = self.write_jsonl(metrics, step=step)
         if self._wandb_run is not None:
             self._wandb_run.log(dict(payload), step=int(step))
+
+    def log_table(self, key: str, columns: Sequence[str], rows: Sequence[Sequence[Any]], *, step: int) -> None:
+        """W&B only: rows that share one step (a JSONL copy is the caller's job)."""
+        if self._wandb_run is None or not rows:
+            return
+        import wandb
+
+        table = wandb.Table(columns=list(columns), data=[[_json_value(value) for value in row] for row in rows])
+        self._wandb_run.log({key: table}, step=int(step))
 
     def close(self) -> None:
         if not self._file.closed:

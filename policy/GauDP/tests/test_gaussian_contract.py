@@ -75,7 +75,7 @@ def test_full_finetuning_matches_official_noposplat_optimizer_groups():
     assert id(encoder.backbone.weight) not in head_ids
 
 
-def test_official_scheduler_warms_up_then_cosine_decays_head_lr():
+def test_scheduler_warms_up_then_cosine_decays_every_group_to_its_own_floor():
     encoder = TinyNoPoSplatEncoder()
     optimizer = module._build_optimizer(
         encoder,
@@ -88,7 +88,6 @@ def test_official_scheduler_warms_up_then_cosine_decays_head_lr():
         optimizer,
         warm_up_steps=2,
         max_steps=10,
-        base_lr=1e-4,
         min_lr_ratio=0.1,
     )
 
@@ -99,8 +98,14 @@ def test_official_scheduler_warms_up_then_cosine_decays_head_lr():
     assert [group["lr"] for group in optimizer.param_groups] == pytest.approx([1e-4, 1e-5])
     optimizer.step()
     scheduler.step()
-    assert optimizer.param_groups[0]["lr"] < 1e-4
-    assert optimizer.param_groups[1]["lr"] == pytest.approx(1e-5)
+    head, backbone = (group["lr"] for group in optimizer.param_groups)
+    # A single absolute eta_min once held the backbone flat at 1e-5.
+    assert head < 1e-4 and backbone < 1e-5
+    assert backbone == pytest.approx(head * 0.1)
+    for _ in range(7):
+        optimizer.step()
+        scheduler.step()
+    assert [group["lr"] for group in optimizer.param_groups] == pytest.approx([1e-5, 1e-6])
 
 
 def test_head_only_optimizer_retains_legacy_defaults():
