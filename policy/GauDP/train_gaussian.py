@@ -306,11 +306,15 @@ def _save(
     num_views: int,
     finetune_mode: str,
     metrics: dict,
+    resume_state: dict | None = None,
+    *,
+    geometry_scale: str,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(
         {
             **gaussian_checkpoint_metadata(num_views),
+            "geometry_scale": geometry_scale,
             "encoder_state": encoder.state_dict(),
             "optimizer_state": optimizer.state_dict(),
             "scheduler_state": scheduler.state_dict(),
@@ -318,6 +322,7 @@ def _save(
             "global_step": step,
             "finetune_mode": finetune_mode,
             "metrics": metrics,
+            **(resume_state or {}),
         },
         path,
     )
@@ -333,6 +338,13 @@ def main() -> None:
     parser.add_argument("--epochs", type=int, default=20)
     parser.add_argument("--early-stop-patience", type=int, default=3,
                         help="stop after N epochs without a val/loss improvement (0 disables)")
+    parser.add_argument("--stop-at-epoch", type=int, default=0,
+                        help="end this run once that many epochs are done in total, leaving last.ckpt "
+                             "for the next run to resume from (0: run the whole schedule)")
+    parser.add_argument("--no-resume", dest="resume", action="store_false",
+                        help="start over even when the output already holds a last.ckpt")
+    parser.add_argument("--wandb-id", default=None,
+                        help="fixed W&B run id, so the runs of one resumed chain log into one run")
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument(
@@ -378,6 +390,14 @@ def main() -> None:
         help="accumulate micro-batches before each optimizer/scheduler step",
     )
     parser.add_argument("--depth-weight", type=float, default=0.1)
+    parser.add_argument(
+        "--geometry-scale",
+        choices=("baseline", "metric"),
+        default="baseline",
+        help="units of the camera poses and depth the renderer is supervised in: 'baseline' "
+             "rescales each frame so its cameras are one unit apart, as NoPoSplat was pretrained; "
+             "'metric' keeps metres, which every run before this option used",
+    )
     parser.add_argument(
         "--log-every",
         type=int,
@@ -445,8 +465,8 @@ def main() -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if device.type != "cuda":
         raise SystemExit("NoPoSplat fine-tuning requires a CUDA device and CUDA rasterizer")
-    train_parts = [GaussianFrameDataset(path, train=True) for path in args.data]
-    val_parts = [GaussianFrameDataset(path, train=False) for path in args.data]
+    train_parts = [GaussianFrameDataset(path, train=True, geometry_scale=args.geometry_scale) for path in args.data]
+    val_parts = [GaussianFrameDataset(path, train=False, geometry_scale=args.geometry_scale) for path in args.data]
     # One encoder over several tasks only makes sense if they share a camera rig;
     # the 13-channel output is per-view, so a mismatch is a silent wrong answer.
     orders = {tuple(part.camera_order) for part in train_parts}
@@ -501,7 +521,8 @@ def main() -> None:
         scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda _: 1.0)
 
     print(
-        f"[GauDP][gaussian] device={device} cameras={train_data.camera_order} "
+        f"[GauDP][gaussian] device={device} cameras={train_parts[0].camera_order} "
+        f"geometry_scale={args.geometry_scale} "
         f"train_samples={len(train_data)} val_samples={len(val_data)} "
         f"train_batches={train_batches} val_batches={val_batches} "
         f"batch_size={args.batch_size} accumulation={args.gradient_accumulation_steps} "
@@ -520,6 +541,45 @@ def main() -> None:
     best = math.inf
     epochs_since_best = 0
     global_step = 0
+    start_epoch = 0
+    last_path = args.output / "last.ckpt"
+    # A run cut into segments (bf_window, MaxWall) picks up where the last one
+    # stopped: weights, optimizer, the LR schedule mid-cosine, and the early
+    # stopping state, so the chain trains exactly what one run would have.
+    if args.resume and last_path.is_file():
+        state = torch.load(last_path, map_location=device, weights_only=False)
+        # Checkpoints from before --geometry-scale existed were all trained in metres.
+        recorded_scale = state.get("geometry_scale", "metric")
+        if recorded_scale != args.geometry_scale:
+            raise SystemExit(
+                f"{last_path} was trained with --geometry-scale {recorded_scale} and this run uses "
+                f"{args.geometry_scale}: the encoder's point maps are in different units. Write to a "
+                f"new --output, or pass --no-resume to start over here."
+            )
+        planned = state.get("max_optimizer_steps")
+        if planned is not None and planned != max_optimizer_steps:
+            raise SystemExit(
+                f"{last_path} was trained toward {planned} optimizer steps and this run toward "
+                f"{max_optimizer_steps}: epochs, batch size or accumulation changed, and resuming would "
+                f"bend the LR schedule. Pass --no-resume to start over."
+            )
+        encoder.load_state_dict(state["encoder_state"])
+        optimizer.load_state_dict(state["optimizer_state"])
+        scheduler.load_state_dict(state["scheduler_state"])
+        start_epoch = state["epoch"] + 1
+        global_step = state["global_step"]
+        best = state.get("best_val_loss", math.inf)
+        epochs_since_best = state.get("epochs_since_best", 0)
+        torch.manual_seed(args.seed + start_epoch)  # a new shuffle, not epoch 0's again
+        print(
+            f"[GauDP][gaussian] resuming {last_path}: epoch {start_epoch}/{epochs}, step {global_step}, "
+            f"best val/loss {best:.6f}, {epochs_since_best} epoch(s) since it",
+            flush=True,
+        )
+    if start_epoch >= epochs or (args.early_stop_patience and epochs_since_best >= args.early_stop_patience):
+        print("[GauDP][gaussian] nothing left to train: the schedule is finished or stopped early; "
+              "best.ckpt holds the result", flush=True)
+        return
     run_name = args.wandb_run_name or f"{args.output.parent.name}-gaussian"
     with ExperimentLogger(
         args.output,
@@ -530,8 +590,9 @@ def main() -> None:
         wandb_entity=args.wandb_entity,
         wandb_group=args.wandb_group,
         wandb_tags=parse_wandb_tags(args.wandb_tags),
+        wandb_id=args.wandb_id,
     ) as logger:
-        for epoch in range(epochs):
+        for epoch in range(start_epoch, epochs):
             epoch_started = time.monotonic()
             if device.type == "cuda":
                 torch.cuda.reset_peak_memory_stats(device)
@@ -631,6 +692,15 @@ def main() -> None:
                 **{f"train/{key}": value / max(1, train_count) for key, value in train_sums.items()},
                 **{f"val/{key}": value / max(1, val_count) for key, value in val_sums.items()},
             }
+            improved = metrics["val/loss"] < best
+            epochs_since_best = 0 if improved else epochs_since_best + 1
+            if improved:
+                best = metrics["val/loss"]
+            resume_state = {
+                "best_val_loss": best,
+                "epochs_since_best": epochs_since_best,
+                "max_optimizer_steps": max_optimizer_steps,
+            }
             print(f"[GauDP][gaussian] saving last checkpoint to {args.output / 'last.ckpt'}", flush=True)
             save_started = time.monotonic()
             _save(
@@ -643,16 +713,15 @@ def main() -> None:
                 num_views,
                 args.finetune_mode,
                 metrics,
+                resume_state,
+                geometry_scale=args.geometry_scale,
             )
             print(
                 f"[GauDP][gaussian] saved last checkpoint in "
                 f"{_format_duration(time.monotonic() - save_started)}",
                 flush=True,
             )
-            improved = metrics["val/loss"] < best
-            epochs_since_best = 0 if improved else epochs_since_best + 1
             if improved:
-                best = metrics["val/loss"]
                 print(f"[GauDP][gaussian] new best val/loss={best:.6f}; saving best checkpoint", flush=True)
                 best_save_started = time.monotonic()
                 _save(
@@ -665,6 +734,8 @@ def main() -> None:
                     num_views,
                     args.finetune_mode,
                     metrics,
+                    resume_state,
+                    geometry_scale=args.geometry_scale,
                 )
                 print(
                     f"[GauDP][gaussian] saved best checkpoint in "
@@ -681,6 +752,10 @@ def main() -> None:
                     f"(best {best:.6f}); stopping at epoch {epoch}",
                     flush=True,
                 )
+                break
+            if args.stop_at_epoch and epoch + 1 >= args.stop_at_epoch and epoch + 1 < epochs:
+                print(f"[GauDP][gaussian] segment done at epoch {epoch + 1}/{epochs} (--stop-at-epoch); "
+                      f"the next run resumes from {last_path}", flush=True)
                 break
 
 

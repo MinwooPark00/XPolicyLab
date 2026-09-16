@@ -19,7 +19,10 @@ if [[ -z "${bench_name}" || -z "${ckpt_name}" || -z "${env_cfg_type}" || -z "${a
 fi
 
 POLICY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-run_setting="${bench_name}-${ckpt_name}-${env_cfg_type}-${action_type}-${seed}"
+# LATENTTOM_RUN_TAG is the round (CKPT_TAG, `cohub2`): a new run directory and
+# wandb id per round, the name eval/LatentToM.sh resolves. The converted data
+# below is the export's, not the round's, so it stays untagged.
+run_setting="${bench_name}-${ckpt_name}-${env_cfg_type}-${action_type}-${seed}${LATENTTOM_RUN_TAG:+-${LATENTTOM_RUN_TAG}}"
 run_dir="${POLICY_DIR}/checkpoints/${run_setting}"
 # Defaults to this run's own directory, which ties one conversion to one
 # ckpt_name. LATENTTOM_DATA_DIR unties them so a sweep can share one converted

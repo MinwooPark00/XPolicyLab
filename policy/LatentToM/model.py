@@ -72,6 +72,21 @@ _BASE_HEIGHT = slice(31, 32)
 _NAVIGATE = slice(32, 35)
 
 
+def _checkpoint_file_suffix(checkpoint_num) -> str:
+    """eval's `checkpoint_num` -> which arm{1,2}_<suffix>.ckpt to serve.
+
+    Empty or `latest` is the resumable checkpoint; a number is the
+    weights-only snapshot training writes every `checkpoint.snapshot_every`
+    epochs; anything else names the file outright (`best_val`).
+    """
+    value = "" if checkpoint_num is None else str(checkpoint_num).strip()
+    if value.lower() in {"", "latest", "none"}:
+        return "latest"
+    if value.isdigit():
+        return f"epoch={int(value):04d}"
+    return value
+
+
 def _load_arm_policy(ckpt_path: Path, arm_id: int, device: torch.device, use_ema: bool) -> DiffusionSheafSplitPolicy:
     if not ckpt_path.is_file():
         raise FileNotFoundError(f"LatentToM arm{arm_id} checkpoint not found: {ckpt_path}")
@@ -227,8 +242,9 @@ class Model(ModelTemplate):
             model_cfg, policy_dir / "checkpoints", policy_dir=policy_dir, must_exist=True
         )
         use_ema = bool(model_cfg.get("use_ema", True))
-        self.arm1_policy = _load_arm_policy(ckpt_root / "checkpoints" / "arm1_latest.ckpt", 1, self.device, use_ema)
-        self.arm2_policy = _load_arm_policy(ckpt_root / "checkpoints" / "arm2_latest.ckpt", 2, self.device, use_ema)
+        which = _checkpoint_file_suffix(model_cfg.get("checkpoint_num"))
+        self.arm1_policy = _load_arm_policy(ckpt_root / "checkpoints" / f"arm1_{which}.ckpt", 1, self.device, use_ema)
+        self.arm2_policy = _load_arm_policy(ckpt_root / "checkpoints" / f"arm2_{which}.ckpt", 2, self.device, use_ema)
 
         for arm_id, policy in ((1, self.arm1_policy), (2, self.arm2_policy)):
             if policy.action_dim != _ROBOT_ACTION_DIM:

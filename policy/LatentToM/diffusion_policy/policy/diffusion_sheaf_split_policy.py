@@ -142,8 +142,10 @@ class DiffusionSheafSplitPolicy(BaseImagePolicy):
             private_dim=private_dim_per_step * n_obs_steps,
         )
 
-        # confidence module
-        self.confidence_module = ConfidenceModule()
+        # Sized the same way, for the same reason: its 1024 default is
+        # sheaf_embedding_dim x two observation steps, so one step fed it 512
+        # and the first sheaf loss died on the matmul.
+        self.confidence_module = ConfidenceModule(input_dim=sheaf_embedding_dim * n_obs_steps)
 
     # ========= inference  ============
     def conditional_sample(self,

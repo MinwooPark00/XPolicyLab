@@ -102,8 +102,10 @@ gaudp_require_joint_action_type() {
 }
 
 # The run directory this stage writes into.
+# GAUDP_TAG is the round (CKPT_TAG, `cohub2`), appended the way mh_run_name does
+# so eval/GauDP.sh finds the run. The converted hdf5 is the export's, untagged.
 gaudp_run_dir() {
-    printf '%s\n' "${POLICY_DIR}/checkpoints/${bench}-${ckpt}-${env_cfg}-${action_type}-${seed}"
+    printf '%s\n' "${POLICY_DIR}/checkpoints/${bench}-${ckpt}-${env_cfg}-${action_type}-${seed}${GAUDP_TAG:+-${GAUDP_TAG}}"
 }
 
 gaudp_data_path() {
@@ -126,15 +128,19 @@ gaudp_data_path() {
 # until train_gaussian_shared.sh has run, so per-task discovery below is
 # unchanged for runs that never build one. GAUDP_SHARED_GAUSSIAN=0 ignores it.
 gaudp_shared_gaussian_dir() {
-    printf '%s\n' "${GAUDP_SHARED_GAUSSIAN_DIR:-${POLICY_DIR}/checkpoints/${bench:-mhbench}-shared-${env_cfg}-${action_type}-${seed}}"
+    printf '%s\n' "${GAUDP_SHARED_GAUSSIAN_DIR:-${POLICY_DIR}/checkpoints/${bench:-mhbench}-shared-${env_cfg}-${action_type}-${seed}${GAUDP_TAG:+-${GAUDP_TAG}}}"
 }
 
 gaudp_gaussian_run_dirs() {
     if [[ "${GAUDP_SHARED_GAUSSIAN:-1}" == "1" ]]; then
         printf '%s\n' "$(gaudp_shared_gaussian_dir)"
     fi
+    printf '%s\n' "$(gaudp_run_dir)"
+    # A tagged round is its own data: an earlier round's encoder and feature
+    # cache were fit to other frames (handover 31,471 then, 19,468 now), so only
+    # untagged runs fall back to the pre-switch artifacts below.
+    [[ -n "${GAUDP_TAG:-}" ]] && return 0
     printf '%s\n' \
-        "$(gaudp_run_dir)" \
         "${POLICY_DIR}/checkpoints/${bench}-${ckpt}-${scene}-ee-${seed}" \
         "${POLICY_DIR}/checkpoints/${scene}-experiment-${scene}-ee-${seed}"
     # The one-arm dataset and its Gaussian cache were produced while the shipped

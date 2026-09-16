@@ -110,6 +110,7 @@ training:
   max_val_steps: null
   tqdm_interval_sec: 1.0
   sheaf_loss_weight: 0.5
+  state_noise: 0.0  # x half each proprio dim's demonstration range; 0 = upstream behaviour
 
 logging:
   entity: null
@@ -129,6 +130,7 @@ checkpoint:
     format_str: 'epoch={epoch:04d}-train_loss={train_loss:.3f}.ckpt'
   save_last_ckpt: True
   save_last_snapshot: False
+  snapshot_every: 0  # epochs between weights-only arm{1,2}_epoch=NNNN.ckpt; 0 = none
 
 multi_run:
   run_dir: data/outputs/${now:%Y.%m.%d}/${now:%H.%M.%S}_${name}_${task_name}
