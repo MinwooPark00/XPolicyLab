@@ -1,6 +1,8 @@
 # Copyright 2024-2025 The Robbyant Team Authors. All rights reserved.
 import argparse
+import hashlib
 import os
+import random
 import sys
 import time
 from functools import partial
@@ -54,6 +56,12 @@ class VA_Server:
         self._active_session = None
         self.job_config = job_config
         self.save_root = job_config.save_root
+        # The upstream server writes every observation, latent and action as a
+        # debugging side effect.  A rollout already has the benchmark videos
+        # and episode JSON, while these tensors consumed several GiB per eval
+        # and made inference contend on the shared home filesystem.  Keep the
+        # diagnostic dump available as an explicit opt-in.
+        self.save_debug = os.environ.get("LINGBOT_VA_SAVE_DEBUG", "0") == "1"
         self.dtype = job_config.param_dtype
         self.device = torch.device(f"cuda:{job_config.local_rank}")
         self.enable_offload = getattr(job_config, 'enable_offload', True)  # offload vae & text_encoder to save vram
@@ -445,9 +453,19 @@ class VA_Server:
                 dtype=self.dtype,
             )
 
-        self.exp_name = f"{prompt}_{time.strftime('%Y%m%d_%H%M%S')}" if prompt else "default"
-        self.exp_save_root = os.path.join(self.save_root, 'real', self.exp_name)
-        os.makedirs(self.exp_save_root, exist_ok=True)
+        if self.save_debug:
+            # Instructions can exceed the filesystem's 255-byte component
+            # limit (TableAlign does).  Preserve a readable prefix and a hash
+            # rather than using the prompt verbatim as a directory name.
+            text = " ".join(str(prompt or "default").split())
+            digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
+            safe = "".join(c if c.isalnum() or c in "._-" else "_" for c in text)[:80]
+            self.exp_name = f"{safe}_{digest}_{time.strftime('%Y%m%d_%H%M%S')}"
+            self.exp_save_root = os.path.join(self.save_root, 'real', self.exp_name)
+            os.makedirs(self.exp_save_root, exist_ok=True)
+        else:
+            self.exp_name = "disabled"
+            self.exp_save_root = self.save_root
         torch.cuda.empty_cache()
 
     def _infer(self, obs, frame_st_id=0):
@@ -572,8 +590,9 @@ class VA_Server:
 
         actions[:, ~self.action_mask] *= 0
 
-        save_async(latents, os.path.join(self.exp_save_root, f'latents_{frame_st_id}.pt'))
-        save_async(actions, os.path.join(self.exp_save_root, f'actions_{frame_st_id}.pt'))
+        if self.save_debug:
+            save_async(latents, os.path.join(self.exp_save_root, f'latents_{frame_st_id}.pt'))
+            save_async(actions, os.path.join(self.exp_save_root, f'actions_{frame_st_id}.pt'))
 
         actions = self.postprocess_action(actions)
         torch.cuda.empty_cache()
@@ -582,7 +601,8 @@ class VA_Server:
     def _compute_kv_cache(self, obs):
         ### optional async save obs for debug
         self.transformer.clear_pred_cache(self.cache_name)
-        save_async(obs['obs'], os.path.join(self.exp_save_root, f'obs_data_{self.frame_st_id}.pt'))
+        if self.save_debug:
+            save_async(obs['obs'], os.path.join(self.exp_save_root, f'obs_data_{self.frame_st_id}.pt'))
         latent_model_input = self._encode_obs(obs)
         if self.frame_st_id == 0:
             latent_model_input = torch.cat(
@@ -644,6 +664,11 @@ class VA_Server:
 
     @torch.no_grad()
     def infer(self, obs):
+        # Episode seeding is process-global and must happen before selecting a
+        # rollout session.  The outer XPolicyLab server is a separate process,
+        # so its torch seed cannot control the diffusion noise sampled here.
+        if 'seed' in obs:
+            return self.seed(int(obs['seed']))
         # `session` names the rollout; a client that sends none keeps the old
         # single-rollout behaviour exactly.
         self._select_session(str(obs.get('session', 'default')))
@@ -651,6 +676,16 @@ class VA_Server:
             return self._infer_request(obs)
         finally:
             self._stash_session()
+
+    def seed(self, seed: int):
+        random.seed(seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+        logger.info(f"Seeded LingBot-VA backend for episode: {seed}")
+        return {'seeded': True, 'seed': seed}
 
     def _infer_request(self, obs):
         reset = obs.get('reset', False)

@@ -1,14 +1,16 @@
 # Copyright 2024-2025 The Robbyant Team Authors. All rights reserved.
 import argparse
 import os
+import shutil
 import sys
+import time
 from pathlib import Path
 import wandb
 
 import torch
 import torch.distributed as dist
 import torch.nn.functional as F
-from torch.utils.data import DataLoader, DistributedSampler
+from torch.utils.data import DataLoader, DistributedSampler, Subset
 from tqdm import tqdm
 from torch.distributed.checkpoint.state_dict import (
     get_model_state_dict,
@@ -32,7 +34,9 @@ from distributed.util import (
 from einops import rearrange
 from modules.utils import (
     load_transformer,
+    load_vae,
 )
+from diffusers.video_processor import VideoProcessor
 from modules.lora import apply_lora, merged_state_dict
 from utils import (
     init_logger, 
@@ -77,6 +81,16 @@ class Trainer:
                     id=os.environ.get("WANDB_RUN_ID") or None,
                     resume="allow",
                 )
+                # A Slurm segment can run beyond its last durable checkpoint.
+                # On resume, optimizer_step legitimately moves backwards even
+                # though W&B's internal append-only step cannot. Use an
+                # explicit x-axis so recovered training is recorded instead
+                # of being rejected as non-monotonic.
+                self.wandb.define_metric("optimizer_step")
+                self.wandb.define_metric("loss_metrics/*", step_metric="optimizer_step")
+                self.wandb.define_metric("val/*", step_metric="optimizer_step")
+                self.wandb.define_metric("grad_norm", step_metric="optimizer_step")
+                self.wandb.define_metric("lr", step_metric="optimizer_step")
                 logger.info("WandB logging enabled")
             except Exception as exc:
                 logger.warning(f"WandB disabled: {exc}")
@@ -165,6 +179,7 @@ class Trainer:
                 alpha=getattr(config, 'lora_alpha', 16),
                 dropout=getattr(config, 'lora_dropout', 0.0),
                 train_action_projections=True,
+                train_video_projections=getattr(config, 'train_video_projections', False),
                 train_action_condition=getattr(config, 'train_action_condition', False),
             )
             if config.rank == 0:
@@ -178,9 +193,18 @@ class Trainer:
         # random numbers; LoRA dropout does, and the recompute in backward must
         # redraw the forward's mask or the adapters get another network's gradient.
         preserve_rng = bool(self.lora_rank) and getattr(config, 'lora_dropout', 0.0) > 0
-        logger.info(f"Setting up activation checkpointing (preserve_rng_state={preserve_rng}) ...")
+        checkpoint_every = getattr(config, 'activation_checkpoint_every', 1)
+        if checkpoint_every < 0:
+            raise ValueError("activation_checkpoint_every must be >= 0")
+        checkpointed_blocks = 0
         for i, block in enumerate(self.transformer.blocks):
-            self.transformer.blocks[i] = ptd_checkpoint_wrapper(block, preserve_rng_state=preserve_rng)
+            if checkpoint_every and i % checkpoint_every == 0:
+                self.transformer.blocks[i] = ptd_checkpoint_wrapper(
+                    block, preserve_rng_state=preserve_rng)
+                checkpointed_blocks += 1
+        logger.info(
+            f"Activation checkpointing: {checkpointed_blocks}/{len(self.transformer.blocks)} "
+            f"blocks (every={checkpoint_every}, preserve_rng_state={preserve_rng})")
 
         if self.use_fsdp:
             logger.info("Setting up FSDP...")
@@ -197,8 +221,29 @@ class Trainer:
         self.transformer.train()
 
         # Optimizer
+        video_projection_params = []
+        if self.lora_rank and getattr(config, 'train_video_projections', False):
+            video_projection_params = [
+                p for name, p in self.transformer.named_parameters()
+                if p.requires_grad and name.startswith(
+                    ('patch_embedding_mlp.', 'proj_out.'))
+            ]
+        video_projection_ids = {id(p) for p in video_projection_params}
+        main_trainable_params = [
+            p for p in self.transformer.parameters()
+            if p.requires_grad and id(p) not in video_projection_ids
+        ]
+        optimizer_groups = [{'params': main_trainable_params,
+                             'lr': config.learning_rate}]
+        if video_projection_params:
+            video_lr = float(config.video_projection_learning_rate)
+            optimizer_groups.append({'params': video_projection_params, 'lr': video_lr})
+            if config.rank == 0:
+                logger.info(
+                    f"Video projections: {sum(p.numel() for p in video_projection_params)/1e6:.2f}M "
+                    f"trainable at lr={video_lr:.2e}")
         self.optimizer = torch.optim.AdamW(
-            [p for p in self.transformer.parameters() if p.requires_grad],
+            optimizer_groups,
             lr=config.learning_rate,
             betas=(config.beta1, config.beta2),
             eps=1e-8,
@@ -220,12 +265,17 @@ class Trainer:
             shuffle=True,
             seed=42
         ) if config.world_size > 1 else None
+        self.train_loader_generator = torch.Generator().manual_seed(42 + config.rank)
         self.train_loader = DataLoader(
             train_dataset,
             batch_size=config.batch_size,
             shuffle=(train_sampler is None), 
             num_workers=config.load_worker,
             sampler=train_sampler,
+            # DataLoader otherwise consumes the model's global torch RNG when
+            # it creates an iterator. Keep data order independent from the
+            # diffusion noise/dropout stream, especially across resumes.
+            generator=self.train_loader_generator,
         )
 
         self.train_scheduler_latent = FlowMatchScheduler(shift=self.config.snr_shift, sigma_min=0.0, extra_one_step=True)
@@ -233,9 +283,50 @@ class Trainer:
         self.train_scheduler_action = FlowMatchScheduler(shift=self.config.action_snr_shift, sigma_min=0.0, extra_one_step=True)
         self.train_scheduler_action.set_timesteps(1000, training=True)
 
+        # A held-out pass every validation_interval steps, in-process -- not
+        # validate_lingbot_checkpoint.py, which reloads a checkpoint from disk
+        # in a separate process and only ever runs once per SLURM segment, so
+        # it cannot give a mid-run curve. 0 (default) disables this entirely.
+        self.validation_interval = int(getattr(config, 'validation_interval', 0) or 0)
+        self.validation_samples = int(getattr(config, 'validation_samples', 3) or 3)
+        self.val_loader = None
+        self.val_loader_iter = None
+        if self.validation_interval:
+            val_dataset_path = os.environ.get("LINGBOT_VA_VAL_DATASET_PATH") or (
+                config.dataset_path + "_val" if getattr(config, 'dataset_path', "") else "")
+            if val_dataset_path and os.path.isdir(val_dataset_path):
+                from easydict import EasyDict
+                val_config = EasyDict(dict(config))
+                val_config.dataset_path = val_dataset_path
+                val_config.empty_emb_path = os.path.join(val_dataset_path, "empty_emb.pt")
+                val_config.cfg_prob = 0.0
+                logger.info(f"Loading validation dataset from {val_dataset_path} "
+                            f"(every {self.validation_interval} steps)")
+                val_dataset = MultiLatentLeRobotDataset(config=val_config)
+                # The flattened validation tree is ordered by task and role.
+                # Taking its first N whole episodes would measure only the
+                # first role of the first task (N=3 in the current run).
+                # Spread the fixed diagnostic over the complete held-out set.
+                count = min(self.validation_samples, len(val_dataset))
+                if count:
+                    indices = ([0] if count == 1 else [
+                        round(i * (len(val_dataset) - 1) / (count - 1))
+                        for i in range(count)
+                    ])
+                    val_dataset = Subset(val_dataset, indices)
+                    logger.info(f"Validation episode indices: {indices}")
+                self.val_loader = DataLoader(
+                    val_dataset, batch_size=config.batch_size, shuffle=False, num_workers=0)
+            else:
+                logger.warning(
+                    f"LINGBOT_VALIDATION_INTERVAL set but no val dataset at "
+                    f"{val_dataset_path!r} -- periodic validation disabled")
+                self.validation_interval = 0
+
         self.gradient_accumulation_steps = getattr(config, 'gradient_accumulation_steps', 1)
         self.train_loader_iter = None
         self._checked_adapter_grads = False
+        self._logged_input_images = False
         if self.resume_state_path is not None:
             self._load_training_state(self.resume_state_path)
     
@@ -252,8 +343,68 @@ class Trainer:
                 self.train_loader.sampler.set_epoch(self.train_loader.sampler.epoch + 1)
             self.train_loader_iter = iter(self.train_loader)
             batch = next(self.train_loader_iter)
-        
+
         return batch
+
+    def _get_next_val_batch(self):
+        """Same reset-on-exhaustion pattern as _get_next_batch, over val_loader."""
+        if self.val_loader_iter is None:
+            self.val_loader_iter = iter(self.val_loader)
+        try:
+            return next(self.val_loader_iter)
+        except StopIteration:
+            self.val_loader_iter = iter(self.val_loader)
+            return next(self.val_loader_iter)
+
+    @torch.no_grad()
+    def _run_validation(self):
+        """A held-out pass on validation_samples batches, without updating
+        weights. Runs on every rank (the forward pass is a collective under
+        FSDP), only rank 0 logs. Restores train() mode before returning."""
+        self.transformer.eval()
+        video_losses, action_losses = [], []
+        # Compare the same held-out samples under the same diffusion noise at
+        # every checkpoint. fork_rng restores the training stream afterwards,
+        # so enabling validation cannot change subsequent optimizer updates.
+        self.val_loader_iter = iter(self.val_loader)
+        try:
+            with torch.random.fork_rng(devices=[self.config.local_rank]):
+                torch.manual_seed(12345 + self.config.rank)
+                torch.cuda.manual_seed_all(12345 + self.config.rank)
+                for _ in range(self.validation_samples):
+                    batch = self.convert_input_format(self._get_next_val_batch())
+                    input_dict = self._prepare_input_dict(batch)
+                    output = self.transformer(input_dict, train_mode=True)
+                    video_loss, action_loss = self.compute_loss(input_dict, output)
+                    scale = self.gradient_accumulation_steps  # compute_loss divides for accumulation; undo for a true mean
+                    video_losses.append(video_loss.detach() * scale)
+                    action_losses.append(action_loss.detach() * scale)
+        finally:
+            self.transformer.train()
+        mean_video = dist_mean(torch.stack(video_losses).mean()).item()
+        mean_action = dist_mean(torch.stack(action_losses).mean()).item()
+        if self.config.rank == 0:
+            logger.info(f"validation at step {self.step}: "
+                        f"video_loss={mean_video:.4f} action_loss={mean_action:.4f}")
+            validation_dir = Path(self.config.save_root) / "validation"
+            validation_dir.mkdir(parents=True, exist_ok=True)
+            output = validation_dir / f"checkpoint_step_{self.step}.json"
+            tmp_output = output.with_suffix(".json.tmp")
+            tmp_output.write_text(json.dumps({
+                "checkpoint": str(self.save_dir / f"checkpoint_step_{self.step}"),
+                "dataset": os.environ.get("LINGBOT_VA_VAL_DATASET_PATH") or
+                           f"{self.config.dataset_path}_val",
+                "samples": self.validation_samples,
+                "mean_video_loss": mean_video,
+                "mean_action_loss": mean_action,
+            }, indent=2) + "\n")
+            os.replace(tmp_output, output)
+            if self.config.enable_wandb:
+                self.wandb.log({
+                    'optimizer_step': self.step,
+                    'val/mean_video_loss': mean_video,
+                    'val/mean_action_loss': mean_action,
+                })
 
     @torch.no_grad()
     def _add_noise(self, latent, train_scheduler, action_mask=False, action_mode=False, noisy_cond_prob=0.):
@@ -385,11 +536,55 @@ class Trainer:
 
         return latent_loss / self.gradient_accumulation_steps, action_loss / self.gradient_accumulation_steps
 
+    @torch.no_grad()
+    def _log_input_images(self, batch):
+        """Decode the first sample of the very first batch back to pixels and
+        log it to wandb, once. A bad data path (wrong camera, stale latents,
+        misaligned episode) shows up as a picture here instead of only ever
+        showing up as a loss number three days in. The VAE is loaded and
+        freed just for this one decode -- it is not needed anywhere else in
+        training, which only ever sees precomputed latents."""
+        if not (self.config.enable_wandb and self.config.rank == 0):
+            return
+        vae = None
+        try:
+            vae_path = os.path.join(self.config.wan22_pretrained_model_name_or_path, 'vae')
+            vae = load_vae(vae_path, torch_dtype=torch.bfloat16, torch_device=self.device)
+            latents = batch['latents'][:1].to(self.device, vae.dtype)
+            latents_mean = torch.tensor(vae.config.latents_mean).view(
+                1, vae.config.z_dim, 1, 1, 1).to(latents.device, latents.dtype)
+            latents_std = 1.0 / torch.tensor(vae.config.latents_std).view(
+                1, vae.config.z_dim, 1, 1, 1).to(latents.device, latents.dtype)
+            video = vae.decode(latents / latents_std + latents_mean, return_dict=False)[0]
+            video_processor = VideoProcessor(vae_scale_factor=1)
+            frames = video_processor.postprocess_video(video, output_type='np')[0]
+            stride = max(1, len(frames) // 6)
+            images = [wandb.Image((frame * 255).clip(0, 255).astype('uint8'))
+                      for frame in frames[::stride]]
+            self.wandb.log({
+                'optimizer_step': self.step,
+                'input_images/first_batch': images,
+            })
+            logger.info(f"logged {len(images)} input-image frame(s) from the first batch to wandb")
+        except Exception as exc:
+            logger.warning(f"could not log input images: {exc}")
+        finally:
+            # A decode failure after the VAE reached the card used to leave it
+            # resident and make the first real training step OOM.
+            del vae
+            gc.collect()
+            torch.cuda.empty_cache()
+
     def _train_step(self, batch, batch_idx):
         """Train a single batch, returns losses for logging."""
+        # The run's input does not change when a Slurm segment resumes. Avoid
+        # loading a second 5B-model VAE at the beginning of every segment.
+        if self.step == 0 and batch_idx == 0 and not self._logged_input_images:
+            self._logged_input_images = True
+            self._log_input_images(batch)
         batch = self.convert_input_format(batch)
         input_dict = self._prepare_input_dict(batch)
-        
+
         should_sync = (batch_idx + 1) % self.gradient_accumulation_steps == 0
         
         if hasattr(self.transformer, 'set_requires_gradient_sync'):
@@ -470,30 +665,45 @@ class Trainer:
         Upstream saved neither of the last three, so a requeue silently
         restarted at step 0.
         """
-        try:
-            if self.use_fsdp:
-                state_dict = get_model_state_dict(
-                    self.transformer,
-                    options=StateDictOptions(full_state_dict=True, cpu_offload=True),
-                )
-            else:
-                state_dict = {k: v.detach().cpu()
-                              for k, v in self.transformer.state_dict().items()}
-            if self.lora_rank:
-                state_dict = merged_state_dict(self.transformer, state_dict)
-            state_dict_bf16 = {k: v.to(torch.bfloat16) for k, v in state_dict.items()}
+        # get_model_state_dict/get_optimizer_state_dict under FSDP are
+        # collectives -- every rank must call them together, so they stay
+        # outside the try below and are left to raise straight through a bad
+        # rank rather than being caught and only logged by rank 0 (which used
+        # to leave the other ranks silently out of step with a dead peer).
+        if self.use_fsdp:
+            state_dict = get_model_state_dict(
+                self.transformer,
+                options=StateDictOptions(full_state_dict=True, cpu_offload=True),
+            )
+        else:
+            state_dict = {k: v.detach().cpu()
+                          for k, v in self.transformer.state_dict().items()}
+        if self.lora_rank:
+            state_dict = merged_state_dict(self.transformer, state_dict)
+        state_dict_bf16 = {k: v.to(torch.bfloat16) for k, v in state_dict.items()}
 
-            if self.use_fsdp:
-                optim_state = get_optimizer_state_dict(
-                    self.transformer, self.optimizer,
-                    options=StateDictOptions(full_state_dict=True, cpu_offload=True),
-                )
-            else:
-                optim_state = self.optimizer.state_dict()
+        if self.use_fsdp:
+            optim_state = get_optimizer_state_dict(
+                self.transformer, self.optimizer,
+                options=StateDictOptions(full_state_dict=True, cpu_offload=True),
+            )
+        else:
+            optim_state = self.optimizer.state_dict()
 
-            if self.config.rank == 0:
-                checkpoint_dir = self.save_dir / f"checkpoint_step_{self.step}"
-                transformer_dir = checkpoint_dir / "transformer"
+        # Only rank 0 touches the filesystem below, so only a local
+        # try/except is needed here -- but a failure must not just be logged
+        # and forgotten (it used to be): a training run with no valid recent
+        # checkpoint is one bad Lustre write away from silently wasting every
+        # GPU-hour since the last good save. failed_locally is all-reduced
+        # below so every rank raises together instead of rank 0 dying alone
+        # while the others wait at a barrier it never reaches.
+        failed_locally = False
+        if self.config.rank == 0:
+            checkpoint_dir = self.save_dir / f"checkpoint_step_{self.step}"
+            tmp_checkpoint_dir = self.save_dir / f".checkpoint_step_{self.step}.tmp-{os.getpid()}"
+            try:
+                shutil.rmtree(tmp_checkpoint_dir, ignore_errors=True)
+                transformer_dir = tmp_checkpoint_dir / "transformer"
                 transformer_dir.mkdir(parents=True, exist_ok=True)
 
                 logger.info(f"Saving transformer to {transformer_dir}")
@@ -507,17 +717,28 @@ class Trainer:
                 # The action quantiles the head was trained against, beside the
                 # weights: serving needs them and must not have to find the
                 # training dataset to get them.
-                with open(checkpoint_dir / "lingbot_norm_stat.json", 'w') as f:
+                with open(tmp_checkpoint_dir / "lingbot_norm_stat.json", 'w') as f:
                     json.dump({"q01": list(self.config.norm_stat["q01"]),
                                "q99": list(self.config.norm_stat["q99"])}, f)
+
+                # Publish only after weights, config and normalisation are all
+                # complete. Resume/eval discovery never sees a half-written
+                # checkpoint if Slurm ends the process during a 10 GB write.
+                if checkpoint_dir.exists():
+                    raise FileExistsError(
+                        f"refusing to replace existing checkpoint {checkpoint_dir}")
+                os.replace(tmp_checkpoint_dir, checkpoint_dir)
 
                 trainable = {}
                 if self.lora_rank:
                     trainable = {k: v.detach().cpu()
                                  for k, v in self.transformer.state_dict().items()
                                  if '.lora_A' in k or '.lora_B' in k or
-                                 k.startswith(('action_embedder.', 'action_proj_out.',
-                                               'condition_embedder_action.'))}
+                                 k.startswith(('action_embedder.', 'action_proj_out.')) or
+                                 (getattr(self.config, 'train_video_projections', False) and
+                                  k.startswith(('patch_embedding_mlp.', 'proj_out.'))) or
+                                 (getattr(self.config, 'train_action_condition', False) and
+                                  k.startswith('condition_embedder_action.'))}
 
                 state_path = self.save_dir / "training_state.pt"
                 tmp_path = state_path.with_suffix('.pt.tmp')
@@ -526,21 +747,57 @@ class Trainer:
                     'optimizer_state_dict': optim_state,
                     'trainable_state_dict': trainable,
                     'lora_rank': self.lora_rank,
+                    # Segment resumes should continue with fresh diffusion
+                    # noise/dropout and a fresh data permutation, rather than
+                    # replaying the same seeded streams every six hours.
+                    'torch_rng_state': torch.get_rng_state(),
+                    'cuda_rng_state_all': torch.cuda.get_rng_state_all(),
+                    'train_loader_generator_state': self.train_loader_generator.get_state(),
                 }, tmp_path)
                 os.replace(tmp_path, state_path)
 
+                # Frequent resume points are useful for short Slurm segments,
+                # but a merged 5.3B checkpoint is about 10 GB. Keep recent
+                # recovery points and optional milestone checkpoints so a
+                # long run stays within its storage allocation.
+                keep_last = int(getattr(
+                    self.config, 'keep_last_checkpoints', 0) or 0)
+                keep_every = int(getattr(
+                    self.config, 'keep_checkpoint_interval', 0) or 0)
+                if keep_last:
+                    checkpoints = sorted(
+                        self.save_dir.glob("checkpoint_step_*"),
+                        key=lambda d: int(d.name.rsplit("_", 1)[1]))
+                    recent = set(checkpoints[-keep_last:])
+                    for old in checkpoints:
+                        old_step = int(old.name.rsplit("_", 1)[1])
+                        if old not in recent and not (
+                                keep_every and old_step % keep_every == 0):
+                            shutil.rmtree(old)
+                            logger.info(f"Pruned checkpoint at step {old_step}")
+
                 logger.info(f"Checkpoint saved successfully at step {self.step}")
-
-            if dist.is_initialized():
-                dist.barrier()
-
-        except Exception as e:
-            if self.config.rank == 0:
+            except Exception as e:
+                failed_locally = True
+                shutil.rmtree(tmp_checkpoint_dir, ignore_errors=True)
                 logger.error(f"Failed to save checkpoint: {e}")
                 import traceback
                 logger.error(traceback.format_exc())
-            if dist.is_initialized():
-                dist.barrier()
+
+        if dist.is_initialized():
+            fail_flag = torch.tensor(
+                [1 if failed_locally else 0], device=self.device, dtype=torch.int32)
+            dist.all_reduce(fail_flag, op=dist.ReduceOp.MAX)
+            dist.barrier()
+            failed = bool(fail_flag.item())
+        else:
+            failed = failed_locally
+
+        if failed:
+            raise RuntimeError(
+                f"checkpoint save failed at step {self.step} -- see the error "
+                "logged above. Stopping rather than continuing without a valid "
+                "recent checkpoint; resubmit to resume from the last good save.")
 
     def _load_training_state(self, state_path):
         """Restore optimizer moments, adapters and the step counter."""
@@ -571,6 +828,14 @@ class Trainer:
         for _ in range(self.step):
             self.lr_scheduler.step()
 
+        if training_state.get('train_loader_generator_state') is not None:
+            self.train_loader_generator.set_state(
+                training_state['train_loader_generator_state'])
+        if training_state.get('torch_rng_state') is not None:
+            torch.set_rng_state(training_state['torch_rng_state'])
+        if training_state.get('cuda_rng_state_all') is not None:
+            torch.cuda.set_rng_state_all(training_state['cuda_rng_state_all'])
+
         logger.info(f"Training state loaded, resuming from step {self.step}")
 
         if dist.is_initialized():
@@ -591,6 +856,8 @@ class Trainer:
         )
 
         self.optimizer.zero_grad()
+        optimizer_step_started = time.perf_counter()
+        torch.cuda.reset_peak_memory_stats(self.device)
         accumulated_latent_losses = []
         accumulated_action_losses = []
         step_in_accumulation = 0
@@ -622,6 +889,11 @@ class Trainer:
                 step_in_accumulation = 0
 
                 torch.cuda.synchronize()
+                optimizer_step_seconds = time.perf_counter() - optimizer_step_started
+                peak_allocated_gib = torch.cuda.max_memory_allocated(self.device) / 2**30
+                peak_reserved_gib = torch.cuda.max_memory_reserved(self.device) / 2**30
+                optimizer_step_started = time.perf_counter()
+                torch.cuda.reset_peak_memory_stats(self.device)
                 if self.step % self.config.gc_interval == 0:
                     torch.cuda.empty_cache()
                     gc.collect()
@@ -634,17 +906,23 @@ class Trainer:
                         'action_loss': f'{action_loss_show:.4f}',
                         'step': self.step,
                         'grad_norm': f'{total_norm.item():.2f}',
-                        'lr': f'{lr:.2e}'
+                        'lr': f'{lr:.2e}',
+                        'step_s': f'{optimizer_step_seconds:.2f}',
+                        'peak_GiB': f'{peak_allocated_gib:.1f}',
                     })
                     if self.config.enable_wandb:
                         self.wandb.log({
+                            'optimizer_step': self.step,
                             'loss_metrics/global_avg_video_loss': latent_loss_show,
                             'loss_metrics/global_avg_action_loss': action_loss_show,
                             'loss_metrics/global_max_video_loss': max_latent_loss_show,
                             'loss_metrics/global_max_action_loss': max_action_loss_show,
                             'grad_norm': total_norm.item(),
                             'lr': lr,
-                        }, step=self.step)
+                            'performance/optimizer_step_seconds': optimizer_step_seconds,
+                            'performance/peak_allocated_gib': peak_allocated_gib,
+                            'performance/peak_reserved_gib': peak_reserved_gib,
+                        })
                 
                 self.step += 1
                 
@@ -652,6 +930,42 @@ class Trainer:
                     if self.config.rank == 0:
                         logger.info(f"Starting save model at step {self.step}")
                     self.save_checkpoint()
+
+                if self.validation_interval and self.step % self.validation_interval == 0:
+                    try:
+                        self._run_validation()
+                    except Exception as exc:
+                        # Validation is diagnostic. A bad held-out sample or a
+                        # transient logging failure must not discard days of
+                        # otherwise healthy optimizer work.
+                        logger.exception(
+                            f"validation failed at step {self.step}; training continues: {exc}")
+                        self.transformer.train()
+                        torch.cuda.empty_cache()
+
+                stop_file = os.environ.get("LINGBOT_STOP_FILE", "")
+                stop_requested = bool(stop_file and os.path.exists(stop_file))
+                if dist.is_initialized():
+                    stop_flag = torch.tensor(
+                        [int(stop_requested)], device=self.device, dtype=torch.int32)
+                    dist.all_reduce(stop_flag, op=dist.ReduceOp.MAX)
+                    stop_requested = bool(stop_flag.item())
+                if stop_requested:
+                    if self.step % self.config.save_interval:
+                        if self.config.rank == 0:
+                            logger.info(
+                                f"Graceful wall-time stop requested; saving step {self.step}")
+                        self.save_checkpoint()
+                    if self.config.rank == 0:
+                        try:
+                            os.unlink(stop_file)
+                        except FileNotFoundError:
+                            pass
+                    if dist.is_initialized():
+                        dist.barrier()
+                    progress_bar.close()
+                    logger.info(f"Stopped cleanly after checkpointing step {self.step}")
+                    return
 
             if dist.is_initialized():
                 dist.barrier()

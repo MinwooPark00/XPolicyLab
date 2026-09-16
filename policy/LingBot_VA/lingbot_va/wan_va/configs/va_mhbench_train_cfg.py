@@ -115,10 +115,27 @@ va_mhbench_train_cfg.norm_stat_source = va_mhbench_cfg.norm_stat_source
 
 va_mhbench_train_cfg.enable_wandb = os.environ.get("LINGBOT_WANDB", "1") != "0"
 va_mhbench_train_cfg.load_worker = _env_int("LINGBOT_NUM_WORKERS", 8)
+# Activation-memory/speed tradeoff. 1 checkpoints every transformer block
+# (the established training default), 2 every other block, and 0 disables it.
+va_mhbench_train_cfg.activation_checkpoint_every = _env_int(
+    "LINGBOT_ACTIVATION_CHECKPOINT_EVERY", 1)
 # One LeRobot tree, so no pool: forking one from a process that already holds a
 # CUDA context is what hung the first probe for two hours.
 va_mhbench_train_cfg.dataset_init_workers = _env_int("LINGBOT_DATASET_INIT_WORKERS", 1)
 va_mhbench_train_cfg.save_interval = _env_int("LINGBOT_SAVE_INTERVAL", 2500)
+# Same defaults as train/LingBot_VA.sh's train_env(), for a checkout invoked
+# without the MHBench hook (a bare `python -m wan_va.train`, or a site whose
+# launcher does not export these). Keeping the fallback here non-zero too
+# means pruning is never silently off just because one side forgot to set it.
+va_mhbench_train_cfg.keep_last_checkpoints = _env_int(
+    "LINGBOT_KEEP_LAST_CHECKPOINTS", 5)
+va_mhbench_train_cfg.keep_checkpoint_interval = _env_int(
+    "LINGBOT_KEEP_CHECKPOINT_INTERVAL", 1000)
+# 0 (default) = disabled. A held-out pass every N steps inside the same
+# process -- not the between-segment validate_lingbot_checkpoint.py, which
+# only ever runs once per SLURM job and so cannot give a mid-run curve.
+va_mhbench_train_cfg.validation_interval = _env_int("LINGBOT_VALIDATION_INTERVAL", 0)
+va_mhbench_train_cfg.validation_samples = _env_int("LINGBOT_VALIDATION_SAMPLES", 3)
 va_mhbench_train_cfg.gc_interval = 50
 va_mhbench_train_cfg.cfg_prob = _env_float("LINGBOT_CFG_PROB", 0.1)
 
@@ -139,17 +156,29 @@ va_mhbench_train_cfg.warmup_steps = _env_int("LINGBOT_WARMUP_STEPS", 10)
 _world = _env_int("WORLD_SIZE", 1)
 va_mhbench_train_cfg.global_batch_size = _env_int("LINGBOT_GLOBAL_BATCH", 32)
 va_mhbench_train_cfg.batch_size = _env_int("LINGBOT_BATCH_SIZE", 1)
-_derived_accum = max(
-    1,
-    va_mhbench_train_cfg.global_batch_size // (va_mhbench_train_cfg.batch_size * _world))
+_micro_global = va_mhbench_train_cfg.batch_size * _world
+if va_mhbench_train_cfg.global_batch_size % _micro_global:
+    raise ValueError(
+        f"LINGBOT_GLOBAL_BATCH={va_mhbench_train_cfg.global_batch_size} must be divisible "
+        f"by batch_size*world_size={_micro_global}; floor division would silently train "
+        "with a smaller effective batch")
+_derived_accum = va_mhbench_train_cfg.global_batch_size // _micro_global
 va_mhbench_train_cfg.gradient_accumulation_steps = _env_int(
     "LINGBOT_GRAD_ACCUM", _derived_accum)
+if va_mhbench_train_cfg.gradient_accumulation_steps * _micro_global != va_mhbench_train_cfg.global_batch_size:
+    raise ValueError(
+        "LINGBOT_GRAD_ACCUM * LINGBOT_BATCH_SIZE * WORLD_SIZE must equal "
+        "LINGBOT_GLOBAL_BATCH")
 va_mhbench_train_cfg.num_steps = _env_int("LINGBOT_MAX_STEPS", 10000)
 
 # LoRA arm (not upstream). rank 0 = the paper's full fine-tune.
 va_mhbench_train_cfg.lora_rank = _env_int("LINGBOT_LORA_RANK", 32)
 va_mhbench_train_cfg.lora_alpha = _env_float("LINGBOT_LORA_ALPHA", 16)
 va_mhbench_train_cfg.lora_dropout = _env_float("LINGBOT_LORA_DROPOUT", 0.1)
+va_mhbench_train_cfg.train_video_projections = os.environ.get(
+    "LINGBOT_TRAIN_VIDEO_PROJECTIONS", "0") == "1"
+va_mhbench_train_cfg.video_projection_learning_rate = _env_float(
+    "LINGBOT_VIDEO_PROJECTION_LR", 1e-6)
 va_mhbench_train_cfg.train_action_condition = os.environ.get(
     "LINGBOT_TRAIN_ACTION_COND", "0") == "1"
 va_mhbench_train_cfg.resume_from = os.environ.get("LINGBOT_RESUME_FROM", "")
