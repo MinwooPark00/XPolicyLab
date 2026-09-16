@@ -1,3 +1,4 @@
+import hashlib
 import io
 import json
 import os
@@ -38,6 +39,31 @@ MHBENCH_SIM_TASK = {
     "unitree_g1x2_centralized": "mhbench_uncond_2cam_384_1e-4",
     "unitree_g1x2_decentralized": "mhbench_uncond_1cam_192_1e-4",
 }
+
+POLICY_NOISE_SCHEDULE = "blake2b-v1"
+
+
+def _derive_policy_noise_seed(
+    episode_seed: int,
+    target: str,
+    replan_index: int,
+    salt: int = 0,
+) -> int:
+    """Stable, independent Fast-WAM noise for one episode/role/replan.
+
+    Python's built-in ``hash`` is intentionally process-randomized, so use a
+    named digest schedule whose output is reproducible across processes and
+    machines. Keep the result in torch.Generator's non-negative int64 range.
+    """
+    if replan_index < 0:
+        raise ValueError(f"replan_index must be non-negative, got {replan_index}")
+    payload = f"{int(episode_seed)}\0{int(salt)}\0{target}\0{int(replan_index)}".encode()
+    digest = hashlib.blake2b(
+        payload,
+        digest_size=8,
+        person=b"MHBFastWAMv1",
+    ).digest()
+    return int.from_bytes(digest, "little") & ((1 << 63) - 1)
 
 
 def _is_true(value: Any) -> bool:
@@ -192,6 +218,12 @@ class Model(ModelTemplate):
 
         self._mhbench = str(self.model_cfg.get("bench_name") or "") == "mhbench"
         if self._mhbench:
+            initial_episode_seed = self.model_cfg.get("eval_seed")
+            if _is_none_like(initial_episode_seed):
+                initial_episode_seed = self.model_cfg.get("seed")
+            self._policy_episode_seed = int(initial_episode_seed or 0)
+            self._policy_seed_salt = int(self.model_cfg.get("policy_seed_salt") or 0)
+            self._policy_replan_index: dict[str, int] = {}
             self._init_mhbench()
             return
 
@@ -269,6 +301,7 @@ class Model(ModelTemplate):
                 ckpt, stats, sim_cfg_name="sim_mhbench.yaml", sim_task=self._sim_task,
                 text_cache_dir=self._mhbench_text_cache_dir(task),
             )
+            self._preflight_text_cache(policy, task)
             fallback = self._mhbench_instruction(task)
             for robot in ("robot_a", "robot_b"):
                 self._policies[robot] = policy
@@ -288,6 +321,7 @@ class Model(ModelTemplate):
                     text_cache_dir=self._mhbench_text_cache_dir(f"{task}_{robot}"),
                 )
                 self._instructions[robot] = self._mhbench_instruction(f"{task}_{robot}")
+                self._preflight_text_cache(self._policies[robot], f"{task}_{robot}")
                 print(f"[FastWAM][mhbench] {robot}: {ckpt}")
         else:
             ckpt = self.model_cfg.get("model_dir") or self.model_cfg.get("checkpoint_path")
@@ -301,6 +335,7 @@ class Model(ModelTemplate):
                 text_cache_dir=self._mhbench_text_cache_dir(task),
             )
             self._instructions["duo"] = self._mhbench_instruction(task)
+            self._preflight_text_cache(self._policies["duo"], task)
             print(f"[FastWAM][mhbench] centralized: {ckpt}")
 
         first = next(iter(self._policies.values()))
@@ -322,7 +357,20 @@ class Model(ModelTemplate):
             return None
         data_key = f"mhbench-{ckpt_name}-{self.env_cfg_type}-{self.action_type}"
         cache = FASTWAM_ROOT / "data" / "text_embeds_cache" / "xpolicylab" / data_key
-        return str(cache) if any(cache.glob("*.pt")) else None
+        if any(cache.glob("*.pt")):
+            return str(cache)
+        # Not a silent fall-through to the live T5. Until 2026-09-11 a missing
+        # or half-built cache returned None here, which loaded the 11 GB
+        # encoder instead -- 24.7 GiB resident rather than 12.5, and a serving
+        # path nobody chose. Ask for the encoder explicitly with
+        # `serve_text_encoder: true` (checked above) if that is what you want.
+        raise FileNotFoundError(
+            f"No T5 text-embedding cache at {cache}. Precompute it with "
+            "FastWAM/scripts/precompute_text_embeds.py over this dataset "
+            "(baselines/scripts/README.md, FastWAM > One-off setup), name another "
+            "with deploy.yml's `text_embedding_cache_dir`, or set "
+            "`serve_text_encoder: true` to load the encoder instead."
+        )
 
     def _mhbench_stats_path(self, ckpt_name: str) -> str:
         explicit = self.model_cfg.get("dataset_stats_path")
@@ -363,11 +411,106 @@ class Model(ModelTemplate):
         else:
             sentence = wire.get(target)
             sentence = str(sentence) if sentence and str(sentence).strip() else self._instructions[target]
+        # Memoised on the sentence that came IN, so a substituted one is not
+        # re-resolved (and re-announced) on every step of the episode.
         seen = self.__dict__.setdefault("_instruction_seen", {})
-        if seen.get(target) != sentence:
-            seen[target] = sentence
-            print(f"[FastWAM][mhbench] {target} instruction: {sentence!r}", flush=True)
-        return sentence
+        cached = seen.get(target)
+        if cached is not None and cached[0] == sentence:
+            return cached[1]
+        resolved = self._resolve_cached_instruction(target, sentence)
+        seen[target] = (sentence, resolved)
+        print(f"[FastWAM][mhbench] {target} instruction: {resolved!r}", flush=True)
+        return resolved
+
+    def _text_cache_has(self, policy, sentence: str) -> bool:
+        """Whether the T5 cache `policy` serves from holds `sentence`.
+
+        The lookup goes through the upstream loader rather than re-deriving its
+        sha256/filename scheme, so the two cannot drift apart. A policy with no
+        cache encodes anything, so it is vacuously true there."""
+        if getattr(policy, "text_embedding_cache_dir", None) is None:
+            return True
+        from fastwam.datasets.lerobot.robot_video_dataset import (
+            DEFAULT_PROMPT,
+            load_cached_text_context,
+        )
+        try:
+            load_cached_text_context(
+                policy.text_embedding_cache_dir,
+                DEFAULT_PROMPT.format(task=sentence),
+                int(getattr(policy, "context_len", 128)),
+            )
+        except FileNotFoundError:
+            return False
+        return True
+
+    def _preflight_text_cache(self, policy, ckpt_name: str) -> None:
+        """Every sentence the checkpoint trained on must be in its T5 cache.
+
+        At load, not at the inference that first needs it: a precompute killed
+        part-way leaves a cache that serves some episodes and then dies, and a
+        crash at episode 7 reads as a policy failure rather than as setup."""
+        if getattr(policy, "text_embedding_cache_dir", None) is None:
+            return
+        tasks_file = self._mhbench_data_root(ckpt_name) / "lerobot" / "meta" / "tasks.jsonl"
+        try:
+            sentences = [
+                str(json.loads(line)["task"])
+                for line in tasks_file.read_text().splitlines()
+                if line.strip()
+            ]
+        except (OSError, KeyError, json.JSONDecodeError):
+            print(f"[FastWAM][mhbench] no readable {tasks_file}; text-cache preflight skipped")
+            return
+        missing = [s for s in sentences if not self._text_cache_has(policy, s)]
+        if missing:
+            raise FileNotFoundError(
+                f"{len(missing)} of {len(sentences)} training sentences are absent from the "
+                f"T5 cache {policy.text_embedding_cache_dir} (first missing: {missing[0]!r}). "
+                "Rebuild it with FastWAM/scripts/precompute_text_embeds.py over this dataset."
+            )
+        print(
+            f"[FastWAM][mhbench] text-cache preflight: {len(sentences)} training sentences present",
+            flush=True,
+        )
+
+    def _resolve_cached_instruction(self, target: str, sentence: str) -> str:
+        """`sentence`, once the checkpoint's T5 cache is known to hold it.
+
+        A miss reaches the upstream loader as a bare `Missing text embedding
+        cache: <sha256>.t5_len128.wan22ti2v5b.pt`, raised inside the first
+        inference of an episode -- which names neither the sentence nor the
+        real problem, that this checkpoint never trained on the task being
+        evaluated. The benchmark hits it for real: the env's DoorPassage and
+        FrameHang (with-handles) sentences are not among the 16 in the cohub8
+        multitask dataset, so those two evaluations died mid-episode with a
+        hash for a message.
+
+        FASTWAM_UNCACHED_INSTRUCTION=dataset substitutes the sentence this run
+        DID train on, which keeps a smoke test moving. It is not the default:
+        the policy is then being told to do a different job and the score
+        means nothing."""
+        policy = self._policies.get(target)
+        if policy is None or self._text_cache_has(policy, sentence):
+            return sentence
+        fallback = self._instructions[target]
+        if os.environ.get("FASTWAM_UNCACHED_INSTRUCTION") == "dataset" and self._text_cache_has(
+            policy, fallback
+        ):
+            print(
+                f"[FastWAM][mhbench] WARNING {target}: {sentence!r} is not in the T5 cache; "
+                f"substituting the trained sentence {fallback!r} "
+                "(FASTWAM_UNCACHED_INSTRUCTION=dataset). This score is not a benchmark result.",
+                flush=True,
+            )
+            return fallback
+        raise FileNotFoundError(
+            f"{target} was told {sentence!r}, which is not in this checkpoint's T5 cache "
+            f"({policy.text_embedding_cache_dir}) -- the checkpoint never trained on it. "
+            "Evaluate a task whose sentences the training dataset covers, precompute the "
+            "embedding for this one, or set FASTWAM_UNCACHED_INSTRUCTION=dataset to "
+            "substitute a trained sentence for a wiring check (not a benchmark result)."
+        )
 
     def _newest_weights(self, run_dir: Path) -> str:
         """A servable weights file the trainer wrote under a run
@@ -482,6 +625,12 @@ class Model(ModelTemplate):
         chunks = {}
         full = {}
         for target, policy in self._policies.items():
+            # Upstream creates a fresh torch.Generator from policy.seed. The
+            # old adapter left that value at the checkpoint seed, which reused
+            # the same latent noise on every replan and, for a shared policy,
+            # for both robots. Derive an explicit seed per role and replan so
+            # sampling remains reproducible without coupling those draws.
+            policy.seed = self._next_policy_noise_seed(target)
             chunk = np.asarray(
                 policy._infer_action_chunk(
                     per_policy_obs[target], self._mhbench_instruction_for(target, wire)
@@ -506,6 +655,31 @@ class Model(ModelTemplate):
                 for t in range(steps)
             ]
         return [{"mhbench_raw_action": _pack_dual_arm_action(chunks["duo"][t])} for t in range(steps)]
+
+    def seed(self, episode_seed: int) -> None:
+        """Start Fast-WAM's deterministic policy-noise schedule for an episode.
+
+        ``setup_policy_server.attach_episode_seeding`` invokes this from the
+        client's ``seed_episode`` RPC. The salt is a run-level diagnostic knob;
+        it never participates in checkpoint resolution.
+        """
+        self._policy_episode_seed = int(episode_seed)
+        self._policy_replan_index = {}
+        print(
+            f"[FastWAM][mhbench] policy noise: schedule={POLICY_NOISE_SCHEDULE} "
+            f"episode_seed={self._policy_episode_seed} salt={self._policy_seed_salt}",
+            flush=True,
+        )
+
+    def _next_policy_noise_seed(self, target: str) -> int:
+        replan_index = self._policy_replan_index.get(target, 0)
+        self._policy_replan_index[target] = replan_index + 1
+        return _derive_policy_noise_seed(
+            self._policy_episode_seed,
+            target,
+            replan_index,
+            self._policy_seed_salt,
+        )
 
     # ------------------------------------------------------------------
     # RoboTwin/RoboDojo path (unchanged behaviour)
@@ -634,6 +808,7 @@ class Model(ModelTemplate):
         self.last_instruction = self.default_instruction
         if self._mhbench:
             self._batch = {}
+            self._policy_replan_index = {}
             self._debug_flush()
             for policy in self._policies.values():
                 policy.reset()

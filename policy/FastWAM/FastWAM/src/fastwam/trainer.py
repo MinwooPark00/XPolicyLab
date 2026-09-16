@@ -207,7 +207,7 @@ class Wan22Trainer:
                 "wandb logging is enabled in config (`wandb.enabled=true`) but wandb is not installed."
             ) from e
 
-        self.wandb_run = wandb.init(
+        init_kwargs = dict(
             entity=self.cfg.wandb.workspace,
             project=self.cfg.wandb.project,
             name=self.cfg.wandb.name,
@@ -215,12 +215,116 @@ class Wan22Trainer:
             mode=self.cfg.wandb.mode,
             dir=self.output_dir,
         )
+        try:
+            self.wandb_run = wandb.init(**init_kwargs)
+        except Exception as exc:
+            # Monitoring must not be able to kill training. `wandb.init` runs in
+            # Wan22Trainer.__init__, so anything it raises takes the whole run
+            # down before step 1 -- and it raises for reasons that have nothing
+            # to do with the model: a compute node whose CA bundle the wandb Go
+            # core does not read ("x509: certificate signed by unknown
+            # authority"), or an API key without access to the configured entity
+            # ("403 ... cannot access this resource"). Both cost a launch here
+            # on 2026-09-11. Fall back to an offline run, which records the same
+            # history under the run dir and can be `wandb sync`ed afterwards
+            # with its id intact, and say so loudly.
+            logger.warning(
+                "wandb.init failed (%s: %s); falling back to mode=offline. "
+                "Sync later with: wandb sync %s/wandb/offline-run-*",
+                type(exc).__name__, exc, self.output_dir,
+            )
+            try:
+                self.wandb_run = wandb.init(**{**init_kwargs, "mode": "offline"})
+            except Exception as offline_exc:
+                logger.warning(
+                    "offline wandb.init also failed (%s); continuing with no wandb logging.",
+                    offline_exc,
+                )
+                self.wandb_run = None
+                return
         logger.info(
-            "Initialized wandb run: workspace=%s project=%s name=%s",
+            "Initialized wandb run: workspace=%s project=%s name=%s mode=%s",
             self.cfg.wandb.workspace,
             self.cfg.wandb.project,
             self.cfg.wandb.name,
+            getattr(getattr(self.wandb_run, "settings", None), "mode", self.cfg.wandb.mode),
         )
+
+    def _log_input_images_once(self, sample):
+        """The first training batch's frames, to wandb, exactly once.
+
+        What went wrong silently before this existed: nothing in the logs tells
+        you whether the model is being fed the canvas you think it is. The
+        192x320 tensor is a CENTER CROP of the 240x320 ego view (rows 24:216),
+        optionally shifted by augment_shift_px, in RGB, scaled to (-1, 1) -- and
+        a channel swap, a wrong crop or a squashed aspect all train perfectly
+        happily to a plausible loss. One look at step 0 settles it.
+
+        Logged once per run, main process only:
+          inputs/first_frames  frame 0 of every sample in the batch -- the frame
+                               `infer_action` conditions on at serving time
+          inputs/clip_sample0  all num_frames of sample 0, to see the motion
+          inputs/prompts       the instruction each row carries, so the
+                               image/sentence pairing is checkable too
+
+        Images rather than `wandb.Video`: the latter needs moviepy for raw
+        arrays, which this env does not have, and a media dependency must not
+        be what decides whether a 6-hour run logs its inputs. Each piece is
+        logged in its own try block for the same reason -- a diagnostic may
+        degrade, never take the run with it."""
+        if self.wandb_run is None or not self.accelerator.is_main_process:
+            return
+        if getattr(self, "_input_images_logged", False):
+            return
+        self._input_images_logged = True
+
+        payload = {}
+        try:
+            import numpy as _np
+            import wandb
+
+            video = sample["video"]                      # [B, 3, T, H, W] in (-1, 1)
+            if video.ndim != 5:
+                raise ValueError(f"expected [B,3,T,H,W], got {tuple(video.shape)}")
+
+            def to_uint8(chw):                           # [3,H,W] (-1,1) -> HWC uint8
+                arr = chw.detach().float().cpu().clamp(-1.0, 1.0).add(1.0).mul(127.5)
+                return arr.permute(1, 2, 0).numpy().astype(_np.uint8)
+
+            prompts = list(sample.get("prompt") or [])
+            batch, frames = int(video.shape[0]), int(video.shape[2])
+            payload["inputs/first_frames"] = [
+                wandb.Image(
+                    to_uint8(video[b, :, 0]),
+                    caption=(f"sample {b}: {str(prompts[b])[:110]}" if b < len(prompts) else f"sample {b}"),
+                )
+                for b in range(batch)
+            ]
+            payload["inputs/clip_sample0"] = [
+                wandb.Image(to_uint8(video[0, :, t]), caption=f"t={t}") for t in range(frames)
+            ]
+            payload["inputs/shape"] = str(tuple(video.shape))
+            payload["inputs/value_range"] = f"[{video.min().item():.3f}, {video.max().item():.3f}]"
+            if prompts:
+                payload["inputs/prompts"] = wandb.Table(
+                    columns=["sample", "instruction"],
+                    data=[[b, str(pr)] for b, pr in enumerate(prompts)],
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("building the input-image payload failed (%s: %s)", type(exc).__name__, exc)
+
+        if not payload:
+            return
+        try:
+            self._wandb_log(payload)
+            logger.info(
+                "Logged the first training batch to wandb: %s",
+                ", ".join(f"{k}={len(v) if isinstance(v, list) else v}"
+                          for k, v in payload.items() if not k.endswith("prompts")),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("wandb rejected the input-image payload (%s: %s); continuing",
+                           type(exc).__name__, exc)
 
     def _wandb_log(self, payload: dict):
         if self.wandb_run is None:
@@ -922,6 +1026,7 @@ class Wan22Trainer:
             with self.accelerator.accumulate(self.model):
                 train_model = self.model if hasattr(self.model, "training_loss") else self.accelerator.unwrap_model(self.model)
 
+                self._log_input_images_once(sample)
                 self._debug_nonfinite("input", sample=sample)
                 with self.accelerator.autocast():
                     loss, loss_dict = train_model.training_loss(sample)
@@ -1035,7 +1140,19 @@ class Wan22Trainer:
                                 eval_payload["eval/action_l1"] = float(metrics["action_l1"])
                             self._wandb_log(eval_payload)
 
-                    if self.save_every > 0 and self.global_step % self.save_every == 0:
+                    # Saving and stopping are two questions, asked separately.
+                    # They used to be two `if`s that both called
+                    # save_checkpoint(), so at a max_steps that is a multiple of
+                    # save_every -- 40000 / 2500, the benchmark's own pair --
+                    # the last step wrote the same step tag twice: two full
+                    # `accelerator.save_state` passes over a ZeRO partition.
+                    # `save_every > 0` gates both, so save_every=0 now means
+                    # what it says; a 20-step probe that asked for no
+                    # checkpoints was still left holding 36 GB.
+                    reached_max_steps = self.global_step >= self.max_steps
+                    if self.save_every > 0 and (
+                        self.global_step % self.save_every == 0 or reached_max_steps
+                    ):
                         ckpt_info = self.save_checkpoint()
                         if self.accelerator.is_main_process:
                             logger.info(
@@ -1045,23 +1162,14 @@ class Wan22Trainer:
                                 ckpt_info["state_path"],
                             )
 
-                    if self.global_step >= self.max_steps:
-                        ckpt_info = self.save_checkpoint()
+                    if reached_max_steps:
                         if self.accelerator.is_main_process:
-                            logger.info(
-                                "[done] max_steps reached step=%d weights=%s state=%s",
-                                self.global_step,
-                                ckpt_info["weights_path"],
-                                ckpt_info["state_path"],
-                            )
+                            logger.info("[done] max_steps reached step=%d", self.global_step)
                         return
 
-        ckpt_info = self.save_checkpoint()
+        # Only reachable when the loop was never entered (max_steps <= the step
+        # already restored from a resumed state).
         if self.accelerator.is_main_process:
-            logger.info(
-                "[done] training finished step=%d weights=%s state=%s",
-                self.global_step,
-                ckpt_info["weights_path"],
-                ckpt_info["state_path"],
-            )
+            logger.info("[done] nothing to train: step=%d >= max_steps=%d",
+                        self.global_step, self.max_steps)
         
