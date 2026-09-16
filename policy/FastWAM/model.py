@@ -1,3 +1,4 @@
+import hashlib
 import io
 import json
 import os
@@ -38,6 +39,31 @@ MHBENCH_SIM_TASK = {
     "unitree_g1x2_centralized": "mhbench_uncond_2cam_384_1e-4",
     "unitree_g1x2_decentralized": "mhbench_uncond_1cam_192_1e-4",
 }
+
+POLICY_NOISE_SCHEDULE = "blake2b-v1"
+
+
+def _derive_policy_noise_seed(
+    episode_seed: int,
+    target: str,
+    replan_index: int,
+    salt: int = 0,
+) -> int:
+    """Stable, independent Fast-WAM noise for one episode/role/replan.
+
+    Python's built-in ``hash`` is intentionally process-randomized, so use a
+    named digest schedule whose output is reproducible across processes and
+    machines. Keep the result in torch.Generator's non-negative int64 range.
+    """
+    if replan_index < 0:
+        raise ValueError(f"replan_index must be non-negative, got {replan_index}")
+    payload = f"{int(episode_seed)}\0{int(salt)}\0{target}\0{int(replan_index)}".encode()
+    digest = hashlib.blake2b(
+        payload,
+        digest_size=8,
+        person=b"MHBFastWAMv1",
+    ).digest()
+    return int.from_bytes(digest, "little") & ((1 << 63) - 1)
 
 
 def _is_true(value: Any) -> bool:
@@ -192,6 +218,12 @@ class Model(ModelTemplate):
 
         self._mhbench = str(self.model_cfg.get("bench_name") or "") == "mhbench"
         if self._mhbench:
+            initial_episode_seed = self.model_cfg.get("eval_seed")
+            if _is_none_like(initial_episode_seed):
+                initial_episode_seed = self.model_cfg.get("seed")
+            self._policy_episode_seed = int(initial_episode_seed or 0)
+            self._policy_seed_salt = int(self.model_cfg.get("policy_seed_salt") or 0)
+            self._policy_replan_index: dict[str, int] = {}
             self._init_mhbench()
             return
 
@@ -482,6 +514,12 @@ class Model(ModelTemplate):
         chunks = {}
         full = {}
         for target, policy in self._policies.items():
+            # Upstream creates a fresh torch.Generator from policy.seed. The
+            # old adapter left that value at the checkpoint seed, which reused
+            # the same latent noise on every replan and, for a shared policy,
+            # for both robots. Derive an explicit seed per role and replan so
+            # sampling remains reproducible without coupling those draws.
+            policy.seed = self._next_policy_noise_seed(target)
             chunk = np.asarray(
                 policy._infer_action_chunk(
                     per_policy_obs[target], self._mhbench_instruction_for(target, wire)
@@ -506,6 +544,31 @@ class Model(ModelTemplate):
                 for t in range(steps)
             ]
         return [{"mhbench_raw_action": _pack_dual_arm_action(chunks["duo"][t])} for t in range(steps)]
+
+    def seed(self, episode_seed: int) -> None:
+        """Start Fast-WAM's deterministic policy-noise schedule for an episode.
+
+        ``setup_policy_server.attach_episode_seeding`` invokes this from the
+        client's ``seed_episode`` RPC. The salt is a run-level diagnostic knob;
+        it never participates in checkpoint resolution.
+        """
+        self._policy_episode_seed = int(episode_seed)
+        self._policy_replan_index = {}
+        print(
+            f"[FastWAM][mhbench] policy noise: schedule={POLICY_NOISE_SCHEDULE} "
+            f"episode_seed={self._policy_episode_seed} salt={self._policy_seed_salt}",
+            flush=True,
+        )
+
+    def _next_policy_noise_seed(self, target: str) -> int:
+        replan_index = self._policy_replan_index.get(target, 0)
+        self._policy_replan_index[target] = replan_index + 1
+        return _derive_policy_noise_seed(
+            self._policy_episode_seed,
+            target,
+            replan_index,
+            self._policy_seed_salt,
+        )
 
     # ------------------------------------------------------------------
     # RoboTwin/RoboDojo path (unchanged behaviour)
@@ -634,6 +697,7 @@ class Model(ModelTemplate):
         self.last_instruction = self.default_instruction
         if self._mhbench:
             self._batch = {}
+            self._policy_replan_index = {}
             self._debug_flush()
             for policy in self._policies.values():
                 policy.reset()
