@@ -41,6 +41,13 @@ def main() -> None:
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--num-workers", type=int, default=2)
     parser.add_argument("--depth-weight", type=float, default=0.1)
+    parser.add_argument(
+        "--geometry-scale",
+        choices=("baseline", "metric"),
+        default="baseline",
+        help="the units the checkpoint was fine-tuned in (train_gaussian.py --geometry-scale); "
+             "'metric' for encoders trained before that option existed",
+    )
     parser.add_argument("--log-every", type=int, default=50)
     parser.add_argument("--debug", action="store_true", help="evaluate only one validation batch")
     # --- reconstruction dump -------------------------------------------------
@@ -93,7 +100,7 @@ def main() -> None:
     if device.type != "cuda":
         raise SystemExit("NoPoSplat evaluation requires a CUDA device and CUDA rasterizer")
 
-    val_data = GaussianFrameDataset(args.data, train=False)
+    val_data = GaussianFrameDataset(args.data, train=False, geometry_scale=args.geometry_scale)
     keyframes = (
         recon_dump.select_keyframes(val_data.episode_ranges, dump_fractions, val_data.episode_ids)
         if args.dump_recon

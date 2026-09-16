@@ -135,13 +135,20 @@ def _encode_mhbench_obs(observation: dict[str, Any]) -> dict[str, Any]:
     the same place.
     """
     state = observation["mhbench_state"]
+    robots = _mhbench_robots(observation)
     encoded: dict[str, Any] = {
         "observation/state": np.concatenate(
-            [np.asarray(state[robot]["joint_pos"], dtype=np.float32) for robot in MHBENCH_ROBOTS]
+            [np.asarray(state[robot]["joint_pos"], dtype=np.float32) for robot in robots]
         )
     }
+    # Only the views this observation carries: the slot table also names the
+    # third robot's camera, and a two-robot scene has no `cam_third_view`.
+    vision = observation.get("vision") or {}
     for camera, slot in MHBENCH_VIDEO_SLOT.items():
-        encoded[f"observation/{camera}"] = np.asarray(observation["vision"][slot]["color"])
+        view = vision.get(slot)
+        if view is None:
+            continue
+        encoded[f"observation/{camera}"] = np.asarray(view["color"])
     return encoded
 
 

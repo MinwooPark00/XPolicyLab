@@ -16,6 +16,11 @@ import os
 # uses, since it comes from the env, not the policy.
 MHBENCH_CAMERA_SLOT = {"robot_a": "cam_left_wrist", "robot_b": "cam_right_wrist"}
 
+# cv2.resize (width, height) of the training frames: MHBench's converter keeps
+# 320x240; detr/process_data.py upscales other benches to 640x480.
+MHBENCH_IMAGE_SIZE = (320, 240)
+UPSTREAM_IMAGE_SIZE = (640, 480)
+
 class Model(ModelTemplate):
 
     def __init__(self, model_cfg):
@@ -105,7 +110,7 @@ class Model(ModelTemplate):
 
     def _encode_mhbench_robot_obs(self, observation, robot):
         camera_name = MHBENCH_CAMERA_SLOT[robot]
-        color = cv2.resize(observation["vision"][camera_name]["color"], (640, 480), interpolation=cv2.INTER_LINEAR)
+        color = cv2.resize(observation["vision"][camera_name]["color"], MHBENCH_IMAGE_SIZE, interpolation=cv2.INTER_LINEAR)
         color = np.moveaxis(color, -1, 0) / 255.0
         joint_pos = np.asarray(observation["mhbench_state"][robot]["joint_pos"], dtype=np.float32)
         return {camera_name: color, "qpos": joint_pos}
@@ -212,15 +217,16 @@ class Model(ModelTemplate):
 
     def encode_obs(self, observation, action_type, robot_action_dim_info):
         res_dict = dict()
+        mhbench_state = observation.get("mhbench_state")
+        image_size = MHBENCH_IMAGE_SIZE if mhbench_state is not None else UPSTREAM_IMAGE_SIZE
 
         for camera_name in self.camera_names:
             if camera_name not in observation["vision"]:
                 raise ValueError(f"Expected camera '{camera_name}' not found in observation['vision']")
-            color = cv2.resize(observation["vision"][camera_name]["color"], (640, 480), interpolation=cv2.INTER_LINEAR)
+            color = cv2.resize(observation["vision"][camera_name]["color"], image_size, interpolation=cv2.INTER_LINEAR)
             color = np.moveaxis(color, -1, 0) / 255.0
             res_dict[camera_name] = color
-        
-        mhbench_state = observation.get("mhbench_state")
+
         if mhbench_state is not None:
             # MHBench's two-full-humanoid state doesn't fit XPolicyLab's
             # generic single-bimanual-robot obs['state'] schema (pack_robot_state

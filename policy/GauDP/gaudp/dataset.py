@@ -314,9 +314,15 @@ class GauDPSequenceDataset(_LazyH5Dataset):
         )
 
 
+GEOMETRY_SCALES = ("baseline", "metric")
+
+
 class GaussianFrameDataset(_LazyH5Dataset):
-    def __init__(self, path: str | Path, train: bool) -> None:
+    def __init__(self, path: str | Path, train: bool, geometry_scale: str = "baseline") -> None:
         super().__init__(path)
+        if geometry_scale not in GEOMETRY_SCALES:
+            raise ValueError(f"geometry_scale must be one of {GEOMETRY_SCALES}, got {geometry_scale!r}")
+        self.geometry_scale = geometry_scale
         required = [
             f"{field}_{camera_index}"
             for camera_index in range(len(self.camera_order))
@@ -377,6 +383,23 @@ class GaussianFrameDataset(_LazyH5Dataset):
         canonical_from_world = torch.linalg.inv(extrinsics[0])
         extrinsics = canonical_from_world.unsqueeze(0) @ extrinsics
         depth_stack = torch.stack(depths)
+        if self.geometry_scale == "baseline":
+            # NoPoSplat is pretrained on scenes rescaled so the farthest pair of
+            # cameras is one unit apart (its bounds_shim), and its adapter clamps
+            # every Gaussian mean to +/-5 of the first camera. MHBench's ego
+            # cameras sit 0.47-5.3 m apart and see up to 11.5 m, so in metres a
+            # cartservice frame puts ~11% of its pixels outside that box, where
+            # the clamp leaves them no gradient. Poses and depth are rescaled
+            # together, so the reconstruction task itself is unchanged.
+            centres = extrinsics[:, :3, 3]
+            baseline = float(torch.cdist(centres, centres).max())
+            if not baseline > 1e-3:
+                raise ValueError(
+                    f"{self.path} frame {index}: cameras are {baseline:.2e} apart, "
+                    "too close to normalize the scene by their baseline"
+                )
+            extrinsics[:, :3, 3] = centres / baseline
+            depth_stack = depth_stack / baseline
         valid = torch.isfinite(depth_stack) & (depth_stack > 0)
         if valid.any():
             near = max(float(depth_stack[valid].amin()) * 0.8, 0.01)

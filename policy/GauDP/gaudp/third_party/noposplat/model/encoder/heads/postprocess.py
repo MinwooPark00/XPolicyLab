@@ -50,7 +50,13 @@ def reg_dense_depth(xyz, mode):
         return xyz * d.square()
 
     if mode == 'exp':
-        exp_d = d.expm1()
+        # MHBench: cap the log-distance before expm1. Past d ~= 88.7 float32
+        # expm1 is inf; UnifiedGaussianAdapter's means.clamp(-5, 5) then hides it
+        # from the forward pass and the loss, but its zero gradient times
+        # expm1's inf derivative is NaN, which killed full fine-tuning runs.
+        # expm1(20) ~= 4.9e8 is far outside that clamp box, so
+        # the clamped means are unchanged and only the overflow is removed.
+        exp_d = d.clamp(max=20.0).expm1()
         if not no_bounds:
             exp_d = exp_d.clip(min=vmin, max=vmax)
         xyz = xyz * exp_d
