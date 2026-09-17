@@ -24,10 +24,28 @@ FASTWAM_ROOT = POLICY_DIR / "FastWAM"
 FASTWAM_SRC = FASTWAM_ROOT / "src"
 
 # MHBench camera slots, as every mhbench adapter maps them (DP/ACT/GR00T_N17):
-# the env sends ego_a as cam_left_wrist and ego_b as cam_right_wrist
+# the env sends ego_a/b/c on these generic XPolicyLab names
 # (mhbench_xpolicylab_env.py's _VISION_SLOT). The names are historical --
-# cam_left_wrist is robot A's *head* camera.
-MHBENCH_CAMERA_SLOT = {"robot_a": "cam_left_wrist", "robot_b": "cam_right_wrist"}
+# cam_left_wrist is robot A's *head* camera, and cam_third_view is the extra
+# slot added for three-robot scenes.
+MHBENCH_ROBOTS = ("robot_a", "robot_b", "robot_c")
+MHBENCH_CAMERA_SLOT = {
+    "robot_a": "cam_left_wrist",
+    "robot_b": "cam_right_wrist",
+    "robot_c": "cam_third_view",
+}
+
+
+def _mhbench_robots(observation: dict) -> tuple[str, ...]:
+    """Robots in this scene, in the benchmark's canonical order.
+
+    The server profile remains ``unitree_g1x2_decentralized`` because a
+    decentralized training row is one 43D/35D robot regardless of how many
+    agents share the scene.  The observation is therefore the authority for
+    whether an evaluation has two agents or three.
+    """
+    present = observation.get("mhbench_state") or {}
+    return tuple(robot for robot in MHBENCH_ROBOTS if robot in present) or MHBENCH_ROBOTS[:2]
 
 # The serving task yaml per checkpoint profile -- the same yamls train.sh
 # trains under, so serving cannot compose a different processor than training.
@@ -247,8 +265,9 @@ class Model(ModelTemplate):
         self.replan_steps = int(self.model.replan_steps)
 
     # ------------------------------------------------------------------
-    # MHBench: two Unitree G1 robots, centralized (one 70D policy) or
-    # decentralized (one 35D policy per robot in the same server). Mirrors
+    # MHBench: two or three Unitree G1 robots. Centralized checkpoints are the
+    # original two-robot 70D policy; decentralized evaluation applies one 35D
+    # policy per robot in the same server. Mirrors
     # DP's mhbench branches: agent state comes from obs["mhbench_state"]
     # (the standard XPolicyLab state slots have no room for robot_b) and the
     # action goes out as `mhbench_raw_action`, the layout
@@ -282,7 +301,7 @@ class Model(ModelTemplate):
 
         if self.allow_dummy_policy:
             print("[FastWAM][mhbench] allow_dummy_policy=true; serving zero actions for debug flow only.")
-            targets = ("robot_a", "robot_b") if self._decentralized else ("duo",)
+            targets = MHBENCH_ROBOTS[:2] if self._decentralized else ("duo",)
             for target in targets:
                 self._instructions[target] = self.default_instruction
             return
@@ -303,12 +322,16 @@ class Model(ModelTemplate):
             )
             self._preflight_text_cache(policy, task)
             fallback = self._mhbench_instruction(task)
-            for robot in ("robot_a", "robot_b"):
+            # Load one policy object, then expose it under every possible role.
+            # _encode_mhbench selects the two or three actually present in the
+            # scene, so adding robot_c changes nothing for two-agent tasks.
+            for robot in MHBENCH_ROBOTS:
                 self._policies[robot] = policy
                 self._instructions[robot] = fallback
             print(f"[FastWAM][mhbench] shared (multitask): {ckpt}")
         elif self._decentralized:
-            for robot in ("robot_a", "robot_b"):
+            robots = MHBENCH_ROBOTS if task in {"movehouse", "bigtable", "multitask3"} else MHBENCH_ROBOTS[:2]
+            for robot in robots:
                 ckpt = self.model_cfg.get(f"model_dir_{robot}")
                 run_cfg = dict(self.model_cfg)
                 run_cfg["ckpt_name"] = f"{task}_{robot}"
@@ -575,16 +598,23 @@ class Model(ModelTemplate):
             # running under allow_dummy_policy without touching the real path.
             state = {
                 robot: {"joint_pos": np.zeros(43, dtype=np.float32)}
-                for robot in ("robot_a", "robot_b")
+                for robot in MHBENCH_ROBOTS[:2]
             }
+        robots = _mhbench_robots({"mhbench_state": state})
         ego = {
             robot: _standardize_rgb(vision[MHBENCH_CAMERA_SLOT[robot]]["color"])
-            for robot in ("robot_a", "robot_b")
+            for robot in robots
             if MHBENCH_CAMERA_SLOT[robot] in vision
         }
         encoded: dict[str, dict] = {}
         if self._decentralized:
-            for robot in ("robot_a", "robot_b"):
+            missing = [robot for robot in robots if robot not in ego]
+            if missing:
+                raise KeyError(
+                    f"MHBench observation has state but no ego camera for {missing}; "
+                    f"available vision slots are {sorted(vision)}"
+                )
+            for robot in robots:
                 encoded[robot] = {
                     "images": {"ego": ego[robot]},
                     "joint_action": {
@@ -594,6 +624,11 @@ class Model(ModelTemplate):
                     "pelvis_pose": np.asarray(state[robot].get("pelvis_pose", np.zeros(7)), dtype=np.float32),
                 }
         else:
+            if robots != MHBENCH_ROBOTS[:2]:
+                raise ValueError(
+                    "FastWAM centralized MHBench checkpoints are two-robot/70D; "
+                    f"the observation contains {robots}. Evaluate three-agent tasks decentralized."
+                )
             encoded["duo"] = {
                 "images": {"ego_a": ego["robot_a"], "ego_b": ego["robot_b"]},
                 "joint_action": {
@@ -615,16 +650,24 @@ class Model(ModelTemplate):
         """Run every policy once and fold the chunks into
         `mhbench_raw_action` steps."""
         if self.allow_dummy_policy:
+            robots = tuple(target for target in per_policy_obs if target != INSTRUCTIONS_KEY)
             zero = {
                 robot: _pack_single_robot_action(np.zeros(35, dtype=np.float32))
-                for robot in ("robot_a", "robot_b")
+                for robot in robots
             }
             return [{"mhbench_raw_action": dict(zero)} for _ in range(self.replan_steps)]
 
         wire = per_policy_obs.get(INSTRUCTIONS_KEY) or {}
         chunks = {}
         full = {}
-        for target, policy in self._policies.items():
+        targets = tuple(target for target in per_policy_obs if target != INSTRUCTIONS_KEY)
+        for target in targets:
+            try:
+                policy = self._policies[target]
+            except KeyError as exc:
+                raise KeyError(
+                    f"FastWAM has no policy for {target}; loaded roles are {sorted(self._policies)}"
+                ) from exc
             # Upstream creates a fresh torch.Generator from policy.seed. The
             # old adapter left that value at the checkpoint seed, which reused
             # the same latent noise on every replan and, for a shared policy,
@@ -649,7 +692,7 @@ class Model(ModelTemplate):
                 {
                     "mhbench_raw_action": {
                         robot: _pack_single_robot_action(chunks[robot][t])
-                        for robot in ("robot_a", "robot_b")
+                        for robot in targets
                     }
                 }
                 for t in range(steps)
