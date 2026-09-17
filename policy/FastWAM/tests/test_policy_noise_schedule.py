@@ -67,6 +67,7 @@ def test_three_agent_observation_and_dummy_actions_include_robot_c():
         "robot_a", "robot_b", "robot_c", "__mhbench_instructions__"
     }
     assert encoded["robot_c"]["joint_action"]["vector"].shape == (43,)
+    assert encoded["robot_c"]["joint_action"]["vector"].flags.writeable
     assert encoded["robot_c"]["images"]["ego"].shape == (240, 320, 3)
 
     model.allow_dummy_policy = True

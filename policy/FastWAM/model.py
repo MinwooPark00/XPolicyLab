@@ -618,7 +618,11 @@ class Model(ModelTemplate):
                 encoded[robot] = {
                     "images": {"ego": ego[robot]},
                     "joint_action": {
-                        "vector": np.asarray(state[robot]["joint_pos"], dtype=np.float32)
+                        # The websocket decoder may expose a read-only NumPy
+                        # view. Upstream wraps this with torch.as_tensor, which
+                        # warns (and would be undefined if a transform wrote
+                        # through it), so make the policy boundary writable.
+                        "vector": np.array(state[robot]["joint_pos"], dtype=np.float32, copy=True)
                     },
                     # not a policy input; carried for FASTWAM_DEBUG_DUMP
                     "pelvis_pose": np.asarray(state[robot].get("pelvis_pose", np.zeros(7)), dtype=np.float32),
@@ -634,8 +638,8 @@ class Model(ModelTemplate):
                 "joint_action": {
                     "vector": np.concatenate(
                         [
-                            np.asarray(state["robot_a"]["joint_pos"], dtype=np.float32),
-                            np.asarray(state["robot_b"]["joint_pos"], dtype=np.float32),
+                            np.array(state["robot_a"]["joint_pos"], dtype=np.float32, copy=True),
+                            np.array(state["robot_b"]["joint_pos"], dtype=np.float32, copy=True),
                         ]
                     )
                 },
