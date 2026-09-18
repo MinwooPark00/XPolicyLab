@@ -109,6 +109,38 @@ def _print_batch_progress(epoch: int, epochs: int, phase: str, metrics: dict) ->
     )
 
 
+def _accumulated_backward(policy, micro_batches, grad_accum: int, device, state_noise_scale=None):
+    """Backward one optimizer step's worth of micro-batches; returns its loss and metrics.
+
+    Each micro-batch's loss is weighted by its share of the samples, so the
+    summed gradient is the full batch's mean-loss gradient -- the epoch's short
+    last step included. Metrics are sample-weighted means of the micro-batches'.
+    """
+    import torch
+
+    parts = []
+    for _ in range(grad_accum):
+        try:
+            parts.append(_to_device(next(micro_batches), device))
+        except StopIteration:
+            break
+    if not parts:
+        raise RuntimeError("an optimizer step was scheduled with no micro-batch left in the epoch")
+    sizes = [int(part["action"].shape[0]) for part in parts]
+    total = float(sum(sizes))
+    loss_sum = 0.0
+    metrics: dict[str, float] = {}
+    for part, size in zip(parts, sizes):
+        if state_noise_scale is not None:
+            part["state"] = part["state"] + torch.randn_like(part["state"]) * state_noise_scale
+        loss, part_metrics = policy.compute_loss(part, return_metrics=True)
+        (loss * (size / total)).backward()
+        loss_sum += float(loss.detach()) * size
+        for key, value in part_metrics.items():
+            metrics[key] = metrics.get(key, 0.0) + float(value) * size / total
+    return torch.tensor(loss_sum / total), metrics
+
+
 def _accumulate(sums: dict[str, float], metrics: dict[str, float]) -> None:
     for key, value in metrics.items():
         sums[key] = sums.get(key, 0.0) + float(value)
@@ -256,6 +288,10 @@ def main() -> None:
     # while grasp_lift still climbs, so 150 is the default rather than a floor.
     parser.add_argument("--epochs", type=int, default=150)
     parser.add_argument("--batch-size", type=int, default=128)
+    parser.add_argument("--grad-accum", type=int, default=1,
+                        help="split each --batch-size batch into this many micro-batches (a 24 GB card "
+                             "cannot hold 128); the loss is a batch mean and every norm is GroupNorm, "
+                             "so the optimizer step is the same as one full batch")
     parser.add_argument("--num-workers", type=int, default=6)
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--warmup", type=int, default=500,
@@ -330,6 +366,8 @@ def main() -> None:
     args = parser.parse_args()
     if args.log_every < 0:
         parser.error("--log-every must be non-negative")
+    if args.grad_accum < 1 or args.batch_size % args.grad_accum:
+        parser.error(f"--batch-size {args.batch_size} must split evenly into --grad-accum {args.grad_accum}")
     try:
         args.crop_shape = _parse_crop_shape(args.crop_shape)
     except ValueError as error:
@@ -405,9 +443,13 @@ def main() -> None:
     # Warmup scales whatever the cosine schedule asked for, so the schedule the
     # resume contract checks (T_max) stays exactly as it was.
     ema = EMA(policy) if args.ema else None
-    train_loader = DataLoader(train_data, args.batch_size, shuffle=True, num_workers=args.num_workers, pin_memory=True)
+    micro_batch = args.batch_size // args.grad_accum
+    train_loader = DataLoader(train_data, micro_batch, shuffle=True, num_workers=args.num_workers, pin_memory=True)
+    # Validation keeps no activations for a backward, so the full batch fits and
+    # its metrics stay comparable with runs that never accumulated.
     val_loader = DataLoader(val_data, args.batch_size, shuffle=False, num_workers=args.num_workers, pin_memory=True)
-    train_batches = min(1, len(train_loader)) if args.debug else len(train_loader)
+    # Counted in optimizer steps: one step is --grad-accum micro-batches.
+    train_batches = min(1, len(train_loader)) if args.debug else -(-len(train_loader) // args.grad_accum)
     val_batches = min(1, len(val_loader)) if args.debug else len(val_loader)
 
     trainable_count = sum(parameter.numel() for parameter in trainable)
@@ -416,7 +458,8 @@ def main() -> None:
         f"[GauDP][policy] device={device} robots={list(train_data.robot_names)} cameras={train_data.camera_order} "
         f"train_samples={len(train_data)} val_samples={len(val_data)} "
         f"train_batches={train_batches} val_batches={val_batches} "
-        f"batch_size={args.batch_size} workers={args.num_workers} epochs={1 if args.debug else args.epochs} "
+        f"batch_size={args.batch_size} grad_accum={args.grad_accum} micro_batch={micro_batch} "
+        f"workers={args.num_workers} epochs={1 if args.debug else args.epochs} "
         f"trainable={trainable_count / 1e6:.1f}M / total={total_count / 1e6:.1f}M "
         f"gaussian_checkpoint={requested_checkpoint} gaussian_features={args.gaussian_features} "
         f"split={train_data.split_source} log_every={args.log_every} "
@@ -489,7 +532,8 @@ def main() -> None:
             train_count = 0
             train_started = time.monotonic()
             scheduled_lrs = [group["lr"] for group in optimizer.param_groups]
-            for batch_index, batch in enumerate(train_loader):
+            micro_batches = iter(train_loader)
+            for batch_index in range(train_batches):
                 if args.warmup and global_step < args.warmup:
                     warm = (global_step + 1) / args.warmup
                     for group, scheduled in zip(optimizer.param_groups, scheduled_lrs):
@@ -497,12 +541,10 @@ def main() -> None:
                 elif args.warmup and global_step == args.warmup:
                     for group, scheduled in zip(optimizer.param_groups, scheduled_lrs):
                         group["lr"] = scheduled
-                batch = _to_device(batch, device)
-                if args.state_noise:
-                    batch["state"] = batch["state"] + torch.randn_like(batch["state"]) * state_noise_scale
                 optimizer.zero_grad(set_to_none=True)
-                loss, batch_metrics = policy.compute_loss(batch, return_metrics=True)
-                loss.backward()
+                loss, batch_metrics = _accumulated_backward(
+                    policy, micro_batches, args.grad_accum, device, state_noise_scale if args.state_noise else None
+                )
                 if any(parameter.grad is not None for parameter in policy.gaussian_encoder.parameters()):
                     raise RuntimeError("frozen Gaussian encoder unexpectedly received gradients")
                 grad_norm = float(torch.nn.utils.clip_grad_norm_(trainable, 1.0))
