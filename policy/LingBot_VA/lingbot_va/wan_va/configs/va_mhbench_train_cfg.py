@@ -135,7 +135,7 @@ va_mhbench_train_cfg.keep_checkpoint_interval = _env_int(
 # process -- not the between-segment validate_lingbot_checkpoint.py, which
 # only ever runs once per SLURM job and so cannot give a mid-run curve.
 va_mhbench_train_cfg.validation_interval = _env_int("LINGBOT_VALIDATION_INTERVAL", 0)
-va_mhbench_train_cfg.validation_samples = _env_int("LINGBOT_VALIDATION_SAMPLES", 3)
+va_mhbench_train_cfg.validation_samples = _env_int("LINGBOT_VALIDATION_SAMPLES", 16)
 va_mhbench_train_cfg.gc_interval = 50
 va_mhbench_train_cfg.cfg_prob = _env_float("LINGBOT_CFG_PROB", 0.1)
 

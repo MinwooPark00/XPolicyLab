@@ -288,7 +288,9 @@ class Trainer:
         # in a separate process and only ever runs once per SLURM segment, so
         # it cannot give a mid-run curve. 0 (default) disables this entirely.
         self.validation_interval = int(getattr(config, 'validation_interval', 0) or 0)
-        self.validation_samples = int(getattr(config, 'validation_samples', 3) or 3)
+        self.validation_samples = int(getattr(config, 'validation_samples', 16) or 16)
+        self.validation_selection = []
+        self.validation_batches = 0
         self.val_loader = None
         self.val_loader_iter = None
         if self.validation_interval:
@@ -303,20 +305,20 @@ class Trainer:
                 logger.info(f"Loading validation dataset from {val_dataset_path} "
                             f"(every {self.validation_interval} steps)")
                 val_dataset = MultiLatentLeRobotDataset(config=val_config)
-                # The flattened validation tree is ordered by task and role.
-                # Taking its first N whole episodes would measure only the
-                # first role of the first task (N=3 in the current run).
-                # Spread the fixed diagnostic over the complete held-out set.
-                count = min(self.validation_samples, len(val_dataset))
-                if count:
-                    indices = ([0] if count == 1 else [
-                        round(i * (len(val_dataset) - 1) / (count - 1))
-                        for i in range(count)
-                    ])
+                from wan_va.dataset.validation_sampling import (
+                    stratified_validation_selection,
+                )
+                indices, self.validation_selection = stratified_validation_selection(
+                    val_dataset, self.validation_samples)
+                if indices:
                     val_dataset = Subset(val_dataset, indices)
-                    logger.info(f"Validation episode indices: {indices}")
+                    logger.info(
+                        f"Validation selection: {len(indices)} episodes across "
+                        f"{len({tuple(row['tasks']) for row in self.validation_selection})} "
+                        f"task/role instructions; indices={indices}")
                 self.val_loader = DataLoader(
-                    val_dataset, batch_size=config.batch_size, shuffle=False, num_workers=0)
+                    val_dataset, batch_size=1, shuffle=False, num_workers=0)
+                self.validation_batches = len(self.val_loader)
             else:
                 logger.warning(
                     f"LINGBOT_VALIDATION_INTERVAL set but no val dataset at "
@@ -371,7 +373,7 @@ class Trainer:
             with torch.random.fork_rng(devices=[self.config.local_rank]):
                 torch.manual_seed(12345 + self.config.rank)
                 torch.cuda.manual_seed_all(12345 + self.config.rank)
-                for _ in range(self.validation_samples):
+                for _ in range(self.validation_batches):
                     batch = self.convert_input_format(self._get_next_val_batch())
                     input_dict = self._prepare_input_dict(batch)
                     output = self.transformer(input_dict, train_mode=True)
@@ -394,7 +396,8 @@ class Trainer:
                 "checkpoint": str(self.save_dir / f"checkpoint_step_{self.step}"),
                 "dataset": os.environ.get("LINGBOT_VA_VAL_DATASET_PATH") or
                            f"{self.config.dataset_path}_val",
-                "samples": self.validation_samples,
+                "samples": len(self.validation_selection),
+                "selection": self.validation_selection,
                 "mean_video_loss": mean_video,
                 "mean_action_loss": mean_action,
             }, indent=2) + "\n")
