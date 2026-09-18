@@ -22,6 +22,7 @@ from XPolicyLab.utils.process_data import (
 )
 
 from .prepare_merged_ckpt import build_merged_ckpt
+from .rollout_contract import cache_action_chunk, cache_keyframes
 from .lingbot_va.evaluation.robotwin.websocket_client_policy import WebsocketClientPolicy
 from .lingbot_va.wan_va.configs import VA_CONFIGS
 
@@ -78,6 +79,7 @@ class _Rollout:
         self.first_obs = None
         self.skip_leading = True
         self.latest_raw_chunk = None
+        self.cache_raw_chunk = None
         self.exec_buffer = []
         self.last_exec_steps = 0
 
@@ -210,6 +212,10 @@ class Model(ModelTemplate):
         self.chunk_exec_steps = self.model_cfg.get("chunk_exec_steps")
         if self.chunk_exec_steps is None:
             self.chunk_exec_steps = self.model_cfg.get("exec_horizon")
+        if self._mhbench and self.chunk_exec_steps is None:
+            # One latent/action frame. This roughly matches FastWAM's frequent
+            # replanning while preserving LingBot's indivisible 20-step units.
+            self.chunk_exec_steps = self.action_per_frame
         self.initial_action_skip = self.model_cfg.get("initial_action_skip")
 
         # Imagined-video saving: when enabled, ask the server to decode predicted
@@ -270,6 +276,21 @@ class Model(ModelTemplate):
                 "not found. serve/LingBot_VA.sh exports LINGBOT_NORM_STAT from the "
                 "checkpoint directory; a checkpoint copied without it needs the value "
                 "from the dataset it was trained on.")
+        exec_steps = self._resolve_chunk_exec_steps()
+        initial_skip = self._resolve_initial_action_skip()
+        keyframe_stride = self._resolve_keyframe_stride()
+        if exec_steps is None or exec_steps % self.action_per_frame:
+            raise ValueError(
+                "MHBench chunk_exec_steps must be a positive multiple of "
+                f"action_per_frame={self.action_per_frame}; got {exec_steps}")
+        if initial_skip % self.action_per_frame:
+            raise ValueError(
+                "MHBench initial_action_skip must preserve whole action frames; "
+                f"got {initial_skip} for action_per_frame={self.action_per_frame}")
+        if keyframe_stride * 4 != self.action_per_frame:
+            raise ValueError(
+                "MHBench keyframe_stride must provide four camera frames per action "
+                f"frame; got stride={keyframe_stride}, action_per_frame={self.action_per_frame}")
         self.action_dim = MHBENCH_ACTION_DIM
         self._rollouts = {agent: _Rollout() for agent in MHBENCH_AGENTS}
         self._last_encoded: dict[str, dict] | None = None
@@ -374,42 +395,42 @@ class Model(ModelTemplate):
         if chunk.shape[1] != MHBENCH_ACTION_DIM:
             raise ValueError(f"{agent}: server returned {chunk.shape[1]}D actions, "
                              f"expected {MHBENCH_ACTION_DIM}")
-        if roll.skip_leading:
+        initial_chunk = roll.skip_leading
+        skipped_steps = 0
+        if initial_chunk:
             skip = self._resolve_initial_action_skip()
             if skip >= chunk.shape[0]:
                 raise ValueError(f"{agent}: initial skip {skip} >= chunk {chunk.shape[0]}")
             chunk = chunk[skip:]
+            skipped_steps = skip
             roll.skip_leading = False
         chunk = self._maybe_truncate_action_chunk(chunk)
         roll.last_exec_steps = int(chunk.shape[0])
+        roll.cache_raw_chunk = cache_action_chunk(
+            roll.latest_raw_chunk,
+            skipped_steps=skipped_steps,
+            executed_steps=roll.last_exec_steps,
+            action_per_frame=self.action_per_frame,
+            include_skipped_prefix=initial_chunk,
+        )
         roll.exec_buffer = []
         return chunk
 
     def _mhbench_commit(self, agent: str):
         """Feed the frames actually executed back into the agent's KV cache."""
         roll = self._rollouts[agent]
-        if roll.latest_raw_chunk is None:
+        if roll.cache_raw_chunk is None:
             return
         stride = self._resolve_keyframe_stride()
         exec_steps = roll.last_exec_steps or len(roll.exec_buffer)
-        usable = min(len(roll.exec_buffer), max(exec_steps - 1, 0))
-        key_frames = [roll.exec_buffer[i] for i in range(stride - 1, usable, stride)]
-        if len(key_frames) < exec_steps // stride and self._last_encoded is not None:
-            key_frames.append(self._last_encoded[agent])
-        if not key_frames:
-            key_frames = list(roll.exec_buffer)
-        if not key_frames:
-            return
-        # A chunk can terminate before all scheduled actions execute (fall,
-        # dropped object, etc.).  The action tensor still spans the model's
-        # full frame chunk, but the old fallback supplied only one final
-        # image.  Wan's streaming VAE then received temporal size 2 for a
-        # size-3 convolution.  Repeat the most recent real observation to keep
-        # video and action chunk lengths aligned for this truncated history.
-        target_frames = int(getattr(self.job_config, "frame_chunk_size", 1))
-        while len(key_frames) < target_frames:
-            key_frames.append(key_frames[-1])
-        payload = self._to_engine_obs_batch(key_frames, state=roll.latest_raw_chunk)
+        latest = self._last_encoded[agent] if self._last_encoded is not None else None
+        key_frames = cache_keyframes(
+            roll.exec_buffer,
+            latest,
+            executed_steps=exec_steps,
+            keyframe_stride=stride,
+        )
+        payload = self._to_engine_obs_batch(key_frames, state=roll.cache_raw_chunk)
         payload["session"] = agent
         payload["compute_kv_cache"] = True
         self._ws.infer(payload)

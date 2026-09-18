@@ -37,10 +37,11 @@ action_type: joint
 # receding_horizon: replan from current frame each chunk (better for offline replay diag).
 rollout_mode: closed_loop
 
-# Align with official robotwin eval data-update logic: execute the full chunk,
-# keyframe stride = action_per_frame // 4 (=3), skip the first frame (=action_per_frame).
-# These are the model.py defaults, so we leave keyframe_stride / chunk_exec_steps /
-# initial_action_skip unset (no override) to faithfully match robotwin.
+# MHBench replans after one complete LingBot latent/action frame (20 simulator
+# steps) by default. FastWAM replans every 24 steps; 20 is LingBot's closest
+# cache-safe cadence because partial action frames cannot be paired with a
+# whole encoded video latent. Set chunk_exec_steps only to override it with a
+# multiple of action_per_frame. Other benchmarks keep their upstream cadence.
 
 # Language instruction: leave unset to use the instruction embedded in the
 # replayed HDF5 episode (root-level `instruction` dataset), injected into
