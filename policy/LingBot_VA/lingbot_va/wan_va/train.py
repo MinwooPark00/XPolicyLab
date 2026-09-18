@@ -383,8 +383,10 @@ class Trainer:
                     action_losses.append(action_loss.detach() * scale)
         finally:
             self.transformer.train()
-        mean_video = dist_mean(torch.stack(video_losses).mean()).item()
-        mean_action = dist_mean(torch.stack(action_losses).mean()).item()
+        video_by_sample = dist_mean(torch.stack(video_losses)).detach().cpu().tolist()
+        action_by_sample = dist_mean(torch.stack(action_losses)).detach().cpu().tolist()
+        mean_video = sum(video_by_sample) / len(video_by_sample)
+        mean_action = sum(action_by_sample) / len(action_by_sample)
         if self.config.rank == 0:
             logger.info(f"validation at step {self.step}: "
                         f"video_loss={mean_video:.4f} action_loss={mean_action:.4f}")
@@ -397,7 +399,10 @@ class Trainer:
                 "dataset": os.environ.get("LINGBOT_VA_VAL_DATASET_PATH") or
                            f"{self.config.dataset_path}_val",
                 "samples": len(self.validation_selection),
-                "selection": self.validation_selection,
+                "selection": [dict(row,
+                                   video_loss=video_by_sample[index],
+                                   action_loss=action_by_sample[index])
+                              for index, row in enumerate(self.validation_selection)],
                 "mean_video_loss": mean_video,
                 "mean_action_loss": mean_action,
             }, indent=2) + "\n")
