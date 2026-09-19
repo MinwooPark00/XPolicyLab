@@ -109,6 +109,21 @@ def _print_batch_progress(epoch: int, epochs: int, phase: str, metrics: dict) ->
     )
 
 
+def _scheduled_lr(base_lr: float, epoch: int, epochs: int, step: int, warmup: int) -> float:
+    """The LR of one optimizer step: a per-epoch cosine from base_lr to 0, under a
+    linear warmup over the first `warmup` optimizer steps.
+
+    Computed from scratch each step. The loop used to scale the optimizer's live
+    LR for warmup and then let CosineAnnealingLR chain its next value off that
+    scaled LR, so every epoch inside the warmup shrank the schedule again: the
+    fewer steps an epoch had, the lower the LR ended -- copouring (59 steps an
+    epoch) trained at 4.5e-7 against 3e-4, cocarry (214) at 1.1e-4.
+    """
+    cosine = 0.5 * (1.0 + math.cos(math.pi * epoch / max(1, epochs)))
+    warm = min(1.0, (step + 1) / warmup) if warmup else 1.0
+    return base_lr * cosine * warm
+
+
 def _accumulated_backward(policy, micro_batches, grad_accum: int, device, state_noise_scale=None):
     """Backward one optimizer step's worth of micro-batches; returns its loss and metrics.
 
@@ -281,7 +296,7 @@ def main() -> None:
     parser.add_argument("--gaussian-features", type=Path, required=True)
     parser.add_argument("--seed", type=int, default=42)
     # Defaults are the recipe measured on handover (arm S02 in train_ab.py):
-    # 150 epochs, lr 3e-4 with a 500-step warmup, EMA, normalizer range_eps, and
+    # 150 epochs, a 500-step warmup, EMA, normalizer range_eps, and
     # 0.02 proprioception noise. Closed-loop over 50 episodes, grasp_lift /
     # transfer: sigma 0 gives 4/50, 0; sigma 0.02 gives 48/50, 13; sigma 0.04
     # gives 21/50, 0. Past 200 epochs transfer collapses (250 -> 3, 300 -> 0)
@@ -293,7 +308,10 @@ def main() -> None:
                              "cannot hold 128); the loss is a batch mean and every norm is GroupNorm, "
                              "so the optimizer step is the same as one full batch")
     parser.add_argument("--num-workers", type=int, default=6)
-    parser.add_argument("--lr", type=float, default=3e-4)
+    # Peak LR. S02 was configured at 3e-4 but, through the warmup bug
+    # _scheduled_lr describes, trained at about 1e-4 (206 steps an epoch); 1e-4
+    # is the LR the measured recipe actually ran at.
+    parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--warmup", type=int, default=500,
                         help="linear LR warmup steps (0 disables)")
     parser.add_argument("--state-noise", type=float, default=0.02,
@@ -507,7 +525,7 @@ def main() -> None:
             del best_payload
         print(
             f"[GauDP][policy] resumed from {resume_path} at epoch={start_epoch + 1}/{epochs} "
-            f"global_step={global_step} lr={scheduler.get_last_lr()[0]:.8g} "
+            f"global_step={global_step} lr={_scheduled_lr(args.lr, start_epoch, scheduler.T_max, global_step, args.warmup):.8g} "
             f"best_val_loss={best:.8g}",
             flush=True,
         )
@@ -531,16 +549,11 @@ def main() -> None:
             train_sums: dict[str, float] = {}
             train_count = 0
             train_started = time.monotonic()
-            scheduled_lrs = [group["lr"] for group in optimizer.param_groups]
             micro_batches = iter(train_loader)
             for batch_index in range(train_batches):
-                if args.warmup and global_step < args.warmup:
-                    warm = (global_step + 1) / args.warmup
-                    for group, scheduled in zip(optimizer.param_groups, scheduled_lrs):
-                        group["lr"] = scheduled * warm
-                elif args.warmup and global_step == args.warmup:
-                    for group, scheduled in zip(optimizer.param_groups, scheduled_lrs):
-                        group["lr"] = scheduled
+                step_lr = _scheduled_lr(args.lr, epoch, scheduler.T_max, global_step, args.warmup)
+                for group in optimizer.param_groups:
+                    group["lr"] = step_lr
                 optimizer.zero_grad(set_to_none=True)
                 loss, batch_metrics = _accumulated_backward(
                     policy, micro_batches, args.grad_accum, device, state_noise_scale if args.state_noise else None
@@ -571,6 +584,8 @@ def main() -> None:
                     _print_batch_progress(epoch, epochs, "train", progress)
                 if args.debug:
                     break
+            # Kept stepping for its epoch count, which resume checks; the LR
+            # itself comes from _scheduled_lr at the next step.
             scheduler.step()
 
             policy.eval()
@@ -599,7 +614,7 @@ def main() -> None:
             metrics = {
                 "record_type": "epoch",
                 "epoch": epoch,
-                "lr": scheduler.get_last_lr()[0],
+                "lr": step_lr,
                 "performance/epoch_seconds": time.monotonic() - epoch_started,
                 **normalization_metrics,
                 "train/loss": train_sums.get("diffusion/noise_mse", 0.0) / max(1, train_count),

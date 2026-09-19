@@ -1,6 +1,7 @@
 """--grad-accum takes the same optimizer step as the full batch."""
 
 import copy
+import math
 
 import pytest
 
@@ -109,3 +110,31 @@ def test_a_short_last_step_weights_its_samples():
     parts = [{k: v[:4] for k, v in batch.items()}, {k: v[4:] for k, v in batch.items()}]
     loss, metrics = _accumulated_backward(policy, iter(parts), 4, torch.device("cpu"))
     assert torch.isfinite(loss) and "action/robot_a_mse" in metrics
+
+
+# --- the LR schedule --------------------------------------------------------
+
+from XPolicyLab.policy.GauDP.train_policy import _scheduled_lr
+
+
+@pytest.mark.parametrize("steps_per_epoch", [59, 107, 214, 428])
+def test_the_lr_schedule_does_not_depend_on_the_epoch_length(steps_per_epoch):
+    """Warmup to the peak, then a cosine in epochs -- whatever an epoch's length.
+
+    The loop this replaced shrank the schedule once per epoch inside the warmup,
+    so copouring (59 steps an epoch) peaked at 4.5e-7 against 3e-4.
+    """
+    base, epochs, warmup = 1e-4, 150, 500
+    step, peak, first = 0, 0.0, {}
+    for epoch in range(epochs):
+        for _ in range(steps_per_epoch):
+            lr = _scheduled_lr(base, epoch, epochs, step, warmup)
+            first.setdefault(epoch, lr)
+            peak = max(peak, lr)
+            step += 1
+    assert peak == pytest.approx(base * 0.5 * (1 + math.cos(math.pi * ((warmup - 1) // steps_per_epoch) / epochs)), rel=1e-6)
+    assert peak > 0.95 * base
+    for epoch in (20, 75, 149):
+        assert first[epoch] == pytest.approx(base * 0.5 * (1 + math.cos(math.pi * epoch / epochs)), rel=1e-9)
+    assert _scheduled_lr(base, 0, epochs, 0, warmup) == pytest.approx(base / warmup)
+    assert _scheduled_lr(base, 0, epochs, 0, 0) == pytest.approx(base)
