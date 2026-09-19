@@ -116,6 +116,9 @@ def get_args_parser():
     parser.add_argument("--ckpt_setting", action="store", type=str, help="chunk_size", required=False)
     parser.add_argument("--temporal_agg", action="store_true")
     parser.add_argument("--save_freq", action="store", type=int, help="save ckpt frequency", required=False, default=6000)
+    # imitate_episodes.py's own flag. This parser reads the same command line a
+    # second time while the model is built, and refuses what it does not list.
+    parser.add_argument("--grad_accum", action="store", type=int, required=False, default=1)
 
     return parser
 

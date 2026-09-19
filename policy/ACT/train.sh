@@ -70,6 +70,15 @@ NUM_EPOCHS=${ACT_NUM_EPOCHS:-600}
 # written -- the shape GR00T's 10k/20k/30k/40k has.
 SAVE_FREQ=${ACT_SAVE_FREQ:-150}
 LR=${ACT_LR:-1e-4}
+# Micro-batches per optimizer step: BATCH_SIZE stays the batch a step sees, and
+# BATCH_SIZE/GRAD_ACCUM is what has to fit on the card. `auto` is 2 for the
+# two-camera settings (jointobs, ctce), which at 256 need more than 24 GB -- the
+# first training step ran out at 23.5 GiB on an RTX 3090 -- and 1 otherwise.
+GRAD_ACCUM=${ACT_GRAD_ACCUM:-auto}
+if [ "${GRAD_ACCUM}" = auto ]; then
+    case "${ACT_VARIANT}" in jointobs|ctce) GRAD_ACCUM=2 ;; *) GRAD_ACCUM=1 ;; esac
+fi
+echo -e "\033[33m[INFO] batch ${BATCH_SIZE} as ${GRAD_ACCUM} micro-batch(es) of $((BATCH_SIZE / GRAD_ACCUM))\033[0m"
 
 python3 imitate_episodes.py \
     --bench_name ${bench_name} \
@@ -85,4 +94,5 @@ python3 imitate_episodes.py \
     --num_epochs ${NUM_EPOCHS} \
     --lr ${LR} \
     --save_freq ${SAVE_FREQ} \
+    --grad_accum ${GRAD_ACCUM} \
     --seed ${seed}

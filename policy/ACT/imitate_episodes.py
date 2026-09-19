@@ -33,8 +33,16 @@ def main(args):
     policy_class = args["policy_class"]
     onscreen_render = args["onscreen_render"]
     ckpt_setting = args["ckpt_setting"]
-    batch_size_train = args["batch_size"]
-    batch_size_val = args["batch_size"]
+    # --batch_size is the batch an optimizer step sees. With --grad_accum N it
+    # is assembled from N micro-batches of batch_size/N, which is what the
+    # loaders hand out and what has to fit on the card: two cameras at 256 do
+    # not fit 24 GB, two micro-batches of 128 do. Validation only averages
+    # per-batch losses, so it reads the same micro-batches.
+    grad_accum = args["grad_accum"]
+    if grad_accum < 1 or args["batch_size"] % grad_accum:
+        raise ValueError(f"--batch_size {args['batch_size']} is not a multiple of --grad_accum {grad_accum}")
+    batch_size_train = args["batch_size"] // grad_accum
+    batch_size_val = batch_size_train
     num_epochs = args["num_epochs"]
 
     # get task parameters
@@ -93,7 +101,9 @@ def main(args):
         "seed": args["seed"],
         "temporal_agg": args["temporal_agg"],
         "camera_names": camera_names,
-        "save_freq": args['save_freq']
+        "save_freq": args['save_freq'],
+        "batch_size": args["batch_size"],
+        "grad_accum": grad_accum,
     }
 
     train_dataloader, val_dataloader, stats, _ = load_data(dataset_dir, num_episodes, camera_names, batch_size_train,
@@ -160,6 +170,7 @@ def train_bc(train_dataloader, val_dataloader, config):
     seed = config["seed"]
     policy_class = config["policy_class"]
     policy_config = config["policy_config"]
+    grad_accum = config.get("grad_accum", 1)
 
     set_seed(seed)
     
@@ -201,10 +212,19 @@ def train_bc(train_dataloader, val_dataloader, config):
         for batch_idx, data in enumerate(train_dataloader):
             forward_dict = forward_pass(data, policy)
             # backward
-            loss = forward_dict["loss"]
+            # One optimizer step per `grad_accum` micro-batches. Each loss is a
+            # mean over its (equal-sized, drop_last) micro-batch, so dividing by
+            # N makes the accumulated gradient the mean over the whole batch --
+            # the gradient a single batch of that size gives. The backbone's
+            # BatchNorm is frozen, so nothing else in the model sees the batch
+            # size; what differs is only the dropout draw. A trailing group
+            # shorter than N is dropped, like drop_last drops a short batch:
+            # the zero_grad above clears it at the next epoch's start.
+            loss = forward_dict["loss"] / grad_accum
             loss.backward()
-            optimizer.step()
-            optimizer.zero_grad()
+            if (batch_idx + 1) % grad_accum == 0:
+                optimizer.step()
+                optimizer.zero_grad()
             # Per epoch, not for the whole run: these stay on the GPU, and one
             # epoch is now hundreds of steps rather than one.
             epoch_dicts.append(detach_dict(forward_dict))
@@ -216,7 +236,7 @@ def train_bc(train_dataloader, val_dataloader, config):
         train_log = {f"train/{k}": v.item() for k, v in epoch_summary.items()}
         # The optimizer-step count, so an epoch here compares with the step
         # budgets the language policies train to.
-        train_log["global_step"] = (epoch + 1) * len(train_dataloader)
+        train_log["global_step"] = (epoch + 1) * (len(train_dataloader) // grad_accum)
         wandb.log(train_log, step=epoch)
 
         if (epoch + 1) % config['save_freq'] == 0:
@@ -267,5 +287,7 @@ if __name__ == "__main__":
         required=False,
     )
     parser.add_argument("--temporal_agg", action="store_true")
+    parser.add_argument("--grad_accum", action="store", type=int, default=1,
+                        help="micro-batches per optimizer step; --batch_size stays the effective batch")
 
     main(vars(parser.parse_args()))
