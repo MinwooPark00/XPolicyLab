@@ -38,12 +38,16 @@ enc_layers: 4
 dec_layers: 7
 pre_norm: false
 dropout: 0.1
-camera_names: ["cam_right_wrist", "cam_left_wrist"]
+# MHBench ignores this list: model.py serves ego_a then ego_b (cam_left_wrist,
+# cam_right_wrist), the order its two-camera policies were trained in.
+camera_names: ["cam_left_wrist", "cam_right_wrist"]
 
 # --- MHBench (bench_name=mhbench, env_cfg_type=unitree_g1x2_decentralized): ---
 # one server drives both robots from two single-robot ACT checkpoints. ckpt_name
 # is the task (cocarry/handover); per-robot dirs resolve to
 # checkpoints/mhbench-<task>_robot_<r>-unitree_g1x2_decentralized-<action_type>-<seed>.
 # Explicit override, same convention as GR00T_N17/deploy.yml's model_dir_<robot>.
+# Which per-robot setting a checkpoint is (train.sh ACT_VARIANT: dtde, jointobs,
+# jointact) is read off its dataset_stats.pkl; CKPT_TAG names the run directory.
 model_dir_robot_a: null
 model_dir_robot_b: null

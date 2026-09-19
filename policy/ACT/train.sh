@@ -18,6 +18,38 @@ ROOT_DIR="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 UTILS_DIR="${ROOT_DIR}/XPolicyLab/utils"
 action_dim=$(bash "${UTILS_DIR}/get_action_dim.sh" "${ROOT_DIR}" "${env_cfg_type}"); echo -e "\033[33m[INFO] Action dim: ${action_dim}\033[0m"
 state_dim=$(bash "${UTILS_DIR}/get_state_dim.sh" "${ROOT_DIR}" "${env_cfg_type}"); echo -e "\033[33m[INFO] State dim: ${state_dim}\033[0m"
+
+# ---- MHBench experiment setting (ACT_VARIANT) -------------------------------
+# What a policy observes and what it predicts, as two independent choices. The
+# default is the benchmark's own: a per-robot policy on its own observation
+# predicting its own action. The other three are options of the same trainer:
+#
+#   dtde      own obs  -> own action            env_cfg_type unitree_g1x2_decentralized
+#   jointobs  both obs -> own action            same profile, state doubled
+#   jointact  own obs  -> both robots' action   same profile, action doubled;
+#                                               only its own half is executed (model.py)
+#   ctce      both obs -> both actions, one policy: env_cfg_type unitree_g1x2_centralized,
+#             whose profile already is the doubled pair, so nothing changes here
+#
+# The profile's dims are one robot's, so the joint settings double the side they
+# widen rather than naming 86 and 70. The variant also joins the TASK_CONFIGS
+# key (register_task_config.py --variant writes the same one), because a joint
+# setting trains a different dataset under the same ckpt_name and profile.
+ACT_VARIANT=${ACT_VARIANT:-dtde}
+variant_suffix=""
+case "${ACT_VARIANT}" in
+    dtde|ctce) ;;
+    jointobs) state_dim=$((state_dim * 2)); variant_suffix="-jointobs" ;;
+    jointact) action_dim=$((action_dim * 2)); variant_suffix="-jointact" ;;
+    *) echo "[ACT] unknown ACT_VARIANT '${ACT_VARIANT}' (dtde|jointobs|jointact|ctce)" >&2; exit 2 ;;
+esac
+if [ -n "${variant_suffix}" ] && [ -z "${CKPT_TAG:-}" ]; then
+    # Untagged, the run would write into -- and the eval would then serve -- the
+    # default setting's checkpoint directory.
+    echo "[ACT] ACT_VARIANT=${ACT_VARIANT} needs a CKPT_TAG (baselines/train/ACT.sh sets it to the variant)" >&2
+    exit 2
+fi
+echo -e "\033[33m[INFO] ACT_VARIANT=${ACT_VARIANT}: state ${state_dim}D, action ${action_dim}D\033[0m"
 export ACT_ACTION_DIM=${action_dim}
 export ACT_STATE_DIM=${state_dim}
 ckpt_setting="${bench_name}-${ckpt_name}-${env_cfg_type}-${action_type}"
@@ -42,7 +74,7 @@ LR=${ACT_LR:-1e-4}
 python3 imitate_episodes.py \
     --bench_name ${bench_name} \
     --task_name ${ckpt_name} \
-    --ckpt_setting ${ckpt_setting} \
+    --ckpt_setting "${ckpt_setting}${variant_suffix}" \
     --ckpt_dir "${ckpt_dir}" \
     --policy_class ACT \
     --kl_weight 10 \
